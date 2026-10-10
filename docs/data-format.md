@@ -102,7 +102,6 @@ bot:
   share_logs_in_group: false  # true: the AI may discuss weigh-ins, binges, cravings and notes in the group
   history_scope: asked        # asked | all: which group messages are kept as AI context
   history: 20
-  answer_timeout_s: 900
 llm:
   provider: openai            # none | openai | anthropic | plugin
   base_url: http://ollama:11434/v1    # any OpenAI-compatible endpoint
