@@ -14,6 +14,7 @@ with another seed. Same inputs, same plan.
 from __future__ import annotations
 
 import datetime as dt
+import os
 import random
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -55,9 +56,9 @@ class Day:
     def storage(self, data: Data) -> str:
         gap = (self.date - self.lunch_cook).days
         if gap == 0:
-            return "recien-hecho"
+            return "fresh"
         r = data.recipes[self.lunch]
-        return "nevera" if gap <= r.fridge_days else "congelador"
+        return "fridge" if gap <= r.fridge_days else "freezer"
 
 
 @dataclass
@@ -136,10 +137,13 @@ class Plan:
         )
 
     def save(self, path: Path) -> None:
+        """Write atomically: a reader never sees half a plan."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        tmp = path.with_suffix(".yaml.tmp")
+        tmp.write_text(
             yaml.safe_dump(self.to_dict(), allow_unicode=True, sort_keys=False), encoding="utf-8"
         )
+        os.replace(tmp, path)
 
 
 def load_plan(path: Path) -> Plan:
@@ -344,6 +348,11 @@ def _draft(data, start, weeks, busy, previous, seed) -> Plan:
                 and not r.has("side")
                 and _eligible(data, r, slot.meal, month)
             ]
+        if not cands:
+            raise PlanError(
+                f"no {slot.meal} recipe fits {d0} (kinds {sorted(need_kind)}, month {month}): "
+                "add recipes for this meal or season"
+            )
         cands.sort(reverse=True)
         pick = cands[0][1]
         slot.recipe = pick
@@ -428,6 +437,8 @@ def validate(data: Data, plan: Plan) -> list[str]:
                 continue
             if any(i.id in avoided for i in r.ingredients):
                 errs.append(f"{d.date} {meal}: {rid} uses an avoided ingredient")
+        if d.lunch not in data.recipes or d.dinner not in data.recipes:
+            continue  # reported as unknown above
         dinner = data.recipes[d.dinner]
         for meal in ("lunch", "dinner"):
             if data.recipes[getattr(d, meal)].has("side"):
@@ -448,6 +459,9 @@ def validate(data: Data, plan: Plan) -> list[str]:
     for w in range(plan.weeks):
         week = [d for d in plan.days if _week_of(d.date, plan.start) == w]
         if len(week) < 7:
+            continue
+
+        if any(d.lunch not in data.recipes or d.dinner not in data.recipes for d in week):
             continue
 
         def n(tag: str, week: list[Day] = week) -> int:

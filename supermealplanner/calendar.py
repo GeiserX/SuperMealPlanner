@@ -43,7 +43,7 @@ def busy_afternoons_from_ics(
         win_s = dt.datetime.combine(day, w0, tz)
         win_e = dt.datetime.combine(day, w1, tz)
         if s < win_e and e > win_s:
-            out.setdefault(day, []).append(str(ev.get("SUMMARY", "evento")))
+            out.setdefault(day, []).append(str(ev.get("SUMMARY", "event")))
     return out
 
 

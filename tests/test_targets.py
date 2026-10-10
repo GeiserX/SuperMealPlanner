@@ -76,3 +76,48 @@ def test_binges_flag_without_cutting_food(data, tmp_path):
     st = evaluate(db, data.household, luis, today)
     assert any(k == "flag_binges" and p["n"] == 4 for k, p in st.flags)
     assert st.kcal == 2300
+
+
+def test_binges_never_lead_to_a_cut(data, tmp_path):
+    db = DB(tmp_path / "t.db")
+    luis = data.household.person("luis")
+    start = dt.date(2026, 9, 1)
+    _weights(db, "luis", start, [90, 90, 90, 90, 90])  # flat: "slow loss" would cut
+    for i in range(4):
+        db.set_daily("luis", start + dt.timedelta(days=7 * i + 2), binge=1)
+    st = evaluate(db, data.household, luis, start + dt.timedelta(days=28), apply=True)
+    assert st.kcal == 2300 and st.changed is None
+    assert any(k == "flag_binges" for k, _ in st.flags)
+
+
+def test_below_the_goal_band_never_cuts(data, tmp_path):
+    db = DB(tmp_path / "t.db")
+    luis = data.household.person("luis")  # band 79-81
+    start = dt.date(2026, 9, 1)
+    _weights(db, "luis", start, [76, 76, 76, 76, 76])
+    st = evaluate(db, data.household, luis, start + dt.timedelta(days=28), apply=True)
+    assert st.mode == "maintain" and st.kcal == 2300
+
+
+def test_a_young_trend_changes_nothing(data, tmp_path):
+    db = DB(tmp_path / "t.db")
+    luis = data.household.person("luis")
+    start = dt.date(2026, 9, 1)
+    _weights(db, "luis", start, [90, 90, 90])  # 14 days of data in a 28-day window
+    st = evaluate(db, data.household, luis, start + dt.timedelta(days=14), apply=True)
+    assert st.changed is None and db.targets("luis") == []
+
+
+def test_editing_the_start_resets_and_the_floor_clamps(data, tmp_path):
+    from supermealplanner.targets import current_kcal, sync_start
+
+    db = DB(tmp_path / "t.db")
+    luis = data.household.person("luis")
+    sync_start(db, luis, dt.date(2026, 9, 1))
+    db.set_target("luis", dt.date(2026, 9, 29), 2150, "{}")
+    assert current_kcal(db, luis) == 2150
+    luis.kcal.start = 2400  # the household file was edited
+    sync_start(db, luis, dt.date(2026, 10, 1))
+    assert current_kcal(db, luis) == 2400
+    db.set_target("luis", dt.date(2026, 10, 29), 1700, "{}")
+    assert current_kcal(db, luis) == 1800  # the floor wins over a stored value

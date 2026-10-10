@@ -22,7 +22,15 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
 """
 
 
-def build(data: Data, db: DB, today: dt.date) -> str:
+SENSITIVE = ("hunger", "craving", "nausea", "binge")
+
+
+def build(
+    data: Data, db: DB, today: dt.date, viewer: str | None = None, group: bool = False
+) -> str:
+    """The AI's context. viewer: in a private chat, the person asking; only their own pills, notes and
+    logs are included. group: in the household group, sensitive logs (binges, cravings, notes) stay
+    out unless bot.share_logs_in_group is set."""
     t = Translator(data.locale)
     hh = data.household
     out = [
@@ -46,6 +54,8 @@ def build(data: Data, db: DB, today: dt.date) -> str:
         if p.avoid_ingredients:
             line += f" Avoids: {', '.join(p.avoid_ingredients)}."
         out.append(line)
+        if viewer is not None and p.id != viewer:
+            continue  # someone else's health data stays out of a private chat
         for slot, pills in p.pills.items():
             if pills:
                 out.append(
@@ -56,18 +66,13 @@ def build(data: Data, db: DB, today: dt.date) -> str:
         w = db.weights(p.id)[-4:]
         if w:
             out.append("  - last weigh-ins: " + ", ".join(f"{d.isoformat()} {k} kg" for d, k in w))
-        logs = db.daily(p.id, today - dt.timedelta(days=7))
-        for r in logs:
-            bits = [
-                f"{k} {r[k]}"
-                for k in ("hunger", "craving", "nausea", "binge", "water", "pills_lunch")
-                if r.get(k) is not None
-            ]
-            if bits or r.get("note"):
-                out.append(
-                    f"  - {r['day']}: {', '.join(bits)}"
-                    + (f" ({r['note']})" if r.get("note") else "")
-                )
+        open_logs = not group or data.settings.bot.share_logs_in_group
+        fields = [*(SENSITIVE if open_logs else ()), "water", "pills_lunch"]
+        for r in db.daily(p.id, today - dt.timedelta(days=7)):
+            bits = [f"{k} {r[k]}" for k in fields if r.get(k) is not None]
+            note = r.get("note") if open_logs else None
+            if bits or note:
+                out.append(f"  - {r['day']}: {', '.join(bits)}" + (f" ({note})" if note else ""))
 
     r = hh.rules
     out.append(
