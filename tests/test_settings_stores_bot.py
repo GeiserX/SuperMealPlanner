@@ -777,13 +777,35 @@ def test_today_message_lists_each_meals_pills(data_dir, tmp_path):
     b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
     text = b.day_text(MONDAY)
     assert "💊 Luis: Vitamin D" in text  # his lunch pill, from the fixture
-    assert "Hierro" not in text  # Ana's iron is on waking, not with a meal
+    assert "Hierro" in text  # Ana's iron on waking is listed after the meals
 
 
-def test_binge_promise_only_with_the_pack(data_dir, tmp_path):
+def test_presentation_and_pills_keep_private_things_private(data_dir, tmp_path):
     data = bot_data(data_dir)
     b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
-    line = b.t("bot_about_binge_safe")
-    assert line in b.presentation()  # Luis has the pack in the fixture
-    data.household.person("luis").packs = []
-    assert line not in b.presentation()
+    assert "binge" not in b.presentation().lower()  # never hints who has binge protection
+    group = b.day_text(MONDAY)
+    assert "💊 Luis" in group and "💊 Ana" in group  # Ana's waking iron now listed too
+    private_ana = b.day_text(MONDAY, viewer="ana")
+    assert "💊 Ana" in private_ana and "💊 Luis" not in private_ana
+    data.settings.bot.group_open = True
+    assert "💊" not in b.day_text(MONDAY)
+    run(b.handle(None, msg("/hoy", chat=8, user=8)))  # Ana, privately
+    assert "💊 Luis" not in b.sent[-1][1]
+
+
+def test_reminder_labels_read_like_the_sent_message(data_dir, tmp_path):
+    from supermealplanner.model import Reminder
+
+    data = bot_data(data_dir)
+    data.settings.reminders = [
+        Reminder(id="a", text="💧 Agua, {names}!", at=["10:00"]),
+        Reminder(id="b", text="Mira https://x.example: ahora", at=["11:00"]),
+        Reminder(id="c", kind="meal", meal="dinner", at=["20:00"]),
+    ]
+    text = FakeBot(data, DB(tmp_path / "b.db"), MONDAY).presentation()
+    assert "Agua, Ana, Luis!" in text
+    assert "Mira https://x.example" in text
+    assert "dinner" in text.lower()
+    with pytest.raises(ValueError, match="never fire"):
+        Reminder(id="d", text="x", at=["10:00"], days=[])

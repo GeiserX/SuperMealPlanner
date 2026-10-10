@@ -255,6 +255,8 @@ class Reminder(Loose):
 
     @model_validator(mode="after")
     def _check(self) -> Reminder:
+        if self.days != "daily" and not self.days:
+            raise ValueError(f"reminder {self.id}: days is empty, it would never fire")
         for at in self.at:
             if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", at):
                 raise ValueError(f"reminder {self.id}: time {at!r} is not HH:MM")

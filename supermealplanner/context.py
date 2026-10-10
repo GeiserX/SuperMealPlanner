@@ -41,6 +41,11 @@ def build(
 
     out.append("\n## People")
     for p in hh.people:
+        if viewer is not None and p.id != viewer:  # a private chat: others by name only
+            out.append(
+                f"- {p.name} (id {p.id}): shares the meals; their health data is private here."
+            )
+            continue
         g = p.goal
         line = (
             f"- {p.name} (id {p.id}): {p.sex}, born {p.birth_year}, {p.height_cm:g} cm. "
