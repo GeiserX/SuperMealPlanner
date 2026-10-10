@@ -514,6 +514,7 @@ class Bot:
             tomorrow = plan.day(day + dt.timedelta(days=1))
             if (
                 tomorrow
+                and tomorrow.lunch in data.recipes
                 and (tomorrow.date - tomorrow.lunch_cook).days
                 > data.recipes[tomorrow.lunch].fridge_days
             ):
@@ -522,7 +523,11 @@ class Bot:
         if r.kind == "batch":
             for s in plan.sessions:
                 if s.date == day and not s.morning:
-                    dishes = ", ".join(data.recipes[x.recipe].name for x in s.dishes)
+                    dishes = ", ".join(
+                        data.recipes[x.recipe].name for x in s.dishes if x.recipe in data.recipes
+                    )
+                    if not dishes:  # every dish was deleted: nothing to remind about yet
+                        continue
                     return t(
                         "reminder_batch", dishes=dishes, url=self.url(f"/batch?d={day.isoformat()}")
                     )
