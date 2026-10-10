@@ -1,0 +1,24 @@
+language: "en-US"
+tone_instructions: "Be direct and concise. No fluff."
+
+reviews:
+  profile: "chill"
+  high_level_summary: true
+  collapse_walkthrough: true
+  poem: false
+  sequence_diagrams: false
+  suggested_reviewers: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!uv.lock"
+    - "!docs/images/**"
+  path_instructions:
+    - path: "supermealplanner/**"
+      instructions: |
+        This app handles health data. Flag anything that logs personal data, any change that could
+        cut food after a binge or change a medication dose, and any new hard-coded user-facing string
+        (strings belong in supermealplanner/locales).
+    - path: "supermealplanner/locales/**"
+      instructions: Every key in en.yaml must exist in every other locale file.
