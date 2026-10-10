@@ -526,6 +526,8 @@ class Bot:
                     dishes = ", ".join(
                         data.recipes[x.recipe].name for x in s.dishes if x.recipe in data.recipes
                     )
+                    if not dishes:  # every dish was deleted: nothing to remind about yet
+                        continue
                     return t(
                         "reminder_batch", dishes=dishes, url=self.url(f"/batch?d={day.isoformat()}")
                     )
