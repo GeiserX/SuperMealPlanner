@@ -316,3 +316,28 @@ def test_context_mentions_people_and_today(data_dir, tmp_path):
     data = bot_data(data_dir)
     text = build(data, DB(tmp_path / "c.db"), MONDAY)
     assert "Luis" in text and "Ana" in text and "Never change" in text
+
+
+def test_loose_flag_and_dates_in_catalogues(data_dir):
+    import datetime as _dt
+
+    from supermealplanner.stores import catalogs, pick
+
+    cat = dict(CATALOG, checked=_dt.date(2026, 10, 10))
+    cat["products"] = dict(CATALOG["products"])
+    cat["products"]["lechuga"] = [
+        {"name": "Jengibre", "pack": {"qty": 1000, "unit": "g"}, "price_eur": 8.25, "loose": True}
+    ]
+    write(data_dir, "stores/super.yaml", cat)
+    p = pick(catalogs(load(data_dir))["super"], "lechuga", 20, "g")
+    assert p.packs == 0.1 and p.cost == 0.83
+
+
+def test_check_reports_a_broken_catalogue(data_dir, capsys):
+    from supermealplanner.cli import main
+
+    write(data_dir, "stores/super.yaml", {"store": "super", "products": {"nope": []}})
+    assert main(["--data", str(data_dir), "check"]) == 2
+    assert "unknown ingredients" in capsys.readouterr().err
+    write(data_dir, "stores/super.yaml", CATALOG)
+    assert main(["--data", str(data_dir), "check"]) == 0

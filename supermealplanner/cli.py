@@ -39,9 +39,27 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if a.cmd == "check":
+        from .stores import catalogs
+
+        try:
+            cats = catalogs(data)
+        except Exception as e:  # noqa: BLE001  any broken catalogue is a data error
+            print(f"data error: store catalogue: {e}", file=sys.stderr)
+            return 2
+        unknown = [
+            f"{sid}:{iid}"
+            for sid, c in cats.items()
+            for iid in c.products
+            if iid not in data.ingredients
+        ]
+        if unknown:
+            print(
+                f"data error: catalogue entries for unknown ingredients: {unknown}", file=sys.stderr
+            )
+            return 2
         print(
             f"ok: {len(data.household.people)} people, {len(data.ingredients)} ingredients, "
-            f"{len(data.recipes)} recipes"
+            f"{len(data.recipes)} recipes, {len(cats)} store catalogues"
         )
         return 0
 
