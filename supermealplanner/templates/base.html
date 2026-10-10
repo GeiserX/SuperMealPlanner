@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f5d50">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="{{ t('app_short') }}">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon-180.png">
+<link rel="stylesheet" href="/static/app.css?v={{ version }}">
+<title>{% block title %}{{ t('app_name') }}{% endblock %}</title>
+</head>
+<body>
+<main>
+{% block main %}{% endblock %}
+</main>
+<nav class="tabs">
+  <a href="/" class="{{ 'on' if tab == 'today' }}">{{ t('tab_today') }}</a>
+  <a href="/week" class="{{ 'on' if tab == 'week' }}">{{ t('tab_week') }}</a>
+  <a href="/list" class="{{ 'on' if tab == 'list' }}">{{ t('tab_list') }}</a>
+  <a href="/batch" class="{{ 'on' if tab == 'batch' }}">{{ t('tab_batch') }}</a>
+  <a href="/log" class="{{ 'on' if tab == 'log' }}">{{ t('tab_log') }}</a>
+</nav>
+<script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
+</body>
+</html>

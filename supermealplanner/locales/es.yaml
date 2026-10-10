@@ -1,0 +1,143 @@
+# Spanish strings (keys from en.yaml).
+app_name: SuperMealPlanner
+app_short: Comidas
+days: [lunes, martes, miércoles, jueves, viernes, sábado, domingo]
+days_short: [lun, mar, mié, jue, vie, sáb, dom]
+months_short: [ene, feb, mar, abr, may, jun, jul, ago, sep, oct, nov, dic]
+date_long: "{weekday} {day} {month}"
+date_short: "{day} {month}"
+
+tab_today: Hoy
+tab_week: Semana
+tab_list: Lista
+tab_batch: Batch
+tab_log: Registro
+
+meal_breakfast: Desayuno
+meal_lunch: Comida
+meal_side: Ensalada
+meal_snack: Merienda
+meal_dinner: Cena
+
+no_plan_day: "No hay plan para este día todavía. Se genera solo cada hora; también con: supermealplanner plan --start <lunes> --write"
+no_plan_week: No hay plan para esta semana.
+calendar_busy: "Agenda: {events}"
+batch_today: "Hoy toca batch por la tarde."
+see_sheet: Ver hoja
+defrost_tonight: "Esta noche: pasa {dish} del congelador a la nevera."
+lunch_fresh: Recién hecho
+lunch_fridge: "De la nevera (cocinado el {date})"
+lunch_freezer: "Del congelador (cocinado el {date})"
+kcal_protein: "{kcal} / {kcal_target} kcal · {protein} / {protein_target} g proteína"
+days_since_injection: "Día {n} desde el pinchazo"
+protein_toppers: "Para llegar a la proteína: {items}"
+pills_waking: Al despertar
+pills_bedtime: Al acostarse
+
+week_of: "Semana del {date}"
+th_lunch: Comida
+th_dinner: Cena
+tag_batch: batch
+tag_busy: agenda
+no_plan_short: sin plan
+
+shopping_title: "Compra · semana del {date}"
+shopping_note: Para todos, ya ajustado a las raciones de cada uno. Los platos de batch se compran la semana en que se cocinan.
+shopping_store: "Ver como:"
+shopping_total: "Total estimado: {total}"
+shopping_alt: "o en {store}: {product}"
+shopping_no_product: sin producto asignado
+shopping_loose: a granel
+packs: "{n} × {name}"
+
+batch_title: "Batch · semana del {date}"
+batch_none: No hay sesiones de batch esta semana.
+batch_morning: por la mañana
+batch_afternoon: por la tarde
+batch_busy: "Ojo, la agenda tiene: {events}. No quedaba otra tarde libre."
+servings: "{n} raciones"
+th_container: Táper
+th_servings: Raciones
+th_where: Dónde
+storage_fresh: recién hecho
+storage_fridge: nevera
+storage_freezer: congelador
+defrost_on: "pasar a la nevera el {date}"
+batch_safety: Enfriar en recipientes bajos y meter en la nevera antes de 2 horas. Recalentar hasta que humee, una sola vez.
+
+recipe_minutes: "{n} min"
+recipe_batch: "batch, nevera {n} días"
+recipe_freezes: ", se congela"
+recipe_quick: rápida
+recipe_assemble: sin cocinar
+recipe_fixed: fija
+recipe_reference: "{kcal} kcal y {protein} g de proteína por ración de referencia"
+recipe_video: Ver cómo se prepara
+recipe_steps: Pasos
+
+log_title: Registro
+progress: Progreso
+who_are_you: Elige quién eres.
+saved: Guardado.
+field_day: Día
+field_weight: Peso (kg)
+field_weight_ph: semanal
+field_waist: Cintura (cm)
+field_waist_ph: mensual
+field_hunger: Hambre 0-10
+field_craving: Antojo 0-10
+field_nausea: Náusea 0-10
+field_water: Vasos de agua
+field_binge: ¿Atracón?
+field_stool: ¿Has ido al baño?
+field_pills_lunch: ¿Pastillas de la comida?
+field_note: Nota
+yes: sí
+no: "no"
+save: Guardar
+log_binge_note: Un atracón no cambia el menú de mañana. Se sigue comiendo normal.
+
+progress_target: "Objetivo: {kcal} kcal · {protein} g proteína · {mode}"
+progress_goal: "Meta {kg} kg"
+progress_band: " (banda {lo}-{hi})"
+progress_waist_goal: ", cintura por debajo de {cm} cm"
+progress_trend: "Tendencia {kg} kg"
+progress_rate: " · {rate} kg/semana"
+progress_last: "Últimas pesadas: {items}"
+progress_none: Sin pesadas todavía.
+progress_waist: "Cintura: {items}"
+mode_lose: bajando
+mode_maintain: mantenimiento
+mode_gain: subiendo
+flag_fast_loss: "Bajar {rate} kg por semana es demasiado rápido. Coméntalo con tu médico."
+flag_binges: "{n} atracones en 4 semanas. Es momento de hablar con tu médico o seguir la autoayuda guiada (NICE NG69). La app nunca recorta comida por un atracón."
+reason_fast_loss: "bajada rápida ({rate} kg/sem)"
+reason_slow_loss: "bajada lenta ({rate} kg/sem)"
+reason_maintain_down: "pierde peso en mantenimiento ({drift} kg)"
+reason_maintain_up: "sube en mantenimiento ({drift} kg)"
+reason_no_gain: "no sube"
+
+bot_help: |
+  /hoy, /manana: las comidas del día y el plato de cada uno
+  /semana: el menú de la semana
+  /lista: la lista de la compra de esta semana
+  /peso 82.4 · /cintura 95 · /antojo 7 · /agua: apuntar lo tuyo
+  /chatid: el id de este chat
+  Pregunta lo que quieras con tus palabras y te respondo con nuestro plan y datos.
+bot_unknown_person: "Todavía no sé quién eres. Añade tu id de Telegram en settings.yaml (bot.people). Tu id es {id}."
+bot_logged_weight: "Apuntado: {kg} kg para {name}."
+bot_logged_waist: "Apuntado: cintura {cm} cm para {name}."
+bot_logged_craving: "Apuntado: antojo {n}/10 para {name}."
+bot_logged_water: "💧 {name}: {n} vasos hoy."
+bot_bad_number: "Necesito un número, por ejemplo /peso 82.4"
+bot_no_llm: Solo respondo a los comandos; no hay IA configurada.
+bot_voice_failed: "No he podido transcribir esa nota de voz."
+bot_thinking: Pensando…
+bot_error: Algo ha fallado. Prueba otra vez en un minuto.
+bot_chat_id: "El id de este chat es {id}."
+reminder_defrost: "🧊 Esta noche: pasa {dish} del congelador a la nevera para la comida de mañana."
+reminder_batch: "🍲 Esta tarde toca batch: {dishes}. Hoja: {url}"
+reminder_meal: "🍽️ {meal} de hoy: {dish}. {where}\n{url}"
+reminder_shopping: "🛒 Hoy toca compra. Lista: {url}"
+reminder_pills_lunch: "💊 {name}, ¿te has tomado las pastillas de la comida? Responde /pastillas cuando lo hagas."
+bot_pills_logged: "Apuntado: pastillas de la comida tomadas, {name}."

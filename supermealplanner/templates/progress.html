@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="bar"><a href="/log">‹</a><h1>{{ t('progress') }}</h1><span></span></header>
+{% for row in rows %}
+<section class="meal">
+  <h2>{{ row.p.name }}</h2>
+  {% for key, params in row.status.flags %}<p class="note warn">{{ t(key, **params) }}</p>{% endfor %}
+  <p>{{ t('progress_target', kcal=row.status.kcal | int, protein=row.status.protein_g | int, mode=t('mode_' + row.status.mode)) }}</p>
+  {% if row.p.goal.target_kg %}<p class="sub">{{ t('progress_goal', kg=row.p.goal.target_kg) }}{% if row.p.goal.band_kg %}{{ t('progress_band', lo=row.p.goal.band_kg[0], hi=row.p.goal.band_kg[1]) }}{% endif %}{% if row.p.goal.waist_cm_max %}{{ t('progress_waist_goal', cm=row.p.goal.waist_cm_max) }}{% endif %}</p>{% endif %}
+  {% if row.status.trend_kg %}<p>{{ t('progress_trend', kg=row.status.trend_kg) }}{% if row.status.rate_kg_week is not none %}{{ t('progress_rate', rate='%+.2f' | format(row.status.rate_kg_week)) }}{% endif %}</p>{% endif %}
+  {{ row.spark | safe }}
+  {% if row.weights %}<p class="sub">{% set items %}{% for d, k in row.weights %}{{ t.date(d, False) }} {{ k }}{% if not loop.last %} · {% endif %}{% endfor %}{% endset %}{{ t('progress_last', items=items) }}</p>{% else %}<p class="empty">{{ t('progress_none') }}</p>{% endif %}
+  {% if row.waist %}<p class="sub">{% set items %}{% for d, c in row.waist %}{{ t.date(d, False) }} {{ c }} cm{% if not loop.last %} · {% endif %}{% endfor %}{% endset %}{{ t('progress_waist', items=items) }}</p>{% endif %}
+  {% for tg in row.targets %}<p class="sub">{{ t.date(tg.day, False) }}: {{ tg.kcal | int }} kcal ({{ reason_text(tg.reason) }})</p>{% endfor %}
+</section>
+{% endfor %}
+{% endblock %}

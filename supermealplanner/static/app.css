@@ -1,0 +1,52 @@
+:root { --bg:#f6f3ee; --fg:#1d2422; --mut:#5d6a66; --acc:#2f5d50; --card:#fff; --line:#e3ddd3; --warn:#9a3b2a; }
+@media (prefers-color-scheme: dark) { :root { --bg:#121615; --fg:#e8ebe9; --mut:#9aa6a2; --acc:#7fbfa8; --card:#1b201f; --line:#2b3331; --warn:#e08b77; } }
+* { box-sizing: border-box; }
+body { margin:0; font: 16px/1.45 -apple-system, system-ui, sans-serif; background:var(--bg); color:var(--fg); padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+main { max-width: 760px; margin: 0 auto; padding: 12px 14px; }
+a { color: var(--acc); text-decoration: none; }
+h1 { font-size: 1.15rem; margin: 0; text-align: center; flex: 1; }
+h2 { font-size: 1rem; margin: 0 0 4px; color: var(--mut); text-transform: uppercase; letter-spacing: .04em; }
+h3 { font-size: .95rem; margin: 8px 0 2px; }
+small, .sub { color: var(--mut); font-size: .85rem; }
+.bar { display:flex; align-items:center; gap:8px; padding: 6px 0 10px; position: sticky; top: 0; background: var(--bg); z-index: 1; }
+.bar > a, .bar > span { min-width: 44px; font-size: 1.6rem; text-align: center; }
+.bar > a:last-child { font-size: 1rem; }
+.meal, .totals, .shop, .steps { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 10px 0; }
+.dish { font-size: 1.1rem; font-weight: 600; display:block; }
+.people { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 420px) { .people { grid-template-columns: 1fr; } }
+.who ul { margin: 2px 0; padding-left: 18px; font-size: .9rem; }
+.pills { font-size: .85rem; background: color-mix(in srgb, var(--acc) 10%, transparent); padding: 4px 6px; border-radius: 6px; }
+.totals { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.note { background: var(--card); border-left: 4px solid var(--acc); padding: 8px 10px; border-radius: 6px; }
+.note.cold { border-color: #3b7bbf; } .note.warn { border-color: var(--warn); color: var(--warn); }
+.empty { color: var(--mut); text-align:center; padding: 20px; }
+.tag { display:inline-block; font-size:.7rem; padding:1px 6px; border-radius: 8px; background: var(--line); margin: 0 3px; }
+.tag.busy { background: color-mix(in srgb, var(--warn) 25%, transparent); }
+table { width: 100%; border-collapse: collapse; }
+.week td, .week th { border-bottom: 1px solid var(--line); padding: 8px 4px; vertical-align: top; text-align: left; font-size: .9rem; }
+.week th { white-space: nowrap; font-weight: 600; }
+.containers td, .containers th { font-size: .85rem; border-bottom: 1px solid var(--line); padding: 4px; text-align:left; }
+.check { list-style: none; padding: 0; margin: 0; }
+.check li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.check label { display: flex; gap: 8px; align-items: baseline; }
+.check label .name { flex: 1; }
+.check span.qty { color: var(--mut); text-align: right; white-space: nowrap; }
+.check input:checked + * , .check label:has(input:checked) { text-decoration: line-through; color: var(--mut); }
+.tabs { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+.tabs a { flex: 1; text-align: center; padding: 14px 0; color: var(--mut); font-size: .85rem; }
+.tabs a.on { color: var(--acc); font-weight: 600; }
+.whoami { display: flex; gap: 8px; justify-content: center; }
+.whoami a { padding: 6px 14px; border: 1px solid var(--line); border-radius: 18px; }
+.whoami a.on { background: var(--acc); color: var(--bg); }
+.log { display: grid; gap: 10px; }
+.log label { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.log input:not([type=radio]) { font-size: 16px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); width: 55%; }
+.log fieldset { border: 1px solid var(--line); border-radius: 8px; display: flex; gap: 18px; }
+.log button { font-size: 1rem; padding: 12px; border: 0; border-radius: 10px; background: var(--acc); color: var(--bg); font-weight: 600; }
+.spark { width: 100%; height: 60px; color: var(--acc); }
+.views { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: .9rem; }
+.views a { padding: 4px 10px; border: 1px solid var(--line); border-radius: 14px; }
+.views a.on { background: var(--acc); color: var(--bg); }
+.check .alt { color: var(--mut); }
+.check .name a { color: var(--fg); }

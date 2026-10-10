@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="bar">
+  <a href="/list?d={{ prev }}{% if store %}&store={{ store }}{% endif %}">‹</a>
+  <h1>{{ t('shopping_title', date=t.date(monday, False)) }}</h1>
+  <a href="/list?d={{ next }}{% if store %}&store={{ store }}{% endif %}">›</a>
+</header>
+{% if not shop %}<p class="empty">{{ t('no_plan_week') }}</p>{% else %}
+{% if shop.views | length > 1 %}
+<p class="views">{{ t('shopping_store') }}
+  <a class="{{ 'on' if not store }}" href="/list?d={{ monday }}">★</a>
+  {% for sid, label in shop.views %}<a class="{{ 'on' if store == sid }}" href="/list?d={{ monday }}&store={{ sid }}">{{ label }}</a>{% endfor %}
+</p>
+{% endif %}
+{% for sl in shop.stores %}
+<section class="shop">
+  <h2>{{ sl.name }}{% if sl.total %} <small>· {{ t('shopping_total', total=t.money(sl.total)) }}</small>{% endif %}</h2>
+  {% for section, lines in sl.sections.items() %}
+    <h3>{{ section_label(section) }}</h3>
+    <ul class="check">
+    {% for line in lines %}
+      <li><label><input type="checkbox" data-k="{{ monday }}:{{ line.ingredient.id }}">
+        <span class="name">{% if line.pick %}{% if line.pick.product.url %}<a href="{{ line.pick.product.url }}" target="_blank" rel="noopener">{{ line.pick.text(t) }}</a>{% else %}{{ line.pick.text(t) }}{% endif %}<br><small>{{ line.ingredient.name }} · {{ line.amount }}</small>{% else %}{{ line.ingredient.name }}{% endif %}
+        {% if line.alternative %}<br><small class="alt">{{ t('shopping_alt', store=shop.labels.get(line.alternative.store, line.alternative.store), product=line.alternative.text(t)) }}</small>{% endif %}</span>
+        {% if not line.pick %}<span class="qty">{{ line.amount }}</span>{% endif %}</label></li>
+    {% endfor %}
+    </ul>
+  {% endfor %}
+</section>
+{% endfor %}
+<p class="sub">{{ t('shopping_note') }}</p>
+{% endif %}
+<script>
+document.querySelectorAll('input[data-k]').forEach(function (b) {
+  b.checked = localStorage.getItem(b.dataset.k) === '1';
+  b.addEventListener('change', function () { localStorage.setItem(b.dataset.k, b.checked ? '1' : '0'); });
+});
+</script>
+{% endblock %}

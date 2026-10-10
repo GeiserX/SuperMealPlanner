@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="bar">
+  <a href="/week?d={{ prev }}">‹</a>
+  <h1>{{ t('week_of', date=t.date(monday, False)) }}</h1>
+  <a href="/week?d={{ next }}">›</a>
+</header>
+<table class="week">
+  <tr><th></th><th>{{ t('th_lunch') }}</th><th>{{ t('th_dinner') }}</th></tr>
+  {% for d, pd in rows %}
+  <tr>
+    <th><a href="/?d={{ d }}">{{ t.date(d) }}</a>
+      {% if plan %}{% for s in plan.sessions %}{% if s.date == d and not s.morning %}<span class="tag">{{ t('tag_batch') }}</span>{% endif %}{% endfor %}{% endif %}
+      {% if pd and pd.busy %}<span class="tag busy" title="{{ pd.busy | join(', ') }}">{{ t('tag_busy') }}</span>{% endif %}</th>
+    {% if pd %}
+      <td><a href="/recipe/{{ pd.lunch }}?d={{ d }}">{{ recipes[pd.lunch].name }}</a>{% if pd.side %}<br><small>+ {{ recipes[pd.side].name }}</small>{% endif %}</td>
+      <td><a href="/recipe/{{ pd.dinner }}?d={{ d }}">{{ recipes[pd.dinner].name }}</a></td>
+    {% else %}<td colspan="2" class="empty">{{ t('no_plan_short') }}</td>{% endif %}
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

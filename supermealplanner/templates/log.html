@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="bar"><span></span><h1>{{ t('log_title') }}</h1><a href="/progress">{{ t('progress') }}</a></header>
+<p class="whoami">
+{% for p in hh.people %}<a class="{{ 'on' if who == p.id }}" href="/who/{{ p.id }}">{{ p.name }}</a>{% endfor %}
+</p>
+{% if ok %}<p class="note">{{ t('saved') }}</p>{% endif %}
+{% if not who %}<p class="empty">{{ t('who_are_you') }}</p>{% else %}
+<form method="post" action="/log" class="log">
+  <input type="hidden" name="person" value="{{ who }}">
+  <label>{{ t('field_day') }} <input type="date" name="day" value="{{ day }}"></label>
+  <label>{{ t('field_weight') }} <input name="kg" inputmode="decimal" placeholder="{{ t('field_weight_ph') }}"></label>
+  <label>{{ t('field_waist') }} <input name="waist" inputmode="decimal" placeholder="{{ t('field_waist_ph') }}"></label>
+  {% for k in ['hunger', 'craving', 'nausea'] %}
+  <label>{{ t('field_' + k) }} <input name="{{ k }}" type="number" min="0" max="10" value="{{ today_row.get(k) if today_row.get(k) is not none else '' }}"></label>
+  {% endfor %}
+  <label>{{ t('field_water') }} <input name="water" type="number" min="0" max="40" value="{{ today_row.get('water') if today_row.get('water') is not none else '' }}"></label>
+  {% for k in ['binge', 'stool', 'pills_lunch'] %}
+  <fieldset><legend>{{ t('field_' + k) }}</legend>
+    <label><input type="radio" name="{{ k }}" value="1" {{ 'checked' if today_row.get(k) == 1 }}> {{ t('yes') }}</label>
+    <label><input type="radio" name="{{ k }}" value="0" {{ 'checked' if today_row.get(k) == 0 }}> {{ t('no') }}</label>
+  </fieldset>
+  {% endfor %}
+  <label>{{ t('field_note') }} <input name="note" value="{{ today_row.get('note') or '' }}"></label>
+  <button>{{ t('save') }}</button>
+</form>
+<p class="sub">{{ t('log_binge_note') }}</p>
+{% endif %}
+{% endblock %}

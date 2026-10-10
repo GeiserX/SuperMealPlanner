@@ -1,0 +1,144 @@
+# English strings. Every other locale file translates these keys; a missing key falls back to English.
+app_name: SuperMealPlanner
+app_short: Meals
+days: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+days_short: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]
+months_short: [Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec]
+date_long: "{weekday} {day} {month}"
+date_short: "{day} {month}"
+
+tab_today: Today
+tab_week: Week
+tab_list: List
+tab_batch: Batch
+tab_log: Log
+
+meal_breakfast: Breakfast
+meal_lunch: Lunch
+meal_side: Salad
+meal_snack: Snack
+meal_dinner: Dinner
+
+no_plan_day: "No plan for this day yet. The app makes one on its own every hour, or run: supermealplanner plan --start <monday> --write"
+no_plan_week: No plan for this week.
+calendar_busy: "Calendar: {events}"
+batch_today: "Batch cooking this afternoon."
+see_sheet: See the sheet
+defrost_tonight: "Tonight: move {dish} from the freezer to the fridge."
+lunch_fresh: Freshly made
+lunch_fridge: "From the fridge (cooked {date})"
+lunch_freezer: "From the freezer (cooked {date})"
+kcal_protein: "{kcal} / {kcal_target} kcal · {protein} / {protein_target} g protein"
+days_since_injection: "Day {n} since the injection"
+protein_toppers: "To reach your protein: {items}"
+pills_waking: On waking
+pills_bedtime: At bedtime
+
+week_of: "Week of {date}"
+th_lunch: Lunch
+th_dinner: Dinner
+tag_batch: batch
+tag_busy: calendar
+no_plan_short: no plan
+
+shopping_title: "Shopping · week of {date}"
+shopping_note: Summed for everyone's plates. Batch dishes are bought in the week they are cooked.
+shopping_store: "Show as:"
+shopping_total: "Estimated total: {total}"
+shopping_alt: "or at {store}: {product}"
+shopping_no_product: no product mapped
+shopping_loose: loose
+packs: "{n} × {name}"
+
+batch_title: "Batch · week of {date}"
+batch_none: No batch sessions this week.
+batch_morning: in the morning
+batch_afternoon: in the afternoon
+batch_busy: "Heads up, the calendar has: {events}. No other free afternoon was left."
+servings: "{n} servings"
+th_container: Container
+th_servings: Servings
+th_where: Where
+storage_fresh: freshly made
+storage_fridge: fridge
+storage_freezer: freezer
+defrost_on: "move to the fridge on {date}"
+batch_safety: Cool in shallow containers and refrigerate within 2 hours. Reheat until steaming, once.
+
+recipe_minutes: "{n} min"
+recipe_batch: "batch, fridge {n} days"
+recipe_freezes: ", freezes"
+recipe_quick: quick
+recipe_assemble: no cooking
+recipe_fixed: staple
+recipe_reference: "{kcal} kcal and {protein} g protein per reference serving"
+recipe_video: Watch how it is made
+recipe_steps: Steps
+
+log_title: Log
+progress: Progress
+who_are_you: Choose who you are.
+saved: Saved.
+field_day: Day
+field_weight: Weight (kg)
+field_weight_ph: weekly
+field_waist: Waist (cm)
+field_waist_ph: monthly
+field_hunger: Hunger 0-10
+field_craving: Craving 0-10
+field_nausea: Nausea 0-10
+field_water: Glasses of water
+field_binge: Binge?
+field_stool: Bowel movement?
+field_pills_lunch: Lunch pills taken?
+field_note: Note
+yes: "yes"
+no: "no"
+save: Save
+log_binge_note: A binge never changes tomorrow's menu. Keep eating normally.
+
+progress_target: "Target: {kcal} kcal · {protein} g protein · mode {mode}"
+progress_goal: "Goal {kg} kg"
+progress_band: " (band {lo}-{hi})"
+progress_waist_goal: ", waist under {cm} cm"
+progress_trend: "Trend {kg} kg"
+progress_rate: " · {rate} kg/week"
+progress_last: "Last weigh-ins: {items}"
+progress_none: No weigh-ins yet.
+progress_waist: "Waist: {items}"
+mode_lose: losing
+mode_maintain: maintaining
+mode_gain: gaining
+flag_fast_loss: "Losing {rate} kg a week is too fast. Talk to your doctor."
+flag_binges: "{n} binges in 4 weeks. Time to talk to your doctor or follow guided self-help (NICE NG69). The app never cuts food after a binge."
+reason_fast_loss: "losing fast ({rate} kg/week)"
+reason_slow_loss: "losing slowly ({rate} kg/week)"
+reason_maintain_down: "losing weight in maintenance ({drift} kg)"
+reason_maintain_up: "gaining in maintenance ({drift} kg)"
+reason_no_gain: "not gaining"
+
+# bot
+bot_help: |
+  /today, /tomorrow: the day's meals and each plate
+  /week: the week's menu
+  /list: this week's shopping list
+  /weight 82.4 · /waist 95 · /craving 7 · /water: log for yourself
+  /chatid: this chat's id
+  Ask anything else in plain words and I'll answer from our plan and data.
+bot_unknown_person: "I don't know who you are yet. Add your Telegram id to settings.yaml (bot.people). Your id is {id}."
+bot_logged_weight: "Saved: {kg} kg for {name}."
+bot_logged_waist: "Saved: waist {cm} cm for {name}."
+bot_logged_craving: "Saved: craving {n}/10 for {name}."
+bot_logged_water: "💧 {name}: {n} glasses today."
+bot_bad_number: "I need a number, like /weight 82.4"
+bot_no_llm: I can only answer the commands; no AI is configured.
+bot_voice_failed: "I couldn't transcribe that voice note."
+bot_thinking: Thinking…
+bot_error: Something went wrong. Try again in a minute.
+bot_chat_id: "This chat's id is {id}."
+reminder_defrost: "🧊 Tonight: move {dish} from the freezer to the fridge for tomorrow's lunch."
+reminder_batch: "🍲 Batch cooking this afternoon: {dishes}. Sheet: {url}"
+reminder_meal: "🍽️ {meal} today: {dish}. {where}\n{url}"
+reminder_shopping: "🛒 Shopping day. List: {url}"
+reminder_pills_lunch: "💊 {name}, have you taken the lunch pills? Reply /pills when done."
+bot_pills_logged: "Saved: lunch pills taken, {name}."
