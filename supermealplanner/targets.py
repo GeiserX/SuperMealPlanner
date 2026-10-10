@@ -1,13 +1,14 @@
 """Energy targets that follow the weight trend, with guard rails.
 
-The rules (research/README.md section 4, research/targets.md):
+The rules (docs/how-it-works.md, "Targets"):
 - Trend is an exponential moving average of weigh-ins, 10% per day (Hacker's Diet smoothing).
-- Calories move by one step at most, no more often than every `every_weeks`, and only with
-  at least 3 readings in that window. Protein never moves.
-- Never below the person's floor. Losing faster than 0.75 kg/week raises calories; faster than
+- Calories move by one step at most, no more often than every `every_weeks`, and only once the
+  readings cover most of that window (at least 3 of them). Protein never moves.
+- Never below the person's floor. Losing faster than goal.max_loss_kg_week adds food; faster than
   1.4 kg/week raises a doctor flag (rapid loss and gallstones).
-- Inside the goal band the mode becomes maintenance.
-- At steady weight in maintain mode: a drift down over 0.5 kg in the window raises calories.
+- Inside or below the goal band the mode is maintenance: nobody keeps losing past their goal.
+- With the binge-eating-safe pack, a window with any binge never cuts food.
+- Editing kcal.start in the household file resets the target to it.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ from .db import DB
 from .model import Household, Person
 
 ALPHA_PER_DAY = 0.1
-FAST_LOSS = 0.75  # kg/week: too fast, add food
 DOCTOR_LOSS = 1.4  # kg/week: tell a doctor
 SLOW_LOSS = 0.2  # kg/week: slower than this while losing, cut one step
 MAINTAIN_DRIFT = 0.5  # kg over the window
@@ -61,21 +61,45 @@ class Status:
 
 
 def current_kcal(db: DB, p: Person) -> float:
-    rows = db.targets(p.id)
-    return rows[-1]["kcal"] if rows else p.kcal.start
+    """The latest adjustment made since kcal.start was last set, else kcal.start; never below the floor.
+
+    Editing kcal.start in the household file resets the target: adjustments made before the edit
+    no longer count (sync_start records when the edit was seen).
+    """
+    base = db.baseline(p.id)
+    kcal = p.kcal.start
+    if base and base[0] == p.kcal.start:
+        rows = [r for r in db.targets(p.id) if r["day"] > base[1]]
+        if rows:
+            kcal = rows[-1]["kcal"]
+    elif base is None:
+        rows = db.targets(p.id)
+        if rows:
+            kcal = rows[-1]["kcal"]
+    return max(kcal, p.kcal.floor)
+
+
+def sync_start(db: DB, p: Person, today: dt.date) -> None:
+    """Remember the kcal.start in force, so a later edit of it is noticed and resets the target."""
+    base = db.baseline(p.id)
+    if base is None or base[0] != p.kcal.start:
+        db.set_baseline(p.id, p.kcal.start, today if base else dt.date.min)
 
 
 def _rate(tr: list[tuple[dt.date, float]], window_days: int, today: dt.date):
-    """kg/week over the window from the trend line, and the number of readings in it."""
+    """kg/week over the window from the trend line, the number of readings in it, and whether those
+    readings cover enough of the window to act on (three quarters of it; a young trend lags)."""
     since = today - dt.timedelta(days=window_days)
     pts = [(d, k) for d, k in tr if d >= since]
     if len(pts) < 2:
-        return None, len(pts)
+        return None, len(pts), False
     (d0, k0), (d1, k1) = pts[0], pts[-1]
     days = (d1 - d0).days
     if days < 7:
-        return None, len(pts)
-    return (k1 - k0) / days * 7, len(pts)
+        return None, len(pts), False
+    started_early = tr[0][0] <= today - dt.timedelta(days=window_days)
+    covered = days >= window_days * 0.75 and started_early
+    return (k1 - k0) / days * 7, len(pts), covered
 
 
 def evaluate(db: DB, hh: Household, p: Person, today: dt.date, apply: bool = False) -> Status:
@@ -85,34 +109,43 @@ def evaluate(db: DB, hh: Household, p: Person, today: dt.date, apply: bool = Fal
     if tr:
         st.trend_kg = tr[-1][1]
     window = p.kcal.every_weeks * 7
-    rate, n = _rate(tr, window, today)
+    rate, n, covered = _rate(tr, window, today)
     st.rate_kg_week = None if rate is None else round(rate, 2)
 
     mode = p.goal.mode
     band = p.goal.band_kg
-    if mode == "lose" and st.trend_kg is not None and band and band[0] <= st.trend_kg <= band[1]:
-        mode = "maintain"
+    if mode == "lose" and st.trend_kg is not None:
+        top = band[1] if band else p.goal.target_kg
+        if top is not None and st.trend_kg <= top:  # at or below the goal: stop losing
+            mode = "maintain"
     st.mode = mode
 
     if rate is not None and -rate >= DOCTOR_LOSS:
         st.flags.append(("flag_fast_loss", {"rate": f"{-rate:.1f}"}))
 
-    # binge-eating-safe pack: weekly binges over the window go to a professional, not to less food
+    # binge-eating-safe pack: binges go to a professional, never to less food
+    no_cuts = False
     if "binge-eating-safe" in p.packs:
-        since = today - dt.timedelta(days=28)
-        binges = sum(1 for r in db.daily(p.id, since) if r.get("binge"))
-        if binges >= 4:
-            st.flags.append(("flag_binges", {"n": binges}))
+        recent = sum(1 for r in db.daily(p.id, today - dt.timedelta(days=28)) if r.get("binge"))
+        if recent >= 4:
+            st.flags.append(("flag_binges", {"n": recent}))
+        in_window = sum(
+            1 for r in db.daily(p.id, today - dt.timedelta(days=window)) if r.get("binge")
+        )
+        no_cuts = in_window > 0
 
-    last = db.targets(p.id)
+    base = db.baseline(p.id)
+    last = [r for r in db.targets(p.id) if not base or r["day"] > base[1]]
     last_day = last[-1]["day"] if last else None
+    if base and base[1] != dt.date.min:  # an edited start counts as the latest change
+        last_day = max(last_day or base[1], base[1])
     due = last_day is None or (today - last_day).days >= window
-    if rate is None or n < 3 or not due:
+    if rate is None or n < 3 or not covered or not due:
         return st
 
     new, reason = kcal, None
     if mode == "lose":
-        if -rate > FAST_LOSS:
+        if -rate > p.goal.max_loss_kg_week:
             new, reason = kcal + p.kcal.step, ("reason_fast_loss", {"rate": f"{-rate:.2f}"})
         elif -rate < SLOW_LOSS:
             new, reason = kcal - p.kcal.step, ("reason_slow_loss", {"rate": f"{-rate:.2f}"})
@@ -125,6 +158,8 @@ def evaluate(db: DB, hh: Household, p: Person, today: dt.date, apply: bool = Fal
     elif mode == "gain" and rate < 0.1:
         new, reason = kcal + p.kcal.step, ("reason_no_gain", {})
 
+    if no_cuts and new < kcal:
+        new, reason = kcal, None
     new = max(new, p.kcal.floor)
     if reason and new != kcal:
         st.kcal = new

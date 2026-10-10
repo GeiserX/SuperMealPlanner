@@ -15,8 +15,9 @@ import os
 import subprocess
 
 from .calendar import busy_afternoons
-from .planner import generate, load_plan, plans_dir
-from .targets import evaluate
+from .model import DataError
+from .planner import PlanError, generate, load_plan, plans_dir, repair
+from .targets import evaluate, sync_start
 
 log = logging.getLogger("supermealplanner")
 
@@ -37,15 +38,43 @@ def pull(state) -> None:
         check=False,
     )
     if r.returncode != 0:
-        log.warning("git pull failed: %s", r.stderr.strip())
-    state.reload()
+        log.warning("git pull failed: %s", r.stderr.strip()[:300])
+    try:
+        state.reload()
+    except DataError as e:  # a broken push: keep serving the last good data
+        where = sorted(
+            {
+                line.split(":")[0]
+                for line in str(e).splitlines()
+                if line and not line.startswith(" ")
+            }
+        )
+        log.warning(
+            "data repo has errors in %s; keeping the previous version (run smp check)",
+            ", ".join(where[:10]),
+        )
 
 
 def ensure_plan(state, today: dt.date | None = None):
     data = state.data
     today = today or state.today()
     horizon = today + dt.timedelta(days=7)
-    plans = [load_plan(p) for p in sorted(plans_dir(data).glob("*.yaml"))]
+    paths = sorted(plans_dir(data).glob("*.yaml"))
+    plans = [load_plan(p) for p in paths]
+    # the data changed under the plans: repair the slots that must change, never redo a plan
+    for path, plan in zip(paths, plans, strict=True):
+        changed, cooked_bad = repair(data, plan, today)
+        if changed:
+            plan.save(path)
+            log.warning(
+                "plan %s: replaced %d slots that no longer fit the data", plan.start, changed
+            )
+        if cooked_bad:
+            log.warning(
+                "plan %s: %d lunches already cooked break a new household rule; check the fridge",
+                plan.start,
+                cooked_bad,
+            )
     if any(p.start <= horizon < p.end for p in plans):
         return None
     covering_today = [p for p in plans if p.start <= today < p.end]
@@ -59,9 +88,15 @@ def ensure_plan(state, today: dt.date | None = None):
     try:
         busy = busy_afternoons(data.household, start, end)
     except Exception as e:  # noqa: BLE001  a calendar outage must not stop the plan
-        log.warning("calendar unavailable, planning without it: %s", e)
+        from .bot import safe
+
+        log.warning("calendar unavailable, planning without it: %s", safe(e))
         busy = {}
-    plan = generate(data, start, 4, busy=busy, previous=prev)
+    try:
+        plan = generate(data, start, 4, busy=busy, previous=prev)
+    except PlanError as e:  # the data cannot make a plan: say so, keep the rest of the tick running
+        log.warning("cannot make the next plan: %s", str(e)[:500])
+        return None
     path = plans_dir(data) / f"{start.isoformat()}.yaml"
     plan.save(path)
     log.info("new plan %s", path)
@@ -73,6 +108,7 @@ def tick(state) -> None:
     ensure_plan(state)
     today = state.today()
     for p in state.data.household.people:
+        sync_start(state.db, p, today)
         st = evaluate(state.db, state.data.household, p, today, apply=True)
         if st.changed:
-            log.info("%s: %s kcal (%s)", p.id, st.kcal, st.changed)
+            log.info("%s: calorie target changed (%s)", p.id, st.changed[0])

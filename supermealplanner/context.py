@@ -22,7 +22,15 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
 """
 
 
-def build(data: Data, db: DB, today: dt.date) -> str:
+SENSITIVE = ("hunger", "craving", "nausea", "binge")
+
+
+def build(
+    data: Data, db: DB, today: dt.date, viewer: str | None = None, group: bool = False
+) -> str:
+    """The AI's context. viewer: in a private chat, the person asking; only their own pills, notes and
+    logs are included. group: in the household group, sensitive logs (binges, cravings, notes) stay
+    out unless bot.share_logs_in_group is set."""
     t = Translator(data.locale)
     hh = data.household
     out = [
@@ -41,11 +49,14 @@ def build(data: Data, db: DB, today: dt.date) -> str:
             + (f", band {g.band_kg[0]}-{g.band_kg[1]} kg" if g.band_kg else "")
             + f". Energy {current_kcal(db, p):.0f} kcal (floor {p.kcal.floor:.0f}), protein {p.protein_g.target:.0f} g."
         )
-        if p.glp1:
+        own = viewer is None or p.id == viewer
+        if p.glp1 and own:
             line += f" On {p.glp1.drug}, injects on {p.glp1.day}."
         if p.avoid_ingredients:
             line += f" Avoids: {', '.join(p.avoid_ingredients)}."
         out.append(line)
+        if viewer is not None and p.id != viewer:
+            continue  # someone else's health data stays out of a private chat
         for slot, pills in p.pills.items():
             if pills:
                 out.append(
@@ -53,21 +64,17 @@ def build(data: Data, db: DB, today: dt.date) -> str:
                 )
         for note in p.notes:
             out.append(f"  - note: {note}")
-        w = db.weights(p.id)[-4:]
+        share = not group or data.settings.bot.share_logs_in_group
+        w = db.weights(p.id)[-4:] if share else []
         if w:
             out.append("  - last weigh-ins: " + ", ".join(f"{d.isoformat()} {k} kg" for d, k in w))
-        logs = db.daily(p.id, today - dt.timedelta(days=7))
-        for r in logs:
-            bits = [
-                f"{k} {r[k]}"
-                for k in ("hunger", "craving", "nausea", "binge", "water", "pills_lunch")
-                if r.get(k) is not None
-            ]
-            if bits or r.get("note"):
-                out.append(
-                    f"  - {r['day']}: {', '.join(bits)}"
-                    + (f" ({r['note']})" if r.get("note") else "")
-                )
+        open_logs = not group or data.settings.bot.share_logs_in_group
+        fields = [*(SENSITIVE if open_logs else ()), "water", "pills_lunch"]
+        for r in db.daily(p.id, today - dt.timedelta(days=7)):
+            bits = [f"{k} {r[k]}" for k in fields if r.get(k) is not None]
+            note = r.get("note") if open_logs else None
+            if bits or note:
+                out.append(f"  - {r['day']}: {', '.join(bits)}" + (f" ({note})" if note else ""))
 
     try:
         from .calendar import upcoming_events
@@ -104,8 +111,12 @@ def build(data: Data, db: DB, today: dt.date) -> str:
         for i in range(7):
             d = plan.day(monday + dt.timedelta(days=i))
             if d:
-                side = f" + {data.recipes[d.side].name}" if d.side else ""
+                side = (
+                    f" + {data.recipes[d.side].name if d.side in data.recipes else '?'}"
+                    if d.side
+                    else ""
+                )
                 out.append(
-                    f"- {t.date(d.date)}: lunch {data.recipes[d.lunch].name}{side}; dinner {data.recipes[d.dinner].name}"
+                    f"- {t.date(d.date)}: lunch {data.recipes[d.lunch].name if d.lunch in data.recipes else '?'}{side}; dinner {data.recipes[d.dinner].name if d.dinner in data.recipes else '?'}"
                 )
     return "\n".join(x for x in out if x is not None)

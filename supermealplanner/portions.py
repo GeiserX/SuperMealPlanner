@@ -142,7 +142,7 @@ def person_days(data: Data, db: DB, plan: Plan, day: dt.date) -> list[PersonDay]
         )
         for meal in MEALS:
             rid = getattr(d, meal)
-            if rid:
+            if rid and rid in data.recipes:
                 pd.plates[meal] = plate(data, data.recipes[rid], f)
         short = p.protein_g.target - pd.protein
         for top in data.settings.toppers:
@@ -238,7 +238,7 @@ def needs(data: Data, db: DB, plan: Plan, monday: dt.date) -> dict[str, float]:
     """Ingredient quantities for the week, in each ingredient's unit."""
     need: dict[str, float] = {}
     for rid, n in servings_for_week(data, db, plan, monday).items():
-        for item in data.recipes[rid].ingredients:
+        for item in data.recipes[rid].ingredients if rid in data.recipes else []:
             need[item.id] = need.get(item.id, 0) + item.qty * n
     return need
 

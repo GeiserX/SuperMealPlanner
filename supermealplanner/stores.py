@@ -7,6 +7,7 @@ used only when there is nothing else.
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 import re
 from dataclasses import dataclass
@@ -14,9 +15,11 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-LOOSE = re.compile(r"granel|a peso|por kg|loose|by (the )?kg|by weight", re.IGNORECASE)
+LOOSE = re.compile(
+    r"granel|a peso|por kg|loose|by (the )?kg|by weight|per kg|by piece|por pieza", re.IGNORECASE
+)
 
 
 class Pack(BaseModel):
@@ -26,7 +29,7 @@ class Pack(BaseModel):
 
 
 class Product(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
     id: str = ""
     name: str
     pack: Pack
@@ -35,9 +38,12 @@ class Product(BaseModel):
     label: str | None = None
     clean: bool = True
     note: str = ""
+    sold_loose: bool | None = Field(default=None, alias="loose")  # priced per kg, bought by weight
 
     @property
     def loose(self) -> bool:
+        if self.sold_loose is not None:
+            return self.sold_loose
         return bool(LOOSE.search(self.note or ""))
 
 
@@ -46,7 +52,7 @@ class Catalog(BaseModel):
     store: str
     name: str = ""
     region: str | None = None
-    checked: str | None = None
+    checked: dt.date | str | None = None
     products: dict[str, list[Product]] = {}
 
     def best(self, ingredient_id: str) -> Product | None:

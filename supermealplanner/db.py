@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -29,6 +30,10 @@ CREATE TABLE IF NOT EXISTS sent (
 CREATE TABLE IF NOT EXISTS chat (
   id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL, ts TEXT NOT NULL,
   role TEXT NOT NULL, who TEXT, text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS baseline (
+  person TEXT PRIMARY KEY, kcal REAL NOT NULL, day TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS target (
   person TEXT NOT NULL, day TEXT NOT NULL, kcal REAL NOT NULL, reason TEXT NOT NULL,
@@ -138,6 +143,14 @@ class DB:
         ]
 
     # reminders: each (reminder, day, time) is sent once
+    def was_sent(self, reminder: str, day: dt.date, at: str) -> bool:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM sent WHERE reminder=? AND day=? AND at=?",
+                (reminder, day.isoformat(), at),
+            ).fetchone()
+        return row is not None
+
     def mark_sent(self, reminder: str, day: dt.date, at: str) -> bool:
         """Record a send; False when it was already sent."""
         with self.conn() as c:
@@ -178,3 +191,31 @@ class DB:
         n = ((rows[0].get("water") or 0) if rows and rows[0]["day"] == day.isoformat() else 0) + by
         self.set_daily(person, day, water=max(0, n))
         return max(0, n)
+
+    # the kcal.start a person's adjustments are based on
+    def baseline(self, person: str) -> tuple[float, dt.date] | None:
+        with self.conn() as c:
+            r = c.execute("SELECT kcal, day FROM baseline WHERE person=?", (person,)).fetchone()
+        return (r["kcal"], dt.date.fromisoformat(r["day"])) if r else None
+
+    def set_baseline(self, person: str, kcal: float, day: dt.date) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO baseline(person, kcal, day) VALUES (?,?,?) "
+                "ON CONFLICT(person) DO UPDATE SET kcal=excluded.kcal, day=excluded.day",
+                (person, kcal, day.isoformat()),
+            )
+
+    # small values the app learns at run time (e.g. a group's new id after an upgrade)
+    def get_kv(self, key: str):
+        with self.conn() as c:
+            r = c.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return json.loads(r["value"]) if r else None
+
+    def set_kv(self, key: str, value) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO kv(key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, json.dumps(value)),
+            )

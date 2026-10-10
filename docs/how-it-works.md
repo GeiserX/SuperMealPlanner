@@ -19,7 +19,9 @@ A recipe is written for one reference serving, what a person eating 2,000 kcal a
 
 ## Targets
 
-Weigh-ins are smoothed with a 10% daily moving average. Calories change by one step at most every four weeks, only with three readings in that window, and never below the person's floor. Losing faster than 0.75 kg a week adds food; faster than 1.4 kg a week shows a doctor flag. Inside the goal band the person switches to maintenance. With the `binge-eating-safe` pack, four binges in four weeks show a note to seek help, and nothing ever cuts food after a binge.
+Weigh-ins are smoothed with a 10% daily moving average. Calories change by one step at most every `kcal.every_weeks` (four by default), only once at least three readings cover most of that window, and never below the person's floor. Losing faster than `goal.max_loss_kg_week` (0.5 by default) adds food; faster than 1.4 kg a week shows a doctor flag. At or below the goal band the person switches to maintenance, so nobody keeps losing past their goal. With the `binge-eating-safe` pack, a window with any binge never cuts food, and four binges in four weeks show a note to seek help. Editing `kcal.start` resets the target to the new value.
+
+A plan is never redone when the data changes, because lunches may already be cooked. A slot whose recipe was deleted or renamed, or which now breaks an avoided ingredient or a dinner rule, gets a substitute of the same kind (same protein first, then the least used). A lunch already cooked stays as it is, and the log says so. Weekly minimums and repeat limits apply from the next plan.
 
 ## Shopping
 
@@ -27,11 +29,17 @@ The list adds up every plate of the week. Batch dishes are bought in the week th
 
 ## The bot
 
-The bot answers only the configured group and private chats with the people in `bot.people`.
+The bot answers private chats with the people in `bot.people`, and the configured group; in the group only those people unless `bot.group_open` is set.
 
 - Commands: `/today`, `/tomorrow`, `/week`, `/list`, `/weight 82.4`, `/waist 95`, `/craving 7`, `/water`, `/pills`, `/chatid` (Spanish aliases: `/hoy`, `/manana`, `/semana`, `/lista`, `/peso`, `/cintura`, `/antojo`, `/agua`, `/pastillas`).
 - The AI answers a group message that mentions the bot, replies to it, or contains one of `bot.wake_words`; with `bot.respond: all`, every message. Private chats always go to the AI.
 - Voice notes are transcribed with the configured `transcription` provider and always go to the AI.
 - Reminders fire once each, inside a 10-minute window after their time: plain messages, today's meal with its recipe link, batch days, shopping day, defrosting, and lunch pills not logged yet.
 
-The AI gets the household, today's and tomorrow's plates, the week and the last week of logs. It is told never to change a dose and never to suggest eating less after a binge.
+The AI gets the household, today's and tomorrow's plates, the week and the last week of logs. In a private chat it sees only the asker's own pills, notes, weigh-ins and logs. In the group it leaves out weigh-ins, binges, cravings, nausea and notes unless `bot.share_logs_in_group` is set. Group messages are kept as context only when the AI is asked (`bot.history_scope: all` keeps them all). It is told never to change a dose and never to suggest eating less after a binge.
+
+Everything the AI sees goes to the provider you configure. With a local model nothing leaves your network.
+
+## Other chat apps
+
+Telegram is the chat app that ships. The commands, reminders and AI answers do not depend on it: a WhatsApp, Signal or Matrix adapter only has to receive messages and voice notes and send text, and it can be added beside `bot.py` without changing the rest.

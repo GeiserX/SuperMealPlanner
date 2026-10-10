@@ -145,7 +145,7 @@ class FakeBot:
         async def send(client, chat_id, text, reply_to=None, record=True):
             b.sent.append((chat_id, text))
 
-        async def ask(client, chat_id, reply_to):
+        async def ask(client, chat_id, reply_to, asker=None):
             b.asked.append(chat_id)
 
         async def transcribe(client, voice):
@@ -316,3 +316,382 @@ def test_context_mentions_people_and_today(data_dir, tmp_path):
     data = bot_data(data_dir)
     text = build(data, DB(tmp_path / "c.db"), MONDAY)
     assert "Luis" in text and "Ana" in text and "Never change" in text
+
+
+def test_loose_flag_and_dates_in_catalogues(data_dir):
+    import datetime as _dt
+
+    from supermealplanner.stores import catalogs, pick
+
+    cat = dict(CATALOG, checked=_dt.date(2026, 10, 10))
+    cat["products"] = dict(CATALOG["products"])
+    cat["products"]["lechuga"] = [
+        {"name": "Jengibre", "pack": {"qty": 1000, "unit": "g"}, "price_eur": 8.25, "loose": True}
+    ]
+    write(data_dir, "stores/super.yaml", cat)
+    p = pick(catalogs(load(data_dir))["super"], "lechuga", 20, "g")
+    assert p.packs == 0.1 and p.cost == 0.83
+
+
+def test_check_reports_a_broken_catalogue(data_dir, capsys):
+    from supermealplanner.cli import main
+
+    write(data_dir, "stores/super.yaml", {"store": "super", "products": {"nope": []}})
+    assert main(["--data", str(data_dir), "check"]) == 2
+    assert "unknown ingredients" in capsys.readouterr().err
+    write(data_dir, "stores/super.yaml", CATALOG)
+    assert main(["--data", str(data_dir), "check"]) == 0
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_group_members_only_and_chatid_for_household(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = FakeBot(data, db, MONDAY)
+    run(b.handle(None, msg("/weight 70", user=999)))  # a guest in the household group
+    run(b.handle(None, msg("/chatid", chat=-5, user=999)))  # a stranger anywhere
+    assert b.sent == [] and db.recent_chat(-5, 5) == []
+    run(b.handle(None, msg("/chatid", chat=-5, user=7)))
+    assert "-5" in b.sent[-1][1] and db.recent_chat(-5, 5) == []
+
+
+def test_ai_context_privacy(data_dir, tmp_path):
+    from supermealplanner.context import build
+
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "c.db")
+    db.set_daily("ana", MONDAY, binge=1, note="secreto de Ana")
+    db.set_daily("luis", MONDAY, craving=9)
+    private_luis = build(data, db, MONDAY, viewer="luis")
+    assert "secreto de Ana" not in private_luis and "Vitamin D" in private_luis
+    assert "Hierro" not in private_luis  # Ana's pills
+    group = build(data, db, MONDAY, group=True)
+    assert "secreto de Ana" not in group and "binge 1" not in group and "craving 9" not in group
+    data.settings.bot.share_logs_in_group = True
+    assert "secreto de Ana" in build(data, db, MONDAY, group=True)
+
+
+def test_reminder_is_retried_when_the_send_fails(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = FakeBot(data, db, MONDAY)
+
+    async def failing(client, chat_id, text, reply_to=None, record=True):
+        raise RuntimeError("429")
+
+    import supermealplanner.bot as botmod
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2026, 10, 12, 10, 2, tzinfo=tz)
+
+    real = botmod.dt.datetime
+    botmod.dt.datetime = Clock
+    try:
+        b.send = failing
+        with pytest.raises(RuntimeError):
+            run(b.tick_reminders(None))
+        assert not db.was_sent("water", MONDAY, "10:00")
+        sent = []
+
+        async def ok(client, chat_id, text, reply_to=None, record=True):
+            sent.append(text)
+
+        b.send = ok
+        run(b.tick_reminders(None))
+        assert sent and db.was_sent("water", MONDAY, "10:00")
+    finally:
+        botmod.dt.datetime = real
+
+
+def test_bad_reminders_are_rejected_at_load(data_dir):
+    write(data_dir, "settings.yaml", {"reminders": [{"id": "x", "text": "hi", "at": ["8:3O"]}]})
+    with pytest.raises(DataError, match="not HH:MM"):
+        load(data_dir)
+    write(
+        data_dir,
+        "settings.yaml",
+        {"reminders": [{"id": "x", "text": "hi {nombre}", "at": ["08:30"]}]},
+    )
+    with pytest.raises(DataError, match="names"):
+        load(data_dir)
+
+
+def test_safe_never_shows_a_url():
+    import httpx
+
+    from supermealplanner.bot import safe
+
+    req = httpx.Request("GET", "https://api.telegram.org/file/bot123:SECRET/voice.ogg")
+    e = httpx.HTTPStatusError(
+        "boom https://api.telegram.org/file/bot123:SECRET",
+        request=req,
+        response=httpx.Response(404, request=req),
+    )
+    assert "SECRET" not in safe(e) and "404" in safe(e)
+    assert "SECRET" not in safe(httpx.ConnectError("fail https://x/bot123:SECRET"))
+
+
+def test_a_deleted_recipe_is_swapped_in_place(data_dir):
+    from supermealplanner.planner import plan_for
+    from supermealplanner.scheduler import ensure_plan
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    before = plan_for(data, MONDAY)
+    gone = before.days[2].lunch
+    (data_dir / "recipes" / f"{gone}.yaml").unlink()
+
+    class S:
+        def __init__(self):
+            self.data = load(data_dir)
+
+        def today(self):
+            return MONDAY + dt.timedelta(days=2)
+
+    s = S()
+    assert ensure_plan(s) is None  # no new plan, a patch
+    after = plan_for(s.data, MONDAY)
+    assert all(d.lunch != gone and d.dinner != gone for d in after.days)
+    for b, a in zip(before.days, after.days, strict=True):  # everything else is untouched
+        if b.lunch != gone:
+            assert a.lunch == b.lunch and a.lunch_cook == b.lunch_cook
+        if b.dinner != gone:
+            assert a.dinner == b.dinner
+    assert [s.date for s in after.sessions] == [s.date for s in before.sessions]
+
+
+def test_a_rule_change_never_rewrites_the_current_plan(data_dir):
+    from supermealplanner.planner import plan_for
+    from supermealplanner.scheduler import ensure_plan
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    before = plan_for(data, MONDAY).to_dict()
+    for p in (data_dir / "recipes").glob("legumbre-*.yaml"):
+        r = yaml.safe_load(p.read_text())
+        r["freezes"] = False
+        p.write_text(yaml.safe_dump(r))
+
+    class S:
+        data = load(data_dir)
+
+        def today(self):
+            return MONDAY + dt.timedelta(days=3)
+
+    assert ensure_plan(S()) is None
+    assert plan_for(S.data, MONDAY).to_dict() == before
+
+
+def test_an_impossible_plan_does_not_stop_the_target_checks(data_dir, tmp_path):
+    from supermealplanner.scheduler import tick
+    from supermealplanner.web import App
+
+    for p in (data_dir / "recipes").glob("*.yaml"):
+        if "dinner" in yaml.safe_load(p.read_text())["meals"]:
+            p.unlink()
+    app = App(data_dir)
+    tick(app)  # cannot plan (no dinners): logs it and carries on
+    assert app.db.baseline("luis") is not None
+
+
+def test_broken_data_push_keeps_the_last_good_data(data_dir, monkeypatch):
+    from supermealplanner.scheduler import pull
+    from supermealplanner.web import App
+
+    app = App(data_dir)
+    (data_dir / ".git").mkdir()
+    monkeypatch.setenv("SMP_GIT_PULL", "1")
+    (data_dir / "household.yaml").write_text("people: [")
+    pull(app)  # git fails (not a repo), reload fails: the old data stays
+    assert app.data.household.person("luis").name == "Luis"
+
+
+def test_web_rejects_cross_site_posts_redirects_and_bad_input(data_dir, data, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from supermealplanner.web import create_app
+
+    monkeypatch.setenv("SMP_SCHEDULER", "0")
+    monkeypatch.setenv("SMP_API_TOKEN", "secret")
+    with TestClient(create_app(data_dir)) as c:
+        form = {"person": "ana", "day": "2026-10-12", "kg": "58"}
+        assert (
+            c.post("/log", data=form, headers={"origin": "https://evil.example"}).status_code == 403
+        )
+        assert c.post("/log", data=form, headers={"origin": "http://testserver"}).status_code == 200
+        assert c.post("/log", data={**form, "kg": "500"}).status_code == 400
+        assert c.post("/log", data={**form, "craving": "abc"}).status_code == 400
+        r = c.get("/who/ana?back=//evil.example", follow_redirects=False)
+        assert r.headers["location"] == "/"
+        assert (
+            c.post(
+                "/api/weight", json={}, headers={"Authorization": "Bearer ñ".encode()}
+            ).status_code
+            == 401
+        )
+        assert (
+            c.post(
+                "/api/weight",
+                json={"person": "ana", "kg": "x"},
+                headers={"Authorization": "Bearer secret"},
+            ).status_code
+            == 400
+        )
+
+
+def test_restart_leaves_no_loop_behind(data_dir, tmp_path):
+    from supermealplanner.bot import Bot, TelegramError
+
+    data = bot_data(data_dir)
+    state = FakeState(data, DB(tmp_path / "b.db"), MONDAY)
+    b = Bot(state)
+    b.token = "x"
+    started = []
+
+    async def call(client, method, _tries=0, **params):
+        if method == "getUpdates":
+            raise TelegramError(method, "Unauthorized", 401)
+        return {"username": "chefbot"}
+
+    async def reminders(client):
+        started.append(asyncio.current_task())
+        await asyncio.Event().wait()  # never ends on its own: only a cancel stops it
+
+    b.call, b.reminders = call, reminders
+
+    async def go():
+        import supermealplanner.bot as botmod
+
+        real = botmod.asyncio.sleep
+        calls = {"n": 0}
+
+        async def fast(t):
+            calls["n"] += 1
+            if calls["n"] > 3:
+                raise asyncio.CancelledError
+            await real(0)
+
+        botmod.asyncio.sleep = fast
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await b.run()
+        finally:
+            botmod.asyncio.sleep = real
+        await real(0)
+        return [t for t in started if not t.done()]
+
+    assert run(go()) == []
+
+
+def test_group_messages_are_kept_only_when_the_ai_is_asked(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = FakeBot(data, db, MONDAY)
+    run(b.handle(None, msg("hablando de otra cosa")))
+    assert db.recent_chat(-100, 5) == []
+    data.settings.bot.history_scope = "all"
+    run(b.handle(None, msg("ahora sí se guarda")))
+    assert db.recent_chat(-100, 5)[-1]["text"] == "ahora sí se guarda"
+
+
+def test_private_chat_hides_other_peoples_glp1(data_dir, tmp_path):
+    from supermealplanner.context import build
+
+    data = bot_data(data_dir)
+    text = build(data, DB(tmp_path / "c.db"), MONDAY, viewer="ana")
+    assert "semaglutide" not in text
+    assert "semaglutide" in build(data, DB(tmp_path / "d.db"), MONDAY, viewer="luis")
+
+
+def test_group_upgrade_survives_a_restart(data_dir, tmp_path):
+    from supermealplanner.bot import Bot
+
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    db.set_kv("bot.migrated_chat", {"from": -100, "to": -1009})
+    assert Bot(FakeState(data, db, MONDAY)).chat_id == -1009
+    data.settings.bot.chat_id = -2002  # settings moved on: the old upgrade no longer applies
+    assert Bot(FakeState(data, db, MONDAY)).chat_id == -2002
+
+
+def test_a_new_allergy_reaches_the_plan_but_not_cooked_lunches(data_dir):
+    from supermealplanner.planner import plan_for, repair
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    hh = yaml.safe_load((data_dir / "household.yaml").read_text())
+    hh["people"][0]["avoid_ingredients"] = ["salmon"]  # Ana now avoids salmon
+    (data_dir / "household.yaml").write_text(yaml.safe_dump(hh))
+    data = load(data_dir)
+    plan = plan_for(data, MONDAY)
+    today = MONDAY + dt.timedelta(days=3)
+    salmon = {r.id for r in data.recipes.values() if any(i.id == "salmon" for i in r.ingredients)}
+    cooked_before = {(d.date, d.lunch) for d in plan.days if d.lunch_cook < today}
+    changed, cooked_bad = repair(data, plan, today)
+    assert changed > 0
+    for d in plan.days:
+        if d.date >= today:
+            assert d.dinner not in salmon
+            if d.lunch_cook >= today:
+                assert d.lunch not in salmon
+    assert {(d.date, d.lunch) for d in plan.days if d.lunch_cook < today} == cooked_before
+    assert repair(data, plan, today) == (0, cooked_bad)  # stable
+
+
+def test_substitutes_keep_the_protein_and_spread_out(data_dir):
+    from supermealplanner.planner import plan_for, repair
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    plan = plan_for(data, MONDAY)
+    dinners = [d.dinner for d in plan.days]
+    fish = [r for r in set(dinners) if data.recipes[r].protein == "fish"]
+    for r in fish:
+        (data_dir / "recipes" / f"{r}.yaml").unlink()
+    old = {d.date: d.dinner for d in plan.days}
+    data = load(data_dir)
+    repair(data, plan, MONDAY)
+    new = [d.dinner for d in plan.days if old[d.date] in fish]
+    assert new and all(n in data.recipes for n in new)
+    assert len(set(new)) > 1  # not every slot on one recipe
+
+
+def test_repair_respects_the_freezer_and_missing_sessions(data_dir):
+    from supermealplanner.planner import plan_for, repair
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    plan = plan_for(data, MONDAY)
+    plan.sessions = []  # a hand-edited plan with no session entries
+    victims = sorted({d.lunch for d in plan.days})[:2]
+    for r in victims:
+        (data_dir / "recipes" / f"{r}.yaml").unlink(missing_ok=True)
+    before = {}
+    for d in plan.days:
+        before.setdefault((d.lunch, d.lunch_cook), []).append(d.date)
+    data = load(data_dir)
+    repair(data, plan, MONDAY)
+    for d in plan.days:
+        r = data.recipes[d.lunch]
+        assert (d.date - d.lunch_cook).days <= r.fridge_days or r.freezes, d
+    for dates in before.values():  # a pot cooked once still feeds the same dish to all its days
+        assert len({plan.day(x).lunch for x in dates}) == 1
+
+
+def test_pages_survive_a_recipe_without_substitute(data_dir, data, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from supermealplanner.web import create_app
+
+    monkeypatch.setenv("SMP_SCHEDULER", "0")
+    plan = generate(data, MONDAY, 4)
+    plan.days[0].breakfast = "no-longer-exists"
+    plan.save(plans_dir(data) / f"{MONDAY}.yaml")
+    with TestClient(create_app(data_dir)) as c:
+        assert c.get(f"/?d={MONDAY}").status_code == 200
+        assert c.get(f"/week?d={MONDAY}").status_code == 200
+        assert c.get(f"/list?d={MONDAY}").status_code == 200

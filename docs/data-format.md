@@ -96,6 +96,11 @@ bot:
   chat_id: -1001234567890     # the household group; send /chatid in the group to get it
   people: {alex: 111111111, sam: 222222222}   # person id -> Telegram user id
   wake_words: [chef]          # the AI answers when a message names it, mentions the bot or replies to it
+  respond: mentions           # mentions | all: "all" sends every group message to the AI
+  voice: true                 # transcribe voice notes; they always go to the AI
+  group_open: false           # true: anyone in the group may use the bot, not only bot.people
+  share_logs_in_group: false  # true: the AI may discuss weigh-ins, binges, cravings and notes in the group
+  history_scope: asked        # asked | all: which group messages are kept as AI context
   history: 20
 llm:
   provider: openai            # none | openai | anthropic | plugin
@@ -103,6 +108,13 @@ llm:
   model: llama3.1
   api_key_env: LLM_API_KEY
   instructions: "Answer like a friendly home cook."
+  timeout_s: 600
+transcription:                # voice notes; optional
+  provider: openai            # none | openai (any /audio/transcriptions endpoint) | plugin
+  base_url: http://whisper:8000/v1
+  model: whisper-1
+  language: en
+  timeout_s: 600
 reminders:
   - {id: water, kind: message, text: "💧 Water, {names}!", at: ["11:00", "17:00"], people: [alex]}
   - {id: weigh-in, kind: message, text: "⚖️ Weekly weigh-in", at: ["08:30"], days: [monday]}
@@ -112,7 +124,7 @@ reminders:
   - {id: lunch-pills, kind: pills_lunch, at: ["16:00"]}
 ```
 
-Reminder kinds: `message` sends its text (`{names}` and `{today}` are filled in); `shopping` links the week's list; `batch` lists today's batch dishes, only on batch days; `defrost` fires only when tomorrow's lunch is in the freezer; `pills_lunch` asks each person with lunch pills who has not logged them yet.
+Reminder times are `HH:MM` in the household timezone; a bad time or an unknown `{placeholder}` is rejected when the data loads. Reminder kinds: `message` sends its text (`{names}` and `{today}` are filled in); `meal` sends today's `meal` (breakfast, lunch or dinner) with where it comes from and the recipe link; `shopping` links the week's list; `batch` lists today's batch dishes, only on batch days; `defrost` fires only when tomorrow's lunch is in the freezer; `pills_lunch` asks each person with lunch pills who has not logged them yet.
 
 The `plugin` provider loads a Python file from the data directory that defines `complete(system, messages, settings) -> str` (sync or async). Use it for any model or gateway the built-in providers do not cover.
 
