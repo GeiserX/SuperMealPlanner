@@ -281,7 +281,6 @@ class Bot(Loose):
     share_logs_in_group: bool = (
         False  # True: the AI may discuss binge, craving and note logs in the group
     )
-    answer_timeout_s: int = 900  # one message, AI included
     history_scope: Literal["asked", "all"] = "asked"  # which group messages are kept as AI context
 
 

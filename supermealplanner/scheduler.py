@@ -16,7 +16,7 @@ import subprocess
 
 from .calendar import busy_afternoons
 from .model import DataError
-from .planner import PlanError, generate, load_plan, patch_unknown, plans_dir
+from .planner import PlanError, generate, load_plan, plans_dir, repair
 from .targets import evaluate, sync_start
 
 log = logging.getLogger("supermealplanner")
@@ -61,12 +61,20 @@ def ensure_plan(state, today: dt.date | None = None):
     horizon = today + dt.timedelta(days=7)
     paths = sorted(plans_dir(data).glob("*.yaml"))
     plans = [load_plan(p) for p in paths]
-    for path, plan in zip(
-        paths, plans, strict=True
-    ):  # deleted or renamed recipes: patch, never redo
-        if plan.end > today and (n := patch_unknown(data, plan)):
+    # the data changed under the plans: repair the slots that must change, never redo a plan
+    for path, plan in zip(paths, plans, strict=True):
+        changed, cooked_bad = repair(data, plan, today)
+        if changed:
             plan.save(path)
-            log.warning("plan %s: replaced %d slots whose recipe no longer exists", plan.start, n)
+            log.warning(
+                "plan %s: replaced %d slots that no longer fit the data", plan.start, changed
+            )
+        if cooked_bad:
+            log.warning(
+                "plan %s: %d lunches already cooked break a new household rule; check the fridge",
+                plan.start,
+                cooked_bad,
+            )
     if any(p.start <= horizon < p.end for p in plans):
         return None
     covering_today = [p for p in plans if p.start <= today < p.end]

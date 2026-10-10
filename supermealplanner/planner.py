@@ -428,58 +428,103 @@ def unknown_recipes(data: Data, plan: Plan) -> set[str]:
     return {i for i in ids if i and i not in data.recipes}
 
 
-def patch_unknown(data: Data, plan: Plan) -> int:
-    """Swap each recipe that no longer exists for one of the same kind, touching nothing else.
+def _breaks_household(data: Data, rid: str, meal: str) -> bool:
+    """True when the recipe is gone, uses an avoided ingredient, or is avoided at dinner."""
+    r = data.recipes.get(rid)
+    if r is None:
+        return True
+    if any(i.id in data.household.avoided() for i in r.ingredients):
+        return True
+    if meal == "dinner":
+        flags = {f for i in r.ingredients for f in data.ingredients[i.id].flags}
+        for p in data.household.people:
+            if any(r.has(t) for t in p.avoid_tags_at_dinner) or flags & set(
+                p.avoid_flags_at_dinner
+            ):
+                return True
+    return False
 
-    A plan is not redone when the data changes: lunches may already be cooked and in the fridge. Only
-    a slot whose recipe was deleted or renamed gets a substitute. Returns how many slots changed.
+
+def repair(data: Data, plan: Plan, today: dt.date) -> int:
+    """Fix a plan in place after the data changed, touching only the slots that must change.
+
+    A plan is never redone, because lunches may already be cooked. A slot gets a substitute when its
+    recipe was deleted or renamed (any date, so old weeks still display), or, from today on, when it
+    now breaks the household's avoided ingredients or dinner rules. A lunch cooked before today stays
+    as it is (it is in the fridge); the caller is told about it. Returns (slots changed, cooked
+    lunches that now break a rule).
     """
-    gone = unknown_recipes(data, plan)
-    if not gone:
-        return 0
-    used = {getattr(d, m) for d in plan.days for m in ("lunch", "dinner")}
-
-    def pick(meal: str, kinds: set[str], month: int, freeze: bool = False, tag: str | None = None):
-        cands = sorted(
-            r.id
-            for r in data.recipes.values()
-            if r.kind in kinds
-            and _eligible(data, r, meal, month)
-            and (not freeze or r.freezes)
-            and (r.has(tag) if tag else not r.has("side"))
-        )
-        fresh = [c for c in cands if c not in used]
-        return (fresh or cands or [None])[0]
-
-    changed = 0
-    swap: dict[tuple[str, dt.date], str] = {}  # (old lunch id, cook date) -> substitute
-    for s in plan.sessions:
-        for x in s.dishes:
-            if x.recipe in gone:
-                gap = max((e - x.cook).days for e in x.eat)
-                new = pick("lunch", {"batch", "quick"}, x.cook.month, freeze=gap > 1)
-                if new:
-                    swap[(x.recipe, x.cook)] = new
-                    x.recipe = new
-                    used.add(new)
-                    changed += 1
+    uses: dict[str, int] = {}
+    last: dict[str, dt.date] = {}
     for d in plan.days:
-        if d.lunch in gone and (d.lunch, d.lunch_cook) in swap:
-            d.lunch = swap[(d.lunch, d.lunch_cook)]
+        for rid, when in ((d.dinner, d.date), (d.lunch, d.lunch_cook)):
+            uses[rid] = uses.get(rid, 0) + 1
+            last[rid] = max(last.get(rid, when), when)
+
+    def pick(meal, kinds, when, old=None, gap=0, tag=None):
+        want = None
+        if old in data.recipes:  # keep the protein of the dish it replaces
+            want = data.recipes[old].protein
+        cands = []
+        for r in data.recipes.values():
+            if r.kind not in kinds or not _eligible(data, r, meal, when.month):
+                continue
+            wants_side = tag == "side"
+            if r.has("side") != wants_side:  # side salads replace side salads only
+                continue
+            if meal == "lunch" and gap > r.fridge_days and not r.freezes:
+                continue
+            if meal in ("lunch", "dinner") and _breaks_household(data, r.id, meal):
+                continue
+            recent = r.id in last and abs((when - last[r.id]).days) < VARIETY_DAYS
+            cands.append((r.protein != want, recent, uses.get(r.id, 0), r.id))
+        if not cands:
+            return None
+        best = min(cands)[3]
+        uses[best] = uses.get(best, 0) + 1
+        last[best] = max(last.get(best, when), when)
+        return best
+
+    changed, cooked_bad = 0, 0
+    # lunches: one container group = (recipe, cook date), shared by its days and its session dish
+    groups: dict[tuple[str, dt.date], list[Day]] = {}
+    for d in plan.days:
+        groups.setdefault((d.lunch, d.lunch_cook), []).append(d)
+    for (rid, cook), days in groups.items():
+        gone = rid not in data.recipes
+        bad = gone or (cook >= today and _breaks_household(data, rid, "lunch"))
+        if not bad:
+            if cook < today and _breaks_household(data, rid, "lunch") and days[-1].date >= today:
+                cooked_bad += 1
+            continue
+        gap = max((d.date - cook).days for d in days)
+        new = pick("lunch", {"batch", "quick"}, cook, rid, gap)
+        if not new:
+            continue
+        for d in days:
+            d.lunch = new
+        for s in plan.sessions:
+            for x in s.dishes:
+                if x.recipe == rid and x.cook == cook:
+                    x.recipe = new
+        changed += 1
+    for d in plan.days:
         for meal, kinds, tag in (
             ("dinner", {"quick", "assemble"}, None),
             ("breakfast", {"fixed"}, None),
             ("snack", {"fixed"}, None),
             ("side", {"assemble"}, "side"),
-            ("lunch", {"batch", "quick"}, None),
         ):
-            if getattr(d, meal) in gone:
-                new = pick("lunch" if meal == "side" else meal, kinds, d.date.month, tag=tag)
+            rid = getattr(d, meal)
+            if not rid:
+                continue
+            gone = rid not in data.recipes
+            if gone or (d.date >= today and _breaks_household(data, rid, meal)):
+                new = pick("lunch" if meal == "side" else meal, kinds, d.date, rid, tag=tag)
                 if new:
                     setattr(d, meal, new)
-                    used.add(new)
                     changed += 1
-    return changed
+    return changed, cooked_bad
 
 
 # ---------------------------------------------------------------- validation

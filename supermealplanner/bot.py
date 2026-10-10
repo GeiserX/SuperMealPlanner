@@ -82,7 +82,8 @@ class Bot:
         self.token = os.environ.get(cfg.token_env, "")
         self.username = ""
         self.offset = 0
-        self.migrated_chat: int | None = state.db.get_kv("bot.migrated_chat")  # group upgraded
+        # a group Telegram upgraded to a supergroup: {"from": old id, "to": new id}
+        self.migration: dict | None = state.db.get_kv("bot.migrated_chat")
         self.ai = asyncio.Semaphore(1)  # one AI answer at a time, in arrival order
         self.tasks: set[asyncio.Task] = set()
 
@@ -143,7 +144,11 @@ class Bot:
 
     @property
     def chat_id(self) -> int | None:
-        return self.migrated_chat or self.data.settings.bot.chat_id
+        configured = self.data.settings.bot.chat_id
+        m = self.migration
+        if isinstance(m, dict) and configured == m.get("from"):
+            return m["to"]  # only while settings still name the old group
+        return configured
 
     def person_of(self, user_id: int) -> str | None:
         for pid, uid in self.data.settings.bot.people.items():
@@ -227,9 +232,9 @@ class Bot:
                 if not msg:
                     continue
                 if msg.get("migrate_to_chat_id") and msg["chat"]["id"] == self.chat_id:
-                    self.migrated_chat = msg["migrate_to_chat_id"]
-                    self.state.db.set_kv("bot.migrated_chat", self.migrated_chat)
-                    log.warning("the group became %s: set bot.chat_id to it", self.migrated_chat)
+                    self.migration = {"from": msg["chat"]["id"], "to": msg["migrate_to_chat_id"]}
+                    self.state.db.set_kv("bot.migrated_chat", self.migration)
+                    log.warning("the group became %s: set bot.chat_id to it", self.migration["to"])
                     continue
                 if msg.get("text") or msg.get("voice") or msg.get("audio"):
                     task = asyncio.create_task(self.guarded(client, msg))
@@ -237,10 +242,11 @@ class Bot:
                     task.add_done_callback(self.tasks.discard)
 
     async def guarded(self, client, msg: dict) -> None:
-        """One message, with a time limit, so a slow AI never blocks the next command."""
-        limit = self.data.settings.bot.answer_timeout_s
+        """One message in its own task, so a slow AI never blocks the next command."""
+        # no overall limit: the AI and transcription calls carry their own, and waiting in line
+        # for the one AI slot must not count against an answer
         try:
-            await asyncio.wait_for(self.handle(client, msg), timeout=limit)
+            await self.handle(client, msg)
         except Exception as e:  # noqa: BLE001
             log.warning("handling a message failed: %s", safe(e))
             try:
@@ -363,7 +369,7 @@ class Bot:
         lines = [t.date(day).capitalize()]
         for meal in MEAL_ORDER:
             rid = getattr(plan.day(day), meal)
-            if not rid:
+            if not rid or rid not in self.data.recipes:
                 continue
             lines.append(f"\n{t('meal_' + meal)}: {self.data.recipes[rid].name}")
             for pd in pds:
@@ -397,7 +403,7 @@ class Bot:
             d = plan.day(monday + dt.timedelta(days=i))
             if d:
                 lines.append(
-                    f"{t.raw('days_short')[i]}: {self.data.recipes[d.lunch].name} / {self.data.recipes[d.dinner].name}"
+                    f"{t.raw('days_short')[i]}: {self.data.recipes[d.lunch].name if d.lunch in self.data.recipes else '?'} / {self.data.recipes[d.dinner].name if d.dinner in self.data.recipes else '?'}"
                 )
         lines.append(self.url(f"/week?d={monday.isoformat()}"))
         return "\n".join(lines)
@@ -524,7 +530,7 @@ class Bot:
         if r.kind == "meal":
             d = plan.day(day)
             rid = getattr(d, r.meal) if d else None
-            if not rid:
+            if not rid or rid not in data.recipes:
                 return None
             rec = data.recipes[rid]
             where = ""

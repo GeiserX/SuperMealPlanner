@@ -14,7 +14,7 @@
 
   {% for meal in meals %}
     {% set rid = pday[meal] %}
-    {% if rid %}
+    {% if rid and rid in recipes %}
     <section class="meal">
       <h2>{{ t('meal_' + meal) }}{% if meal == 'lunch' %}<small> · {{ hh.lunch_time }}</small>{% endif %}</h2>
       <a class="dish" href="/recipe/{{ rid }}?d={{ day }}">{{ recipes[rid].name }}</a>

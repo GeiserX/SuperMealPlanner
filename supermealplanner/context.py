@@ -101,8 +101,12 @@ def build(
         for i in range(7):
             d = plan.day(monday + dt.timedelta(days=i))
             if d:
-                side = f" + {data.recipes[d.side].name}" if d.side else ""
+                side = (
+                    f" + {data.recipes[d.side].name if d.side in data.recipes else '?'}"
+                    if d.side
+                    else ""
+                )
                 out.append(
-                    f"- {t.date(d.date)}: lunch {data.recipes[d.lunch].name}{side}; dinner {data.recipes[d.dinner].name}"
+                    f"- {t.date(d.date)}: lunch {data.recipes[d.lunch].name if d.lunch in data.recipes else '?'}{side}; dinner {data.recipes[d.dinner].name if d.dinner in data.recipes else '?'}"
                 )
     return "\n".join(x for x in out if x is not None)

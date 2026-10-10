@@ -559,7 +559,7 @@ def test_restart_leaves_no_loop_behind(data_dir, tmp_path):
 
     async def reminders(client):
         started.append(asyncio.current_task())
-        await asyncio.sleep(3600)
+        await asyncio.Event().wait()  # never ends on its own: only a cancel stops it
 
     b.call, b.reminders = call, reminders
 
@@ -612,5 +612,86 @@ def test_group_upgrade_survives_a_restart(data_dir, tmp_path):
 
     data = bot_data(data_dir)
     db = DB(tmp_path / "b.db")
-    db.set_kv("bot.migrated_chat", -1009)
+    db.set_kv("bot.migrated_chat", {"from": -100, "to": -1009})
     assert Bot(FakeState(data, db, MONDAY)).chat_id == -1009
+    data.settings.bot.chat_id = -2002  # settings moved on: the old upgrade no longer applies
+    assert Bot(FakeState(data, db, MONDAY)).chat_id == -2002
+
+
+def test_a_new_allergy_reaches_the_plan_but_not_cooked_lunches(data_dir):
+    from supermealplanner.planner import plan_for, repair
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    hh = yaml.safe_load((data_dir / "household.yaml").read_text())
+    hh["people"][0]["avoid_ingredients"] = ["salmon"]  # Ana now avoids salmon
+    (data_dir / "household.yaml").write_text(yaml.safe_dump(hh))
+    data = load(data_dir)
+    plan = plan_for(data, MONDAY)
+    today = MONDAY + dt.timedelta(days=3)
+    salmon = {r.id for r in data.recipes.values() if any(i.id == "salmon" for i in r.ingredients)}
+    cooked_before = {(d.date, d.lunch) for d in plan.days if d.lunch_cook < today}
+    changed, cooked_bad = repair(data, plan, today)
+    assert changed > 0
+    for d in plan.days:
+        if d.date >= today:
+            assert d.dinner not in salmon
+            if d.lunch_cook >= today:
+                assert d.lunch not in salmon
+    assert {(d.date, d.lunch) for d in plan.days if d.lunch_cook < today} == cooked_before
+    assert repair(data, plan, today) == (0, cooked_bad)  # stable
+
+
+def test_substitutes_keep_the_protein_and_spread_out(data_dir):
+    from supermealplanner.planner import plan_for, repair
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    plan = plan_for(data, MONDAY)
+    dinners = [d.dinner for d in plan.days]
+    fish = [r for r in set(dinners) if data.recipes[r].protein == "fish"]
+    for r in fish:
+        (data_dir / "recipes" / f"{r}.yaml").unlink()
+    old = {d.date: d.dinner for d in plan.days}
+    data = load(data_dir)
+    repair(data, plan, MONDAY)
+    new = [d.dinner for d in plan.days if old[d.date] in fish]
+    assert new and all(n in data.recipes for n in new)
+    assert len(set(new)) > 1  # not every slot on one recipe
+
+
+def test_repair_respects_the_freezer_and_missing_sessions(data_dir):
+    from supermealplanner.planner import plan_for, repair
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    plan = plan_for(data, MONDAY)
+    plan.sessions = []  # a hand-edited plan with no session entries
+    victims = sorted({d.lunch for d in plan.days})[:2]
+    for r in victims:
+        (data_dir / "recipes" / f"{r}.yaml").unlink(missing_ok=True)
+    before = {}
+    for d in plan.days:
+        before.setdefault((d.lunch, d.lunch_cook), []).append(d.date)
+    data = load(data_dir)
+    repair(data, plan, MONDAY)
+    for d in plan.days:
+        r = data.recipes[d.lunch]
+        assert (d.date - d.lunch_cook).days <= r.fridge_days or r.freezes, d
+    for dates in before.values():  # a pot cooked once still feeds the same dish to all its days
+        assert len({plan.day(x).lunch for x in dates}) == 1
+
+
+def test_pages_survive_a_recipe_without_substitute(data_dir, data, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from supermealplanner.web import create_app
+
+    monkeypatch.setenv("SMP_SCHEDULER", "0")
+    plan = generate(data, MONDAY, 4)
+    plan.days[0].breakfast = "no-longer-exists"
+    plan.save(plans_dir(data) / f"{MONDAY}.yaml")
+    with TestClient(create_app(data_dir)) as c:
+        assert c.get(f"/?d={MONDAY}").status_code == 200
+        assert c.get(f"/week?d={MONDAY}").status_code == 200
+        assert c.get(f"/list?d={MONDAY}").status_code == 200
