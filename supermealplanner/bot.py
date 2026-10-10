@@ -21,6 +21,7 @@ import httpx
 
 from . import context, llm
 from .i18n import Translator
+from .model import WEEKDAYS
 from .planner import plan_for
 from .portions import MEAL_ORDER, person_days, shopping_list
 
@@ -71,6 +72,8 @@ COMMANDS = {
     "agua": "water",
     "pills": "pills",
     "pastillas": "pills",
+    "about": "about",
+    "presentacion": "about",
 }
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
 
@@ -162,7 +165,7 @@ class Bot:
         cfg = self.data.settings.bot
         member = user_id in cfg.people.values()
         if chat.get("type") == "private":
-            return member
+            return member and cfg.private_chats
         if self.chat_id is None or chat["id"] != self.chat_id:
             return False
         return member or cfg.group_open
@@ -186,6 +189,8 @@ class Bot:
                     )  # polling and a webhook exclude each other
                     me = await self.call(client, "getMe")
                     self.username = me.get("username", "")
+                    if self.data.settings.bot.sync_profile:
+                        await self.sync_profile(client)
                     log.warning("bot @%s up", self.username)
                     backoff = 5
                     loops = [
@@ -301,7 +306,7 @@ class Bot:
             cmd = cmd.split("@")[0].lower()
             handler = COMMANDS.get(cmd)
             if handler:
-                reply = await getattr(self, f"cmd_{handler}")(who, arg.strip(), user)
+                reply = await getattr(self, f"cmd_{handler}")(who, arg.strip(), user, chat)
                 await self.send(client, chat["id"], reply, msg["message_id"])
             return
         low = text.lower()
@@ -350,22 +355,129 @@ class Bot:
             answer = self.t("bot_error")
         await self.send(client, chat_id, answer, reply_to)
 
+    # ------------------------------------------------------------- profile
+    MENU = (
+        "today",
+        "tomorrow",
+        "week",
+        "list",
+        "weight",
+        "waist",
+        "craving",
+        "water",
+        "pills",
+        "about",
+        "help",
+    )
+
+    async def sync_profile(self, client) -> None:
+        """Command menu and descriptions in English (default) and in the household's language."""
+        for locale in dict.fromkeys(("en", self.data.locale)):
+            t = Translator(locale)
+            lang = {} if locale == "en" else {"language_code": locale}
+            names = t.raw("bot_commands") or {}
+            calls = (
+                (
+                    "setMyCommands",
+                    {
+                        "commands": [
+                            {"command": names.get(c, c), "description": t(f"bot_cmd_{c}")}
+                            for c in self.MENU
+                        ]
+                    },
+                ),
+                ("setMyShortDescription", {"short_description": t("bot_short")}),
+                ("setMyDescription", {"description": t("bot_about_intro")}),
+            )
+            for method, params in calls:  # each on its own: one failure never skips the rest
+                try:
+                    await self.call(client, method, **params, **lang)
+                except TelegramError as e:  # the profile is nice to have; never stop the bot
+                    log.warning("could not update the bot profile (%s %s): %s", locale, method, e)
+
     # ------------------------------------------------------------- commands
-    async def cmd_help(self, who, arg, user) -> str:
+    async def cmd_about(self, who, arg, user, chat=None) -> str:
+        return self.presentation()
+
+    def presentation(self) -> str:
+        """Everything the bot does for this household, from the real settings."""
+        t, data = self.t, self.data
+        cfg = data.settings
+        menu = t("bot_about_menu")
+        if data.household.calendar.ics_env:
+            menu += " " + t("bot_about_calendar")
+        lines = [
+            t("bot_about_title"),
+            "",
+            menu,
+            "",
+            t("bot_about_daily"),
+            "",
+            t("bot_about_list"),
+        ]
+        reminders = [r for r in cfg.reminders if r.enabled]
+        if reminders:
+            lines += ["", t("bot_about_reminders")]
+            for r in reminders:
+                days = (
+                    t("bot_about_daily_days")
+                    if r.days == "daily"
+                    else ", ".join(t.raw("days")[WEEKDAYS.index(d)] for d in r.days)
+                )
+                who = ", ".join(data.household.person(p).name for p in r.people) if r.people else ""
+                everyone = who or ", ".join(p.name for p in data.household.people)
+                if r.kind == "message":  # the text as it will be sent, up to its first ": "
+                    sent = r.text.format(names=everyone, today=t.date(self.state.today()))
+                    label = sent.split(": ")[0] if ": " in sent else sent
+                elif r.kind == "meal":
+                    label = t("bot_about_kind_meal", meal=t(f"meal_{r.meal}").lower())
+                else:
+                    label = t(f"bot_about_kind_{r.kind}")
+                key = (
+                    "bot_about_reminder_for"
+                    if who and r.kind != "message"
+                    else "bot_about_reminder"
+                )
+                lines.append(
+                    t(key, label=label.strip(), times=", ".join(r.at), days=days, people=who)
+                )
+        lines += ["", t("bot_about_log"), "", t("bot_about_ask")]
+        if cfg.bot.voice and cfg.transcription.provider != "none":
+            lines.append(t("bot_about_voice"))
+        if cfg.bot.wake_words:
+            lines.append(
+                t("bot_about_names", names=", ".join(f"«{w}»" for w in cfg.bot.wake_words))
+            )
+        if cfg.llm.provider == "none":
+            lines.append(t("bot_no_llm"))
+        if cfg.bot.private_chats:
+            lines += ["", t("bot_about_private")]
+        if cfg.base_url:
+            lines += ["", cfg.base_url]
+        return "\n".join(lines)
+
+    async def cmd_help(self, who, arg, user, chat=None) -> str:
         return self.t("bot_help")
 
-    async def cmd_today(self, who, arg, user) -> str:
-        return self.day_text(self.state.today())
+    async def cmd_today(self, who, arg, user, chat=None) -> str:
+        return self.day_text(self.state.today(), self._viewer(who, chat))
 
-    async def cmd_tomorrow(self, who, arg, user) -> str:
-        return self.day_text(self.state.today() + dt.timedelta(days=1))
+    async def cmd_tomorrow(self, who, arg, user, chat=None) -> str:
+        return self.day_text(self.state.today() + dt.timedelta(days=1), self._viewer(who, chat))
 
-    def day_text(self, day: dt.date) -> str:
+    @staticmethod
+    def _viewer(who, chat) -> str | None:
+        """In a private chat, the person writing: only their own pills are shown."""
+        return who if chat and chat.get("type") == "private" else None
+
+    def day_text(self, day: dt.date, viewer: str | None = None) -> str:
         t = self.t
         plan = plan_for(self.data, day)
         if not plan or not plan.day(day):
             return t("no_plan_day")
         pds = person_days(self.data, self.state.db, plan, day)
+        # pills are household data: never for people outside it (bot.group_open)
+        show_pills = not self.data.settings.bot.group_open
         lines = [t.date(day).capitalize()]
         for meal in MEAL_ORDER:
             rid = getattr(plan.day(day), meal)
@@ -376,6 +488,18 @@ class Bot:
                 pl = pd.plates.get(meal)
                 if pl:
                     lines.append(f"  {pd.name}: " + "; ".join(pl.lines))
+                pills = pd.pills.get(meal) if meal in ("breakfast", "lunch", "dinner") else None
+                if pills and show_pills and viewer in (None, pd.person_id):
+                    names = " · ".join(f"{x.name} {x.dose}".strip() for x in pills)
+                    lines.append(f"  💊 {pd.name}: {names}")
+        if show_pills:  # pills that go with no meal
+            for pd in pds:
+                if viewer not in (None, pd.person_id):
+                    continue
+                for slot in ("waking", "bedtime"):
+                    if pd.pills.get(slot):
+                        names = " · ".join(f"{x.name} {x.dose}".strip() for x in pd.pills[slot])
+                        lines.append(f"💊 {pd.name}, {t('pills_' + slot).lower()}: {names}")
         lines.append("")
         for pd in pds:
             lines.append(
@@ -391,7 +515,7 @@ class Bot:
         lines.append(self.url(f"/?d={day.isoformat()}"))
         return "\n".join(lines)
 
-    async def cmd_week(self, who, arg, user) -> str:
+    async def cmd_week(self, who, arg, user, chat=None) -> str:
         t = self.t
         today = self.state.today()
         monday = today - dt.timedelta(days=today.weekday())
@@ -408,7 +532,7 @@ class Bot:
         lines.append(self.url(f"/week?d={monday.isoformat()}"))
         return "\n".join(lines)
 
-    async def cmd_list(self, who, arg, user) -> str:
+    async def cmd_list(self, who, arg, user, chat=None) -> str:
         t = self.t
         today = self.state.today()
         monday = today - dt.timedelta(days=today.weekday())
@@ -435,7 +559,7 @@ class Bot:
         m = NUMBER.search(arg)
         return float(m.group(1).replace(",", ".")) if m else None
 
-    async def cmd_weight(self, who, arg, user) -> str:
+    async def cmd_weight(self, who, arg, user, chat=None) -> str:
         if err := self._need_person(who, user):
             return err
         kg = self._number(arg)
@@ -447,7 +571,7 @@ class Bot:
             return self.t("bot_bad_number")
         return self.t("bot_logged_weight", kg=kg, name=self.data.household.person(who).name)
 
-    async def cmd_waist(self, who, arg, user) -> str:
+    async def cmd_waist(self, who, arg, user, chat=None) -> str:
         if err := self._need_person(who, user):
             return err
         cm = self._number(arg)
@@ -459,7 +583,7 @@ class Bot:
             return self.t("bot_bad_number")
         return self.t("bot_logged_waist", cm=cm, name=self.data.household.person(who).name)
 
-    async def cmd_craving(self, who, arg, user) -> str:
+    async def cmd_craving(self, who, arg, user, chat=None) -> str:
         if err := self._need_person(who, user):
             return err
         n = self._number(arg)
@@ -469,13 +593,13 @@ class Bot:
         self.state.db.set_daily(who, self.state.today(), craving=n)
         return self.t("bot_logged_craving", n=n, name=self.data.household.person(who).name)
 
-    async def cmd_water(self, who, arg, user) -> str:
+    async def cmd_water(self, who, arg, user, chat=None) -> str:
         if err := self._need_person(who, user):
             return err
         n = self.state.db.bump_water(who, self.state.today(), int(self._number(arg) or 1))
         return self.t("bot_logged_water", n=n, name=self.data.household.person(who).name)
 
-    async def cmd_pills(self, who, arg, user) -> str:
+    async def cmd_pills(self, who, arg, user, chat=None) -> str:
         if err := self._need_person(who, user):
             return err
         self.state.db.set_daily(who, self.state.today(), pills_lunch=1)

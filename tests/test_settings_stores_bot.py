@@ -728,3 +728,84 @@ def test_no_batch_reminder_when_every_dish_was_deleted(data_dir, tmp_path):
             x.recipe = "deleted-dish"
     plan.save(plans_dir(data) / f"{MONDAY}.yaml")
     assert b.reminder_text(r, day) is None
+
+
+def test_presentation_lists_the_real_reminders(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    text = run(b.cmd_about("luis", "", {"id": 7}))
+    assert "10:00" in text and "08:30" in text and "16:00" in text
+    assert "https://meals.example" in text
+    run(b.handle(None, msg("/presentacion")))
+    assert b.sent[-1][1] == text
+
+
+def test_private_chats_can_be_switched_off(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    run(b.handle(None, msg("/hoy", chat=7, user=7)))
+    assert len(b.sent) == 1
+    data.settings.bot.private_chats = False
+    run(b.handle(None, msg("/hoy", chat=7, user=7)))
+    assert len(b.sent) == 1
+    assert "🔒" not in b.presentation()
+
+
+def test_profile_sync_sets_menus_in_both_languages(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    data.settings.locale = "es"
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    calls = []
+
+    async def call(client, method, _tries=0, **params):
+        calls.append((method, params))
+        return True
+
+    b.call = call
+    run(b.sync_profile(None))
+    menus = {
+        p.get("language_code", "en"): [c["command"] for c in p["commands"]]
+        for m, p in calls
+        if m == "setMyCommands"
+    }
+    assert menus["en"][0] == "today" and menus["es"][0] == "hoy" and "presentacion" in menus["es"]
+    assert {m for m, _ in calls} == {"setMyCommands", "setMyShortDescription", "setMyDescription"}
+
+
+def test_today_message_lists_each_meals_pills(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    text = b.day_text(MONDAY)
+    assert "💊 Luis: Vitamin D" in text  # his lunch pill, from the fixture
+    assert "Hierro" in text  # Ana's iron on waking is listed after the meals
+
+
+def test_presentation_and_pills_keep_private_things_private(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    assert "binge" not in b.presentation().lower()  # never hints who has binge protection
+    group = b.day_text(MONDAY)
+    assert "💊 Luis" in group and "💊 Ana" in group  # Ana's waking iron now listed too
+    private_ana = b.day_text(MONDAY, viewer="ana")
+    assert "💊 Ana" in private_ana and "💊 Luis" not in private_ana
+    data.settings.bot.group_open = True
+    assert "💊" not in b.day_text(MONDAY)
+    run(b.handle(None, msg("/hoy", chat=8, user=8)))  # Ana, privately
+    assert "💊 Luis" not in b.sent[-1][1]
+
+
+def test_reminder_labels_read_like_the_sent_message(data_dir, tmp_path):
+    from supermealplanner.model import Reminder
+
+    data = bot_data(data_dir)
+    data.settings.reminders = [
+        Reminder(id="a", text="💧 Agua, {names}!", at=["10:00"]),
+        Reminder(id="b", text="Mira https://x.example: ahora", at=["11:00"]),
+        Reminder(id="c", kind="meal", meal="dinner", at=["20:00"]),
+    ]
+    text = FakeBot(data, DB(tmp_path / "b.db"), MONDAY).presentation()
+    assert "Agua, Ana, Luis!" in text
+    assert "Mira https://x.example" in text
+    assert "dinner" in text.lower()
+    with pytest.raises(ValueError, match="never fire"):
+        Reminder(id="d", text="x", at=["10:00"], days=[])

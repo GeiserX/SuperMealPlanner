@@ -255,6 +255,8 @@ class Reminder(Loose):
 
     @model_validator(mode="after")
     def _check(self) -> Reminder:
+        if self.days != "daily" and not self.days:
+            raise ValueError(f"reminder {self.id}: days is empty, it would never fire")
         for at in self.at:
             if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", at):
                 raise ValueError(f"reminder {self.id}: time {at!r} is not HH:MM")
@@ -277,7 +279,9 @@ class Bot(Loose):
     wake_words: list[str] = []  # the AI answers a group message that contains one of these words
     respond: Literal["mentions", "all"] = "mentions"  # "all": every group message goes to the AI
     voice: bool = True  # transcribe voice notes and always hand them to the AI
+    private_chats: bool = True  # people in bot.people may also talk to the bot privately
     group_open: bool = False  # True: anyone in the group may use the bot, not only bot.people
+    sync_profile: bool = True  # at start, set the bot's command menu and descriptions in Telegram
     share_logs_in_group: bool = (
         False  # True: the AI may discuss binge, craving and note logs in the group
     )
