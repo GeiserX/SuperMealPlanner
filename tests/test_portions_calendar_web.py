@@ -133,3 +133,19 @@ def test_plural_kitchen_units():
     assert plural("clove of garlic", 3, "en") == "cloves of garlic"
     assert plural("berry", 2, "en") == "berries"
     assert plural("leaf", 2, "en", explicit="leaves") == "leaves"
+
+
+def test_upcoming_events_for_the_ai(data, tmp_path, monkeypatch):
+    from supermealplanner.calendar import upcoming_events
+    from supermealplanner.context import build
+    from supermealplanner.db import DB
+
+    ics = tmp_path / "cal.ics"
+    ics.write_text(ICS)
+    monkeypatch.setenv("CALENDAR_ICS_URL", str(ics))
+    data.household.calendar.ics_env = "CALENDAR_ICS_URL"
+    ev = upcoming_events(data.household, MONDAY, 7)
+    titles = [t for _, t in ev]
+    assert "Reunión" in titles and "Festivo" in titles and titles.count("Clase semanal") == 1
+    assert "2026-10-13 Tue 17:00" in [w for w, _ in ev]
+    assert "Reunión" in build(data, DB(tmp_path / "c.db"), MONDAY)

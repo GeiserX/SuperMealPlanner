@@ -47,15 +47,42 @@ def busy_afternoons_from_ics(
     return out
 
 
-def busy_afternoons(hh: Household, start: dt.date, end: dt.date) -> dict[dt.date, list[str]]:
+def events_from_ics(
+    ics: bytes | str, start: dt.date, end: dt.date, hh: Household
+) -> list[tuple[str, str]]:
+    """(when, title) for every event in [start, end), in the household's timezone, sorted."""
+    tz = ZoneInfo(hh.timezone)
+    cal = icalendar.Calendar.from_ical(ics)
+    out = []
+    for ev in recurring_ical_events.of(cal).between(start, end):
+        s = ev.get("DTSTART").dt
+        if isinstance(s, dt.datetime):
+            s = s.astimezone(tz) if s.tzinfo else s.replace(tzinfo=tz)
+            when = s.strftime("%Y-%m-%d %a %H:%M")
+        else:
+            when = s.strftime("%Y-%m-%d %a (all day)")
+        out.append((when, str(ev.get("SUMMARY", "event"))))
+    return sorted(out)
+
+
+def _fetch(hh: Household) -> bytes | None:
     env = hh.calendar.ics_env
     url = os.environ.get(env, "") if env else ""
     if not url:
-        return {}
+        return None
     if url.startswith(("/", "file://")):  # an exported .ics file
-        return busy_afternoons_from_ics(
-            Path(url.removeprefix("file://")).read_bytes(), start, end, hh
-        )
+        return Path(url.removeprefix("file://")).read_bytes()
     r = httpx.get(url, timeout=30, follow_redirects=True)
     r.raise_for_status()
-    return busy_afternoons_from_ics(r.content, start, end, hh)
+    return r.content
+
+
+def upcoming_events(hh: Household, start: dt.date, days: int = 7) -> list[tuple[str, str]]:
+    """The calendar's next events, for the AI's context. Empty without a calendar."""
+    ics = _fetch(hh)
+    return events_from_ics(ics, start, start + dt.timedelta(days=days), hh) if ics else []
+
+
+def busy_afternoons(hh: Household, start: dt.date, end: dt.date) -> dict[dt.date, list[str]]:
+    ics = _fetch(hh)
+    return busy_afternoons_from_ics(ics, start, end, hh) if ics else {}

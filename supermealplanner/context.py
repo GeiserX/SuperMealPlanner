@@ -69,6 +69,16 @@ def build(data: Data, db: DB, today: dt.date) -> str:
                     + (f" ({r['note']})" if r.get("note") else "")
                 )
 
+    try:
+        from .calendar import upcoming_events
+
+        events = upcoming_events(hh, today, 7)
+    except Exception:  # noqa: BLE001  a calendar outage must not stop the answer
+        events = []
+    if events:
+        out.append("\n## Calendar, next 7 days (guests, meals out, busy afternoons)")
+        out.extend(f"- {when}: {title}" for when, title in events)
+
     r = hh.rules
     out.append(
         f"\n## Weekly rules\nlegumes >= {r.legumes_min}, fish >= {r.fish_min} (oily >= {r.oily_fish_min}), "
