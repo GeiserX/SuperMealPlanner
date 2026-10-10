@@ -119,8 +119,10 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 if s.date == day and not s.morning:
                     session = s
                 for x in s.dishes:
-                    r = state.data.recipes[x.recipe]
-                    if any(e == tomorrow and (e - x.cook).days > r.fridge_days for e in x.eat):
+                    r = state.data.recipes.get(x.recipe)
+                    if r and any(
+                        e == tomorrow and (e - x.cook).days > r.fridge_days for e in x.eat
+                    ):
                         defrost.append(r)
         return tpl.TemplateResponse(
             request,
