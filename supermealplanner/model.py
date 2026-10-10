@@ -7,6 +7,7 @@ Code never hard-codes a person, a shop, a language or an AI provider. See docs/d
 from __future__ import annotations
 
 import datetime as dt
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -57,11 +58,10 @@ class Ingredient(Loose):
     id: str = ""
     name: str
     section: str = "otros"
-    store: str = "mercadona"
+    store: str = "store"  # default store id for this ingredient
     unit: Literal["g", "ml", "ud"] = "g"
     kitchen: KitchenUnit | None = None
     flags: list[str] = []
-    mercadona_id: str | None = None
     clean_label: str | None = None
 
 
@@ -193,7 +193,7 @@ class Calendar(Loose):
 
 class Batch(Loose):
     preferred_days: list[Weekday] = ["monday", "friday", "saturday"]
-    sessions_per_week: int = 2
+    sessions_per_week: int = Field(default=2, ge=1, le=2)
 
 
 class Rules(Loose):
@@ -235,7 +235,7 @@ class Household(Loose):
 
 class Store(Loose):
     name: str
-    catalog: str | None = None  # path under the data dir, e.g. stores/mercadona.yaml
+    catalog: str | None = None  # path under the data dir, e.g. stores/supermarket.yaml
 
 
 class Shopping(Loose):
@@ -253,6 +253,20 @@ class Reminder(Loose):
     people: list[str] = []  # who it is for (mention / pills check); empty = everyone
     enabled: bool = True
 
+    @model_validator(mode="after")
+    def _check(self) -> Reminder:
+        for at in self.at:
+            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", at):
+                raise ValueError(f"reminder {self.id}: time {at!r} is not HH:MM")
+        if self.kind == "message":
+            try:
+                self.text.format(names="", today="")
+            except (KeyError, IndexError, ValueError) as e:
+                raise ValueError(
+                    f"reminder {self.id}: text may only use {{names}} and {{today}} ({e})"
+                ) from None
+        return self
+
 
 class Bot(Loose):
     enabled: bool = False
@@ -263,6 +277,11 @@ class Bot(Loose):
     wake_words: list[str] = []  # the AI answers a group message that contains one of these words
     respond: Literal["mentions", "all"] = "mentions"  # "all": every group message goes to the AI
     voice: bool = True  # transcribe voice notes and always hand them to the AI
+    group_open: bool = False  # True: anyone in the group may use the bot, not only bot.people
+    share_logs_in_group: bool = (
+        False  # True: the AI may discuss binge, craving and note logs in the group
+    )
+    answer_timeout_s: int = 900  # one message, AI included
 
 
 class LLM(Loose):
@@ -276,6 +295,7 @@ class LLM(Loose):
         None  # provider "plugin": a .py file under the data dir defining complete()
     )
     max_tokens: int = 1200
+    timeout_s: int = 600
     instructions: str = ""  # extra system instructions for this household
 
 
@@ -304,6 +324,7 @@ class Transcription(Loose):
     plugin: str | None = (
         None  # a .py file under the data dir defining transcribe(audio, filename, settings)
     )
+    timeout_s: int = 600
 
 
 class Settings(Loose):
