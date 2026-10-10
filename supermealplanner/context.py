@@ -49,7 +49,8 @@ def build(
             + (f", band {g.band_kg[0]}-{g.band_kg[1]} kg" if g.band_kg else "")
             + f". Energy {current_kcal(db, p):.0f} kcal (floor {p.kcal.floor:.0f}), protein {p.protein_g.target:.0f} g."
         )
-        if p.glp1:
+        own = viewer is None or p.id == viewer
+        if p.glp1 and own:
             line += f" On {p.glp1.drug}, injects on {p.glp1.day}."
         if p.avoid_ingredients:
             line += f" Avoids: {', '.join(p.avoid_ingredients)}."
@@ -63,7 +64,8 @@ def build(
                 )
         for note in p.notes:
             out.append(f"  - note: {note}")
-        w = db.weights(p.id)[-4:]
+        share = not group or data.settings.bot.share_logs_in_group
+        w = db.weights(p.id)[-4:] if share else []
         if w:
             out.append("  - last weigh-ins: " + ", ".join(f"{d.isoformat()} {k} kg" for d, k in w))
         open_logs = not group or data.settings.bot.share_logs_in_group

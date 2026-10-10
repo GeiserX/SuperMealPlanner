@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS chat (
   id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL, ts TEXT NOT NULL,
   role TEXT NOT NULL, who TEXT, text TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS baseline (
   person TEXT PRIMARY KEY, kcal REAL NOT NULL, day TEXT NOT NULL
 );
@@ -202,4 +204,18 @@ class DB:
                 "INSERT INTO baseline(person, kcal, day) VALUES (?,?,?) "
                 "ON CONFLICT(person) DO UPDATE SET kcal=excluded.kcal, day=excluded.day",
                 (person, kcal, day.isoformat()),
+            )
+
+    # small values the app learns at run time (e.g. a group's new id after an upgrade)
+    def get_kv(self, key: str):
+        with self.conn() as c:
+            r = c.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return json.loads(r["value"]) if r else None
+
+    def set_kv(self, key: str, value) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO kv(key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, json.dumps(value)),
             )

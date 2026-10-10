@@ -417,6 +417,71 @@ def _draft(data, start, weeks, busy, previous, seed) -> Plan:
     return Plan(start=start, weeks=weeks, seed=seed, days=days, sessions=sessions)
 
 
+# ---------------------------------------------------------------- repair
+
+
+def unknown_recipes(data: Data, plan: Plan) -> set[str]:
+    ids = {
+        getattr(d, m) for d in plan.days for m in ("breakfast", "lunch", "dinner", "snack", "side")
+    }
+    ids |= {x.recipe for s in plan.sessions for x in s.dishes}
+    return {i for i in ids if i and i not in data.recipes}
+
+
+def patch_unknown(data: Data, plan: Plan) -> int:
+    """Swap each recipe that no longer exists for one of the same kind, touching nothing else.
+
+    A plan is not redone when the data changes: lunches may already be cooked and in the fridge. Only
+    a slot whose recipe was deleted or renamed gets a substitute. Returns how many slots changed.
+    """
+    gone = unknown_recipes(data, plan)
+    if not gone:
+        return 0
+    used = {getattr(d, m) for d in plan.days for m in ("lunch", "dinner")}
+
+    def pick(meal: str, kinds: set[str], month: int, freeze: bool = False, tag: str | None = None):
+        cands = sorted(
+            r.id
+            for r in data.recipes.values()
+            if r.kind in kinds
+            and _eligible(data, r, meal, month)
+            and (not freeze or r.freezes)
+            and (r.has(tag) if tag else not r.has("side"))
+        )
+        fresh = [c for c in cands if c not in used]
+        return (fresh or cands or [None])[0]
+
+    changed = 0
+    swap: dict[tuple[str, dt.date], str] = {}  # (old lunch id, cook date) -> substitute
+    for s in plan.sessions:
+        for x in s.dishes:
+            if x.recipe in gone:
+                gap = max((e - x.cook).days for e in x.eat)
+                new = pick("lunch", {"batch", "quick"}, x.cook.month, freeze=gap > 1)
+                if new:
+                    swap[(x.recipe, x.cook)] = new
+                    x.recipe = new
+                    used.add(new)
+                    changed += 1
+    for d in plan.days:
+        if d.lunch in gone and (d.lunch, d.lunch_cook) in swap:
+            d.lunch = swap[(d.lunch, d.lunch_cook)]
+        for meal, kinds, tag in (
+            ("dinner", {"quick", "assemble"}, None),
+            ("breakfast", {"fixed"}, None),
+            ("snack", {"fixed"}, None),
+            ("side", {"assemble"}, "side"),
+            ("lunch", {"batch", "quick"}, None),
+        ):
+            if getattr(d, meal) in gone:
+                new = pick("lunch" if meal == "side" else meal, kinds, d.date.month, tag=tag)
+                if new:
+                    setattr(d, meal, new)
+                    used.add(new)
+                    changed += 1
+    return changed
+
+
 # ---------------------------------------------------------------- validation
 
 

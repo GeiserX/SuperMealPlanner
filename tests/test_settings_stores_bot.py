@@ -435,13 +435,14 @@ def test_safe_never_shows_a_url():
     assert "SECRET" not in safe(httpx.ConnectError("fail https://x/bot123:SECRET"))
 
 
-def test_plan_is_redone_when_a_recipe_disappears(data_dir, tmp_path):
+def test_a_deleted_recipe_is_swapped_in_place(data_dir):
     from supermealplanner.planner import plan_for
     from supermealplanner.scheduler import ensure_plan
 
     data = load(data_dir)
     generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
-    gone = plan_for(data, MONDAY).days[2].lunch
+    before = plan_for(data, MONDAY)
+    gone = before.days[2].lunch
     (data_dir / "recipes" / f"{gone}.yaml").unlink()
 
     class S:
@@ -452,10 +453,49 @@ def test_plan_is_redone_when_a_recipe_disappears(data_dir, tmp_path):
             return MONDAY + dt.timedelta(days=2)
 
     s = S()
-    assert ensure_plan(s) is not None
-    plan = plan_for(s.data, MONDAY + dt.timedelta(days=2))
-    assert all(d.lunch != gone and d.dinner != gone for d in plan.days)
-    assert ensure_plan(s) is None  # stable afterwards
+    assert ensure_plan(s) is None  # no new plan, a patch
+    after = plan_for(s.data, MONDAY)
+    assert all(d.lunch != gone and d.dinner != gone for d in after.days)
+    for b, a in zip(before.days, after.days, strict=True):  # everything else is untouched
+        if b.lunch != gone:
+            assert a.lunch == b.lunch and a.lunch_cook == b.lunch_cook
+        if b.dinner != gone:
+            assert a.dinner == b.dinner
+    assert [s.date for s in after.sessions] == [s.date for s in before.sessions]
+
+
+def test_a_rule_change_never_rewrites_the_current_plan(data_dir):
+    from supermealplanner.planner import plan_for
+    from supermealplanner.scheduler import ensure_plan
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    before = plan_for(data, MONDAY).to_dict()
+    for p in (data_dir / "recipes").glob("legumbre-*.yaml"):
+        r = yaml.safe_load(p.read_text())
+        r["freezes"] = False
+        p.write_text(yaml.safe_dump(r))
+
+    class S:
+        data = load(data_dir)
+
+        def today(self):
+            return MONDAY + dt.timedelta(days=3)
+
+    assert ensure_plan(S()) is None
+    assert plan_for(S.data, MONDAY).to_dict() == before
+
+
+def test_an_impossible_plan_does_not_stop_the_target_checks(data_dir, tmp_path):
+    from supermealplanner.scheduler import tick
+    from supermealplanner.web import App
+
+    for p in (data_dir / "recipes").glob("*.yaml"):
+        if "dinner" in yaml.safe_load(p.read_text())["meals"]:
+            p.unlink()
+    app = App(data_dir)
+    tick(app)  # cannot plan (no dinners): logs it and carries on
+    assert app.db.baseline("luis") is not None
 
 
 def test_broken_data_push_keeps_the_last_good_data(data_dir, monkeypatch):
@@ -501,3 +541,76 @@ def test_web_rejects_cross_site_posts_redirects_and_bad_input(data_dir, data, mo
             ).status_code
             == 400
         )
+
+
+def test_restart_leaves_no_loop_behind(data_dir, tmp_path):
+    from supermealplanner.bot import Bot, TelegramError
+
+    data = bot_data(data_dir)
+    state = FakeState(data, DB(tmp_path / "b.db"), MONDAY)
+    b = Bot(state)
+    b.token = "x"
+    started = []
+
+    async def call(client, method, _tries=0, **params):
+        if method == "getUpdates":
+            raise TelegramError(method, "Unauthorized", 401)
+        return {"username": "chefbot"}
+
+    async def reminders(client):
+        started.append(asyncio.current_task())
+        await asyncio.sleep(3600)
+
+    b.call, b.reminders = call, reminders
+
+    async def go():
+        import supermealplanner.bot as botmod
+
+        real = botmod.asyncio.sleep
+        calls = {"n": 0}
+
+        async def fast(t):
+            calls["n"] += 1
+            if calls["n"] > 3:
+                raise asyncio.CancelledError
+            await real(0)
+
+        botmod.asyncio.sleep = fast
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await b.run()
+        finally:
+            botmod.asyncio.sleep = real
+        await real(0)
+        return [t for t in started if not t.done()]
+
+    assert run(go()) == []
+
+
+def test_group_messages_are_kept_only_when_the_ai_is_asked(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = FakeBot(data, db, MONDAY)
+    run(b.handle(None, msg("hablando de otra cosa")))
+    assert db.recent_chat(-100, 5) == []
+    data.settings.bot.history_scope = "all"
+    run(b.handle(None, msg("ahora sí se guarda")))
+    assert db.recent_chat(-100, 5)[-1]["text"] == "ahora sí se guarda"
+
+
+def test_private_chat_hides_other_peoples_glp1(data_dir, tmp_path):
+    from supermealplanner.context import build
+
+    data = bot_data(data_dir)
+    text = build(data, DB(tmp_path / "c.db"), MONDAY, viewer="ana")
+    assert "semaglutide" not in text
+    assert "semaglutide" in build(data, DB(tmp_path / "d.db"), MONDAY, viewer="luis")
+
+
+def test_group_upgrade_survives_a_restart(data_dir, tmp_path):
+    from supermealplanner.bot import Bot
+
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    db.set_kv("bot.migrated_chat", -1009)
+    assert Bot(FakeState(data, db, MONDAY)).chat_id == -1009
