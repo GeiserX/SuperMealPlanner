@@ -422,15 +422,22 @@ class Bot:
                     else ", ".join(t.raw("days")[WEEKDAYS.index(d)] for d in r.days)
                 )
                 who = ", ".join(data.household.person(p).name for p in r.people) if r.people else ""
-                label = (
-                    r.text.split(":")[0].format(names=who, today="")
-                    if r.kind == "message"
-                    else t(f"bot_about_kind_{r.kind}")
+                if r.kind == "message":  # fill the text first, then keep what comes before its ":"
+                    label = r.text.format(names=who, today="").split(":")[0]
+                else:
+                    label = t(f"bot_about_kind_{r.kind}")
+                key = (
+                    "bot_about_reminder_for"
+                    if who and r.kind != "message"
+                    else "bot_about_reminder"
                 )
                 lines.append(
-                    f"• {label.strip()}: {', '.join(r.at)} ({days}){' · ' + who if who and r.kind != 'message' else ''}"
+                    t(key, label=label.strip(), times=", ".join(r.at), days=days, people=who)
                 )
-        lines += ["", t("bot_about_log"), "", t("bot_about_ask")]
+        lines += ["", t("bot_about_log")]
+        if any("binge-eating-safe" in p.packs for p in data.household.people):
+            lines.append(t("bot_about_binge_safe"))
+        lines += ["", t("bot_about_ask")]
         if cfg.bot.wake_words:
             lines.append(
                 t("bot_about_names", names=", ".join(f"«{w}»" for w in cfg.bot.wake_words))
@@ -468,6 +475,10 @@ class Bot:
                 pl = pd.plates.get(meal)
                 if pl:
                     lines.append(f"  {pd.name}: " + "; ".join(pl.lines))
+                pills = pd.pills.get(meal) if meal in ("breakfast", "lunch", "dinner") else None
+                if pills:
+                    names = " · ".join(f"{x.name} {x.dose}".strip() for x in pills)
+                    lines.append(f"  💊 {pd.name}: {names}")
         lines.append("")
         for pd in pds:
             lines.append(

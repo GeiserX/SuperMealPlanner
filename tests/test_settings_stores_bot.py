@@ -770,3 +770,20 @@ def test_profile_sync_sets_menus_in_both_languages(data_dir, tmp_path):
     }
     assert menus["en"][0] == "today" and menus["es"][0] == "hoy" and "presentacion" in menus["es"]
     assert {m for m, _ in calls} == {"setMyCommands", "setMyShortDescription", "setMyDescription"}
+
+
+def test_today_message_lists_each_meals_pills(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    text = b.day_text(MONDAY)
+    assert "💊 Luis: Vitamin D" in text  # his lunch pill, from the fixture
+    assert "Hierro" not in text  # Ana's iron is on waking, not with a meal
+
+
+def test_binge_promise_only_with_the_pack(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    line = b.t("bot_about_binge_safe")
+    assert line in b.presentation()  # Luis has the pack in the fixture
+    data.household.person("luis").packs = []
+    assert line not in b.presentation()
