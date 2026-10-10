@@ -224,9 +224,19 @@ def create_app(root: str | Path | None = None) -> FastAPI:
     def receta(rid: str, d: str | None = None):
         return RedirectResponse(f"/recipe/{rid}" + (f"?d={d}" if d else ""), status_code=301)
 
+    def same_site(request: Request) -> bool:
+        """A form post must come from this app: a page elsewhere must not write health logs."""
+        origin = request.headers.get("origin") or request.headers.get("referer")
+        if not origin:
+            return True  # not a browser cross-site post (curl, the phone shortcut)
+        from urllib.parse import urlsplit
+
+        return urlsplit(origin).netloc == request.headers.get("host")
+
     @app.get("/who/{pid}")
     def who(pid: str, back: str = "/log"):
-        resp = RedirectResponse(back if back.startswith("/") else "/", status_code=303)
+        local = back.startswith("/") and not back.startswith(("//", "/\\"))
+        resp = RedirectResponse(back if local else "/", status_code=303)
         resp.set_cookie("who", pid, max_age=3600 * 24 * 400, samesite="lax")
         return resp
 
@@ -258,19 +268,24 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         pills_lunch: str = Form(""),
         note: str = Form(""),
     ):
+        if not same_site(request):
+            raise HTTPException(403, "cross-site form post")
         if person not in {p.id for p in state.data.household.people}:
             raise HTTPException(400, "unknown person")
-        d = dt.date.fromisoformat(day)
-        if kg.strip():
-            state.db.add_weight(person, d, float(kg.replace(",", ".")))
-        if waist.strip():
-            state.db.add_waist(person, d, float(waist.replace(",", ".")))
-        fields = {}
-        for k, v in (("hunger", hunger), ("craving", craving), ("nausea", nausea)):
-            if v.strip():
-                fields[k] = max(0, min(10, int(v)))
-        if water.strip():
-            fields["water"] = max(0, min(40, int(water)))
+        try:
+            d = dt.date.fromisoformat(day)
+            if kg.strip():
+                state.db.add_weight(person, d, float(kg.replace(",", ".")))
+            if waist.strip():
+                state.db.add_waist(person, d, float(waist.replace(",", ".")))
+            fields = {}
+            for k, v in (("hunger", hunger), ("craving", craving), ("nausea", nausea)):
+                if v.strip():
+                    fields[k] = max(0, min(10, int(v)))
+            if water.strip():
+                fields["water"] = max(0, min(40, int(water)))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
         for k, v in (("binge", binge), ("stool", stool), ("pills_lunch", pills_lunch)):
             if v in ("0", "1"):
                 fields[k] = int(v)
@@ -305,16 +320,19 @@ def create_app(root: str | Path | None = None) -> FastAPI:
     @app.post("/api/peso")
     async def api_weight(request: Request):
         """For a phone shortcut: Authorization: Bearer <SMP_API_TOKEN>, JSON {person, kg, day?}."""
-        token = os.environ.get("SMP_API_TOKEN", "")
+        token = os.environ.get("SMP_API_TOKEN", "").encode()
         got = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-        if not token or not hmac.compare_digest(token, got):
+        if not token or not hmac.compare_digest(token, got.encode("utf-8", "replace")):
             raise HTTPException(401)
-        body = await request.json()
-        person = body.get("person")
-        if person not in {p.id for p in state.data.household.people}:
-            raise HTTPException(400, "unknown person")
-        day = dt.date.fromisoformat(body["day"]) if body.get("day") else state.today()
-        state.db.add_weight(person, day, float(body["kg"]), source="api")
+        try:
+            body = await request.json()
+            person = body.get("person")
+            if person not in {p.id for p in state.data.household.people}:
+                raise HTTPException(400, "unknown person")
+            day = dt.date.fromisoformat(body["day"]) if body.get("day") else state.today()
+            state.db.add_weight(person, day, float(body["kg"]), source="api")
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            raise HTTPException(400, f"bad request: {type(e).__name__}") from None
         return JSONResponse({"ok": True, "person": person, "day": day.isoformat()})
 
     @app.get("/manifest.webmanifest")
@@ -376,8 +394,10 @@ async def _guard(coro, name: str) -> None:
         await coro
     except asyncio.CancelledError:
         raise
-    except Exception:
-        log.exception("%s stopped", name)
+    except Exception as e:  # noqa: BLE001
+        from .bot import safe
+
+        log.warning("%s stopped: %s", name, safe(e))
 
 
 async def _loop(state: App) -> None:
@@ -385,6 +405,8 @@ async def _loop(state: App) -> None:
     while True:
         try:
             await asyncio.to_thread(tick, state)
-        except Exception:  # keep serving; the next tick retries
-            log.exception("scheduler tick failed")
+        except Exception as e:  # noqa: BLE001  keep serving; the next tick retries
+            from .bot import safe
+
+            log.warning("scheduler tick failed: %s", safe(e))
         await asyncio.sleep(3600)

@@ -73,13 +73,13 @@ def main(argv: list[str] | None = None) -> int:
         prev = plan_for(data, start - dt.timedelta(days=1))
         plan = generate(data, start, a.weeks, busy=busy, previous=prev)
         for s in plan.sessions:
-            kind = "mañana" if s.morning else "tarde"
+            kind = "morning" if s.morning else "afternoon"
             dishes = ", ".join(f"{x.recipe} x{len(x.eat)}" for x in s.dishes)
-            note = f"  (ocupado: {', '.join(s.busy)})" if s.busy else ""
+            note = f"  (busy: {', '.join(s.busy)})" if s.busy else ""
             print(f"batch {s.date} {kind}: {dishes}{note}")
         for d in plan.days:
             print(
-                f"{d.date} {d.date.strftime('%a')}  comida={d.lunch}  cena={d.dinner}"
+                f"{d.date} {d.date.strftime('%a')}  lunch={d.lunch}  dinner={d.dinner}"
                 f"{'  +' + d.side if d.side else ''}"
             )
         if a.write:
@@ -113,7 +113,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if a.cmd == "serve":
+        import logging
+
         import uvicorn
+
+        logging.basicConfig(
+            level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+        )
+        logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines carry request URLs
 
         from .web import create_app
 

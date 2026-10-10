@@ -145,7 +145,7 @@ class FakeBot:
         async def send(client, chat_id, text, reply_to=None, record=True):
             b.sent.append((chat_id, text))
 
-        async def ask(client, chat_id, reply_to):
+        async def ask(client, chat_id, reply_to, asker=None):
             b.asked.append(chat_id)
 
         async def transcribe(client, voice):
@@ -341,3 +341,163 @@ def test_check_reports_a_broken_catalogue(data_dir, capsys):
     assert "unknown ingredients" in capsys.readouterr().err
     write(data_dir, "stores/super.yaml", CATALOG)
     assert main(["--data", str(data_dir), "check"]) == 0
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_group_members_only_and_chatid_for_household(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = FakeBot(data, db, MONDAY)
+    run(b.handle(None, msg("/weight 70", user=999)))  # a guest in the household group
+    run(b.handle(None, msg("/chatid", chat=-5, user=999)))  # a stranger anywhere
+    assert b.sent == [] and db.recent_chat(-5, 5) == []
+    run(b.handle(None, msg("/chatid", chat=-5, user=7)))
+    assert "-5" in b.sent[-1][1] and db.recent_chat(-5, 5) == []
+
+
+def test_ai_context_privacy(data_dir, tmp_path):
+    from supermealplanner.context import build
+
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "c.db")
+    db.set_daily("ana", MONDAY, binge=1, note="secreto de Ana")
+    db.set_daily("luis", MONDAY, craving=9)
+    private_luis = build(data, db, MONDAY, viewer="luis")
+    assert "secreto de Ana" not in private_luis and "Vitamin D" in private_luis
+    assert "Hierro" not in private_luis  # Ana's pills
+    group = build(data, db, MONDAY, group=True)
+    assert "secreto de Ana" not in group and "binge 1" not in group and "craving 9" not in group
+    data.settings.bot.share_logs_in_group = True
+    assert "secreto de Ana" in build(data, db, MONDAY, group=True)
+
+
+def test_reminder_is_retried_when_the_send_fails(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = FakeBot(data, db, MONDAY)
+
+    async def failing(client, chat_id, text, reply_to=None, record=True):
+        raise RuntimeError("429")
+
+    import supermealplanner.bot as botmod
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2026, 10, 12, 10, 2, tzinfo=tz)
+
+    real = botmod.dt.datetime
+    botmod.dt.datetime = Clock
+    try:
+        b.send = failing
+        with pytest.raises(RuntimeError):
+            run(b.tick_reminders(None))
+        assert not db.was_sent("water", MONDAY, "10:00")
+        sent = []
+
+        async def ok(client, chat_id, text, reply_to=None, record=True):
+            sent.append(text)
+
+        b.send = ok
+        run(b.tick_reminders(None))
+        assert sent and db.was_sent("water", MONDAY, "10:00")
+    finally:
+        botmod.dt.datetime = real
+
+
+def test_bad_reminders_are_rejected_at_load(data_dir):
+    write(data_dir, "settings.yaml", {"reminders": [{"id": "x", "text": "hi", "at": ["8:3O"]}]})
+    with pytest.raises(DataError, match="not HH:MM"):
+        load(data_dir)
+    write(
+        data_dir,
+        "settings.yaml",
+        {"reminders": [{"id": "x", "text": "hi {nombre}", "at": ["08:30"]}]},
+    )
+    with pytest.raises(DataError, match="names"):
+        load(data_dir)
+
+
+def test_safe_never_shows_a_url():
+    import httpx
+
+    from supermealplanner.bot import safe
+
+    req = httpx.Request("GET", "https://api.telegram.org/file/bot123:SECRET/voice.ogg")
+    e = httpx.HTTPStatusError(
+        "boom https://api.telegram.org/file/bot123:SECRET",
+        request=req,
+        response=httpx.Response(404, request=req),
+    )
+    assert "SECRET" not in safe(e) and "404" in safe(e)
+    assert "SECRET" not in safe(httpx.ConnectError("fail https://x/bot123:SECRET"))
+
+
+def test_plan_is_redone_when_a_recipe_disappears(data_dir, tmp_path):
+    from supermealplanner.planner import plan_for
+    from supermealplanner.scheduler import ensure_plan
+
+    data = load(data_dir)
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    gone = plan_for(data, MONDAY).days[2].lunch
+    (data_dir / "recipes" / f"{gone}.yaml").unlink()
+
+    class S:
+        def __init__(self):
+            self.data = load(data_dir)
+
+        def today(self):
+            return MONDAY + dt.timedelta(days=2)
+
+    s = S()
+    assert ensure_plan(s) is not None
+    plan = plan_for(s.data, MONDAY + dt.timedelta(days=2))
+    assert all(d.lunch != gone and d.dinner != gone for d in plan.days)
+    assert ensure_plan(s) is None  # stable afterwards
+
+
+def test_broken_data_push_keeps_the_last_good_data(data_dir, monkeypatch):
+    from supermealplanner.scheduler import pull
+    from supermealplanner.web import App
+
+    app = App(data_dir)
+    (data_dir / ".git").mkdir()
+    monkeypatch.setenv("SMP_GIT_PULL", "1")
+    (data_dir / "household.yaml").write_text("people: [")
+    pull(app)  # git fails (not a repo), reload fails: the old data stays
+    assert app.data.household.person("luis").name == "Luis"
+
+
+def test_web_rejects_cross_site_posts_redirects_and_bad_input(data_dir, data, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from supermealplanner.web import create_app
+
+    monkeypatch.setenv("SMP_SCHEDULER", "0")
+    monkeypatch.setenv("SMP_API_TOKEN", "secret")
+    with TestClient(create_app(data_dir)) as c:
+        form = {"person": "ana", "day": "2026-10-12", "kg": "58"}
+        assert (
+            c.post("/log", data=form, headers={"origin": "https://evil.example"}).status_code == 403
+        )
+        assert c.post("/log", data=form, headers={"origin": "http://testserver"}).status_code == 200
+        assert c.post("/log", data={**form, "kg": "500"}).status_code == 400
+        assert c.post("/log", data={**form, "craving": "abc"}).status_code == 400
+        r = c.get("/who/ana?back=//evil.example", follow_redirects=False)
+        assert r.headers["location"] == "/"
+        assert (
+            c.post(
+                "/api/weight", json={}, headers={"Authorization": "Bearer ñ".encode()}
+            ).status_code
+            == 401
+        )
+        assert (
+            c.post(
+                "/api/weight",
+                json={"person": "ana", "kg": "x"},
+                headers={"Authorization": "Bearer secret"},
+            ).status_code
+            == 400
+        )
