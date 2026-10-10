@@ -36,7 +36,7 @@ The bot answers private chats with the people in `bot.people`, and the configure
 - Voice notes are transcribed with the configured `transcription` provider and always go to the AI.
 - Reminders fire once each, inside a 10-minute window after their time: plain messages, today's meal with its recipe link, batch days, shopping day, defrosting, and lunch pills not logged yet.
 
-The AI gets the household, today's and tomorrow's plates, the week and the last week of logs. In a private chat it sees only the asker's own pills, notes, weigh-ins and logs. In the group it leaves out weigh-ins, binges, cravings, nausea and notes unless `bot.share_logs_in_group` is set. Group messages are kept as context only when the AI is asked (`bot.history_scope: all` keeps them all). It is told never to change a dose and never to suggest eating less after a binge.
+The AI gets the household, today's and tomorrow's plates, the week, the next seven days of the calendar (so it knows about guests and meals out) and the last week of logs. In a private chat it sees only the asker's own pills, notes, weigh-ins and logs. In the group it leaves out weigh-ins, binges, cravings, nausea and notes unless `bot.share_logs_in_group` is set. Group messages are kept as context only when the AI is asked (`bot.history_scope: all` keeps them all). It is told never to change a dose and never to suggest eating less after a binge.
 
 Everything the AI sees goes to the provider you configure. With a local model nothing leaves your network.
 
