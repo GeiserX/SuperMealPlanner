@@ -57,7 +57,7 @@ class KitchenUnit(Strict):
 class Ingredient(Loose):
     id: str = ""
     name: str
-    section: str = "otros"
+    section: str = "other"
     store: str = "store"  # default store id for this ingredient
     unit: Literal["g", "ml", "ud"] = "g"
     kitchen: KitchenUnit | None = None
@@ -91,7 +91,7 @@ class Recipe(Loose):
     minutes: int = 0
     fridge_days: int = Field(default=2, ge=0, le=4)
     freezes: bool = False
-    protein: str = "mixto"
+    protein: str = "mixed"
     tags: list[str] = []
     season: Literal["all"] | list[int] = "all"
     serves_note: str = ""
@@ -282,6 +282,7 @@ class Bot(Loose):
         False  # True: the AI may discuss binge, craving and note logs in the group
     )
     answer_timeout_s: int = 900  # one message, AI included
+    history_scope: Literal["asked", "all"] = "asked"  # which group messages are kept as AI context
 
 
 class LLM(Loose):

@@ -121,3 +121,18 @@ def test_editing_the_start_resets_and_the_floor_clamps(data, tmp_path):
     assert current_kcal(db, luis) == 2400
     db.set_target("luis", dt.date(2026, 10, 29), 1700, "{}")
     assert current_kcal(db, luis) == 1800  # the floor wins over a stored value
+
+
+def test_an_edited_start_is_not_cut_on_the_next_tick(data, tmp_path):
+    from supermealplanner.targets import current_kcal, sync_start
+
+    db = DB(tmp_path / "t.db")
+    luis = data.household.person("luis")
+    start = dt.date(2026, 9, 1)
+    sync_start(db, luis, start)
+    _weights(db, "luis", start, [90, 90, 90, 90, 90])  # flat: would read as slow loss
+    luis.kcal.start = 2400
+    today = start + dt.timedelta(days=28)
+    sync_start(db, luis, today)
+    st = evaluate(db, data.household, luis, today, apply=True)
+    assert st.changed is None and current_kcal(db, luis) == 2400

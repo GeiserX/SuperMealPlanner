@@ -82,7 +82,8 @@ class Bot:
         self.token = os.environ.get(cfg.token_env, "")
         self.username = ""
         self.offset = 0
-        self.migrated_chat: int | None = None  # set when Telegram upgrades the group
+        self.migrated_chat: int | None = state.db.get_kv("bot.migrated_chat")  # group upgraded
+        self.ai = asyncio.Semaphore(1)  # one AI answer at a time, in arrival order
         self.tasks: set[asyncio.Task] = set()
 
     # ------------------------------------------------------------- plumbing
@@ -94,7 +95,7 @@ class Bot:
     def t(self) -> Translator:
         return Translator(self.data.locale)
 
-    async def call(self, client: httpx.AsyncClient, method: str, **params):
+    async def call(self, client: httpx.AsyncClient, method: str, _tries: int = 0, **params):
         try:
             r = await client.post(
                 API.format(token=self.token, method=method), json=params, timeout=70
@@ -107,9 +108,9 @@ class Bot:
         err = TelegramError(
             method, body.get("description", ""), body.get("error_code"), body.get("parameters")
         )
-        if err.code == 429 and method != "getUpdates":  # flood control: wait as told, once
+        if err.code == 429 and method != "getUpdates" and _tries < 2:  # flood control: wait as told
             await asyncio.sleep(min(int(err.params.get("retry_after", 5)), 60))
-            return await self.call(client, method, **params)
+            return await self.call(client, method, _tries + 1, **params)
         raise err
 
     async def transcribe(self, client, voice: dict) -> str:
@@ -182,7 +183,17 @@ class Bot:
                     self.username = me.get("username", "")
                     log.warning("bot @%s up", self.username)
                     backoff = 5
-                    await asyncio.gather(self.poll(client), self.reminders(client))
+                    loops = [
+                        asyncio.create_task(self.poll(client)),
+                        asyncio.create_task(self.reminders(client)),
+                    ]
+                    try:
+                        done, _ = await asyncio.wait(loops, return_when=asyncio.FIRST_EXCEPTION)
+                        for task in done:
+                            task.result()  # re-raise what stopped it
+                    finally:
+                        for task in loops:  # never leave a loop running on a closed client
+                            task.cancel()
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
@@ -217,6 +228,7 @@ class Bot:
                     continue
                 if msg.get("migrate_to_chat_id") and msg["chat"]["id"] == self.chat_id:
                     self.migrated_chat = msg["migrate_to_chat_id"]
+                    self.state.db.set_kv("bot.migrated_chat", self.migrated_chat)
                     log.warning("the group became %s: set bot.chat_id to it", self.migrated_chat)
                     continue
                 if msg.get("text") or msg.get("voice") or msg.get("audio"):
@@ -262,7 +274,8 @@ class Bot:
             who = self.person_of(user.get("id", 0))
             self.state.db.add_chat(chat["id"], "user", who or user.get("first_name"), f"🎤 {text}")
             await self.send(client, chat["id"], f"🎤 {text}", msg["message_id"], record=False)
-            await self.ask(client, chat["id"], msg["message_id"], who)
+            async with self.ai:
+                await self.ask(client, chat["id"], msg["message_id"], who)
             return
         text = msg["text"].strip()
         if text.startswith("/chatid"):  # setup: household members only, nothing stored
@@ -285,7 +298,6 @@ class Bot:
                 reply = await getattr(self, f"cmd_{handler}")(who, arg.strip(), user)
                 await self.send(client, chat["id"], reply, msg["message_id"])
             return
-        self.state.db.add_chat(chat["id"], "user", who or user.get("first_name"), text)
         low = text.lower()
         words = [w.lower() for w in self.data.settings.bot.wake_words]
         mentioned = (self.username and f"@{self.username}".lower() in low) or any(
@@ -295,8 +307,12 @@ class Bot:
             "username"
         ) == self.username
         everyone = self.data.settings.bot.respond == "all"
-        if chat.get("type") == "private" or everyone or mentioned or replied:
-            await self.ask(client, chat["id"], msg["message_id"], who)
+        asked = chat.get("type") == "private" or everyone or mentioned or replied
+        if asked or self.data.settings.bot.history_scope == "all":
+            self.state.db.add_chat(chat["id"], "user", who or user.get("first_name"), text)
+        if asked:
+            async with self.ai:
+                await self.ask(client, chat["id"], msg["message_id"], who)
 
     async def ask(self, client, chat_id: int, reply_to: int, asker: str | None = None) -> None:
         if self.data.settings.llm.provider == "none":

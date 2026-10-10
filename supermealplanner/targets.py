@@ -69,7 +69,7 @@ def current_kcal(db: DB, p: Person) -> float:
     base = db.baseline(p.id)
     kcal = p.kcal.start
     if base and base[0] == p.kcal.start:
-        rows = [r for r in db.targets(p.id) if r["day"] >= base[1]]
+        rows = [r for r in db.targets(p.id) if r["day"] > base[1]]
         if rows:
             kcal = rows[-1]["kcal"]
     elif base is None:
@@ -135,8 +135,10 @@ def evaluate(db: DB, hh: Household, p: Person, today: dt.date, apply: bool = Fal
         no_cuts = in_window > 0
 
     base = db.baseline(p.id)
-    last = [r for r in db.targets(p.id) if not base or r["day"] >= base[1]]
+    last = [r for r in db.targets(p.id) if not base or r["day"] > base[1]]
     last_day = last[-1]["day"] if last else None
+    if base and base[1] != dt.date.min:  # an edited start counts as the latest change
+        last_day = max(last_day or base[1], base[1])
     due = last_day is None or (today - last_day).days >= window
     if rate is None or n < 3 or not covered or not due:
         return st
