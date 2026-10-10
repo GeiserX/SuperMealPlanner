@@ -123,6 +123,7 @@ bot_help: |
   /week: the week's menu
   /list: this week's shopping list
   /weight 82.4 · /waist 95 · /craving 7 · /water: log for yourself
+  /about: everything I do
   /chatid: this chat's id
   Ask anything else in plain words and I'll answer from our plan and data.
 bot_unknown_person: "I don't know who you are yet. Add your Telegram id to settings.yaml (bot.people). Your id is {id}."
@@ -142,3 +143,34 @@ reminder_meal: "🍽️ {meal} today: {dish}. {where}\n{url}"
 reminder_shopping: "🛒 Shopping day. List: {url}"
 reminder_pills_lunch: "💊 {name}, have you taken the lunch pills? Reply /pills when done."
 bot_pills_logged: "Saved: lunch pills taken, {name}."
+
+# bot profile and presentation (/about)
+bot_commands: {}
+bot_cmd_today: Today's meals and each plate
+bot_cmd_tomorrow: Tomorrow's meals
+bot_cmd_week: This week's menu
+bot_cmd_list: This week's shopping list
+bot_cmd_weight: "Log your weight, e.g. /weight 82.4"
+bot_cmd_waist: Log your waist in cm
+bot_cmd_craving: Log a craving from 0 to 10
+bot_cmd_water: Add a glass of water
+bot_cmd_pills: Mark the lunch pills as taken
+bot_cmd_about: Everything I do for you
+bot_cmd_help: The commands
+bot_short: "Your household meal planner: menu, shopping, reminders and cooking questions."
+bot_about_intro: "I'm the household's kitchen assistant: today's meals and each person's plate, the shopping list, batch and defrost days, and reminders. Mention me or reply to me and I answer; voice notes work too."
+bot_about_title: "👨‍🍳 Everything I do for you"
+bot_about_menu: "🗓️ The menu\nEvery 4 weeks I make a new menu on my own. Everyone eats the same, each plate sized to what each person needs. Lunches are batch-cooked on free afternoons from the calendar."
+bot_about_daily: "🍽️ Every day\n/today and /tomorrow: what each meal is, how much each person gets, and which pills go with it.\n/week: the week's menu."
+bot_about_list: "🛒 Shopping\n/list: the week's list, with the exact product, how many packs and the price where the stores are set up."
+bot_about_reminders: "⏰ Reminders"
+bot_about_daily_days: every day
+bot_about_kind_meal: "🍽️ Today's meal with its recipe link"
+bot_about_kind_batch: "🍲 Batch afternoon (only on batch days)"
+bot_about_kind_shopping: "🛒 Shopping day"
+bot_about_kind_defrost: "🧊 Defrost (only when tomorrow's lunch is in the freezer)"
+bot_about_kind_pills_lunch: "💊 Lunch pills (only if not marked yet)"
+bot_about_log: "📝 Logging\n/weight 82.4 · /waist 95 · /craving 6 · /water · /pills\nCalories follow the weight trend slowly. A binge never makes me cut food."
+bot_about_ask: "💬 Ask me\nSay my name, mention me or reply to me and I answer from your plan and data. Voice notes always reach me. I never change a dose: that is for your clinicians."
+bot_about_names: "Call me: {names}"
+bot_about_private: "🔒 You can also write to me privately. There I only see the data of the person writing."

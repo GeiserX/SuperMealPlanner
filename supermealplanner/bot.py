@@ -21,6 +21,7 @@ import httpx
 
 from . import context, llm
 from .i18n import Translator
+from .model import WEEKDAYS
 from .planner import plan_for
 from .portions import MEAL_ORDER, person_days, shopping_list
 
@@ -71,6 +72,8 @@ COMMANDS = {
     "agua": "water",
     "pills": "pills",
     "pastillas": "pills",
+    "about": "about",
+    "presentacion": "about",
 }
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
 
@@ -162,7 +165,7 @@ class Bot:
         cfg = self.data.settings.bot
         member = user_id in cfg.people.values()
         if chat.get("type") == "private":
-            return member
+            return member and cfg.private_chats
         if self.chat_id is None or chat["id"] != self.chat_id:
             return False
         return member or cfg.group_open
@@ -186,6 +189,8 @@ class Bot:
                     )  # polling and a webhook exclude each other
                     me = await self.call(client, "getMe")
                     self.username = me.get("username", "")
+                    if self.data.settings.bot.sync_profile:
+                        await self.sync_profile(client)
                     log.warning("bot @%s up", self.username)
                     backoff = 5
                     loops = [
@@ -350,7 +355,94 @@ class Bot:
             answer = self.t("bot_error")
         await self.send(client, chat_id, answer, reply_to)
 
+    # ------------------------------------------------------------- profile
+    MENU = (
+        "today",
+        "tomorrow",
+        "week",
+        "list",
+        "weight",
+        "waist",
+        "craving",
+        "water",
+        "pills",
+        "about",
+        "help",
+    )
+
+    async def sync_profile(self, client) -> None:
+        """Command menu and descriptions in English (default) and in the household's language."""
+        for locale in dict.fromkeys(("en", self.data.locale)):
+            t = Translator(locale)
+            lang = {} if locale == "en" else {"language_code": locale}
+            names = t.raw("bot_commands") or {}
+            try:
+                await self.call(
+                    client,
+                    "setMyCommands",
+                    commands=[
+                        {"command": names.get(c, c), "description": t(f"bot_cmd_{c}")}
+                        for c in self.MENU
+                    ],
+                    **lang,
+                )
+                await self.call(
+                    client, "setMyShortDescription", short_description=t("bot_short"), **lang
+                )
+                await self.call(
+                    client, "setMyDescription", description=t("bot_about_intro"), **lang
+                )
+            except TelegramError as e:  # the profile is nice to have; never stop the bot for it
+                log.warning("could not update the bot profile (%s): %s", locale, e)
+
     # ------------------------------------------------------------- commands
+    async def cmd_about(self, who, arg, user) -> str:
+        return self.presentation()
+
+    def presentation(self) -> str:
+        """Everything the bot does for this household, from the real settings."""
+        t, data = self.t, self.data
+        cfg = data.settings
+        lines = [
+            t("bot_about_title"),
+            "",
+            t("bot_about_menu"),
+            "",
+            t("bot_about_daily"),
+            "",
+            t("bot_about_list"),
+        ]
+        reminders = [r for r in cfg.reminders if r.enabled]
+        if reminders:
+            lines += ["", t("bot_about_reminders")]
+            for r in reminders:
+                days = (
+                    t("bot_about_daily_days")
+                    if r.days == "daily"
+                    else ", ".join(t.raw("days")[WEEKDAYS.index(d)] for d in r.days)
+                )
+                who = ", ".join(data.household.person(p).name for p in r.people) if r.people else ""
+                label = (
+                    r.text.split(":")[0].format(names=who, today="")
+                    if r.kind == "message"
+                    else t(f"bot_about_kind_{r.kind}")
+                )
+                lines.append(
+                    f"• {label.strip()}: {', '.join(r.at)} ({days}){' · ' + who if who and r.kind != 'message' else ''}"
+                )
+        lines += ["", t("bot_about_log"), "", t("bot_about_ask")]
+        if cfg.bot.wake_words:
+            lines.append(
+                t("bot_about_names", names=", ".join(f"«{w}»" for w in cfg.bot.wake_words))
+            )
+        if cfg.llm.provider == "none":
+            lines.append(t("bot_no_llm"))
+        if cfg.bot.private_chats:
+            lines += ["", t("bot_about_private")]
+        if cfg.base_url:
+            lines += ["", cfg.base_url]
+        return "\n".join(lines)
+
     async def cmd_help(self, who, arg, user) -> str:
         return self.t("bot_help")
 

@@ -98,7 +98,9 @@ bot:
   wake_words: [chef]          # the AI answers when a message names it, mentions the bot or replies to it
   respond: mentions           # mentions | all: "all" sends every group message to the AI
   voice: true                 # transcribe voice notes; they always go to the AI
+  private_chats: true         # people in bot.people may also write to the bot privately
   group_open: false           # true: anyone in the group may use the bot, not only bot.people
+  sync_profile: true          # at start, set the bot's command menu and descriptions in Telegram
   share_logs_in_group: false  # true: the AI may discuss weigh-ins, binges, cravings and notes in the group
   history_scope: asked        # asked | all: which group messages are kept as AI context
   history: 20
