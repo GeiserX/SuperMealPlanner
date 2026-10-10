@@ -316,7 +316,9 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
         if s.date != session_date:
             continue
         for x in s.dishes:
-            r = data.recipes[x.recipe]
+            r = data.recipes.get(x.recipe)
+            if r is None:  # repaired within the hour
+                continue
             conts, total = [], 0.0
             for e in x.eat:
                 f = factors(data, db, e)

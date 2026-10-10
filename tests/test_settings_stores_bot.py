@@ -695,3 +695,19 @@ def test_pages_survive_a_recipe_without_substitute(data_dir, data, monkeypatch):
         assert c.get(f"/?d={MONDAY}").status_code == 200
         assert c.get(f"/week?d={MONDAY}").status_code == 200
         assert c.get(f"/list?d={MONDAY}").status_code == 200
+
+
+def test_today_and_batch_survive_a_deleted_batch_dish(data_dir, data, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from supermealplanner.web import create_app
+
+    monkeypatch.setenv("SMP_SCHEDULER", "0")
+    plan = generate(data, MONDAY, 4)
+    for s in plan.sessions:
+        for x in s.dishes:
+            x.recipe = "deleted-dish"
+    plan.save(plans_dir(data) / f"{MONDAY}.yaml")
+    with TestClient(create_app(data_dir)) as c:
+        for path in (f"/?d={MONDAY}", f"/batch?d={MONDAY}"):
+            assert c.get(path).status_code == 200, path
