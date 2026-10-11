@@ -275,6 +275,7 @@ class Bot(Loose):
     token_env: str = "TELEGRAM_BOT_TOKEN"
     chat_id: int | None = None  # the household group; reminders go here
     people: dict[str, int] = {}  # person id -> Telegram user id
+    handles: dict[str, str] = {}  # person id -> @handle; looked up from Telegram when left out
     history: int = 20  # recent messages kept as context for the AI
     wake_words: list[str] = []  # the AI answers a group message that contains one of these words
     respond: Literal["mentions", "all"] = "mentions"  # "all": every group message goes to the AI

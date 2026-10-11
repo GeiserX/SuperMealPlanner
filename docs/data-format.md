@@ -95,6 +95,7 @@ bot:
   token_env: TELEGRAM_BOT_TOKEN
   chat_id: -1001234567890     # the household group; send /chatid in the group to get it
   people: {alex: 111111111, sam: 222222222}   # person id -> Telegram user id
+  handles: {sam: "@sam_cooks"}  # optional: how to @mention someone; looked up from Telegram when left out
   wake_words: [chef]          # the AI answers when a message names it, mentions the bot or replies to it
   respond: mentions           # mentions | all: "all" sends every group message to the AI
   voice: true                 # transcribe voice notes; they always go to the AI
