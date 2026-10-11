@@ -275,6 +275,7 @@ class Bot(Loose):
     token_env: str = "TELEGRAM_BOT_TOKEN"
     chat_id: int | None = None  # the household group; reminders go here
     people: dict[str, int] = {}  # person id -> Telegram user id
+    handles: dict[str, str] = {}  # person id -> @handle; looked up from Telegram when left out
     history: int = 20  # recent messages kept as context for the AI
     wake_words: list[str] = []  # the AI answers a group message that contains one of these words
     respond: Literal["mentions", "all"] = "mentions"  # "all": every group message goes to the AI
@@ -439,6 +440,9 @@ def load(root: str | Path) -> Data:
     for pid in settings.bot.people:
         if pid not in people:
             errors.append(f"settings.yaml bot.people: unknown person {pid}")
+    for pid in settings.bot.handles:
+        if pid not in people:
+            errors.append(f"settings.yaml bot.handles: unknown person {pid}")
     for r in settings.reminders:
         if r.kind == "message" and not r.text:
             errors.append(f"settings.yaml reminder {r.id}: kind message needs text")

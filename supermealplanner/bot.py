@@ -75,6 +75,7 @@ COMMANDS = {
     "about": "about",
     "presentacion": "about",
 }
+USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")  # Telegram usernames (4-letter ones exist)
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
 
 
@@ -88,6 +89,7 @@ class Bot:
         # a group Telegram upgraded to a supergroup: {"from": old id, "to": new id}
         self.migration: dict | None = state.db.get_kv("bot.migrated_chat")
         self.ai = asyncio.Semaphore(1)  # one AI answer at a time, in arrival order
+        self.usernames: dict[str, str] = {}  # person id -> Telegram username, from getChatMember
         self.tasks: set[asyncio.Task] = set()
 
     # ------------------------------------------------------------- plumbing
@@ -153,6 +155,31 @@ class Bot:
             return m["to"]  # only while settings still name the old group
         return configured
 
+    def mention(self, pid: str) -> str:
+        """How the bot names a person it addresses: their @handle, so Telegram notifies them;
+        the plain name when they have none."""
+        for handle in (self.data.settings.bot.handles.get(pid), self.usernames.get(pid)):
+            name = (handle or "").strip().removeprefix("@")
+            if USERNAME.fullmatch(name):  # a typo in settings never replaces a working handle
+                return f"@{name}"
+        return self.data.household.person(pid).name
+
+    async def learn_usernames(self, client) -> None:
+        """Look up each person's Telegram username once at start (group first, then their own chat)."""
+        for pid, uid in self.data.settings.bot.people.items():
+            for chat in (self.chat_id, uid):
+                if chat is None:
+                    continue
+                try:
+                    m = await self.call(client, "getChatMember", chat_id=chat, user_id=uid)
+                    username = (m.get("user") or {}).get("username")
+                except (TelegramError, KeyError, AttributeError, TypeError) as e:
+                    log.info("username lookup failed: %s", safe(e))
+                    continue
+                if username:
+                    self.usernames[pid] = username
+                break
+
     def person_of(self, user_id: int) -> str | None:
         for pid, uid in self.data.settings.bot.people.items():
             if uid == user_id:
@@ -191,6 +218,7 @@ class Bot:
                     self.username = me.get("username", "")
                     if self.data.settings.bot.sync_profile:
                         await self.sync_profile(client)
+                    await self.learn_usernames(client)
                     log.warning("bot @%s up", self.username)
                     backoff = 5
                     loops = [
@@ -335,6 +363,16 @@ class Bot:
         system = await asyncio.to_thread(
             context.build, self.data, self.state.db, self.state.today(), viewer, not private
         )
+        handles = {p.id: self.mention(p.id) for p in self.data.household.people}
+        if any(h.startswith("@") for h in handles.values()):
+            system += (
+                "\n\n## Telegram handles\nWhen you address or refer to a person for something they must do, use their handle: "
+                + ", ".join(
+                    f"{self.data.household.person(pid).name} = {h}"
+                    for pid, h in handles.items()
+                    if h.startswith("@")
+                )
+            )
         history = self.state.db.recent_chat(chat_id, self.data.settings.bot.history)
         messages = []
         for h in history:
@@ -424,6 +462,7 @@ class Bot:
                     if r.days == "daily"
                     else ", ".join(t.raw("days")[WEEKDAYS.index(d)] for d in r.days)
                 )
+                # plain names: describing a reminder must not notify the people it is for
                 who = ", ".join(data.household.person(p).name for p in r.people) if r.people else ""
                 everyone = who or ", ".join(p.name for p in data.household.people)
                 if r.kind == "message":  # the text as it will be sent, up to its first ": "
@@ -626,7 +665,7 @@ class Bot:
     def reminder_text(self, r, day: dt.date) -> str | None:
         t, data, db = self.t, self.data, self.state.db
         people = [p for p in data.household.people if not r.people or p.id in r.people]
-        names = ", ".join(p.name for p in people)
+        names = ", ".join(self.mention(p.id) for p in people)
         if r.kind == "message":
             return r.text.format(names=names, today=t.date(day))
         plan = plan_for(data, day)
@@ -691,7 +730,7 @@ class Bot:
                     rows and rows[0]["day"] == day.isoformat() and rows[0].get("pills_lunch") == 1
                 )
                 if not done:
-                    todo.append(t("reminder_pills_lunch", name=p.name))
+                    todo.append(t("reminder_pills_lunch", name=self.mention(p.id)))
             return "\n".join(todo) or None
         return None
 

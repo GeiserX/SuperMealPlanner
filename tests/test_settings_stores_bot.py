@@ -809,3 +809,52 @@ def test_reminder_labels_read_like_the_sent_message(data_dir, tmp_path):
     assert "dinner" in text.lower()
     with pytest.raises(ValueError, match="never fire"):
         Reminder(id="d", text="x", at=["10:00"], days=[])
+
+
+def test_people_are_mentioned_by_telegram_handle(data_dir, tmp_path):
+    from supermealplanner.bot import TelegramError
+
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    assert b.mention("luis") == "Luis"  # no handle known yet: the plain name
+
+    async def call(client, method, _tries=0, **params):
+        if params.get("user_id") == 7:
+            return {"user": {"id": 7, "username": "luis_cocina"}}
+        raise TelegramError(method, "Bad Request: user not found", 400)
+
+    b.call = call
+    run(b.learn_usernames(None))
+    assert b.mention("luis") == "@luis_cocina"
+    assert b.mention("ana") == "Ana"  # lookup failed: the name, never an error
+    data.settings.bot.handles = {"ana": "ana_chef"}
+    assert b.mention("ana") == "@ana_chef"  # an explicit handle wins
+
+    water = next(r for r in data.settings.reminders if r.id == "water")
+    assert b.reminder_text(water, MONDAY) == "Agua, @luis_cocina"
+    pills = next(r for r in data.settings.reminders if r.id == "pills")
+    assert "@luis_cocina" in b.reminder_text(pills, MONDAY)
+    assert "@" not in b.presentation()  # describing reminders notifies nobody
+    data.settings.bot.handles = {"ana": "jack"}  # 4-letter usernames exist
+    assert b.mention("ana") == "@jack"
+
+
+def test_bad_handles_and_odd_replies_fall_back_quietly(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    b.usernames["ana"] = "ana_real"
+    data.settings.bot.handles = {"ana": "ana chef", "luis": " @luis-x "}
+    assert b.mention("ana") == "@ana_real"  # invalid setting: the learned username
+    assert b.mention("luis") == "Luis"  # invalid setting, nothing learned: the name
+
+    async def call(client, method, _tries=0, **params):
+        return "not a member object"
+
+    b.call = call
+    run(b.learn_usernames(None))  # must not raise
+
+
+def test_handles_for_unknown_people_are_rejected(data_dir):
+    write(data_dir, "settings.yaml", {"bot": {"handles": {"nadie": "@nadie_x"}}})
+    with pytest.raises(DataError, match="bot.handles: unknown person nadie"):
+        load(data_dir)
