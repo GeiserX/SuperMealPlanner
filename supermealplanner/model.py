@@ -440,6 +440,9 @@ def load(root: str | Path) -> Data:
     for pid in settings.bot.people:
         if pid not in people:
             errors.append(f"settings.yaml bot.people: unknown person {pid}")
+    for pid in settings.bot.handles:
+        if pid not in people:
+            errors.append(f"settings.yaml bot.handles: unknown person {pid}")
     for r in settings.reminders:
         if r.kind == "message" and not r.text:
             errors.append(f"settings.yaml reminder {r.id}: kind message needs text")

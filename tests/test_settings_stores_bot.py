@@ -834,7 +834,9 @@ def test_people_are_mentioned_by_telegram_handle(data_dir, tmp_path):
     assert b.reminder_text(water, MONDAY) == "Agua, @luis_cocina"
     pills = next(r for r in data.settings.reminders if r.id == "pills")
     assert "@luis_cocina" in b.reminder_text(pills, MONDAY)
-    assert "@luis_cocina" in b.presentation()
+    assert "@" not in b.presentation()  # describing reminders notifies nobody
+    data.settings.bot.handles = {"ana": "jack"}  # 4-letter usernames exist
+    assert b.mention("ana") == "@jack"
 
 
 def test_bad_handles_and_odd_replies_fall_back_quietly(data_dir, tmp_path):
@@ -850,3 +852,9 @@ def test_bad_handles_and_odd_replies_fall_back_quietly(data_dir, tmp_path):
 
     b.call = call
     run(b.learn_usernames(None))  # must not raise
+
+
+def test_handles_for_unknown_people_are_rejected(data_dir):
+    write(data_dir, "settings.yaml", {"bot": {"handles": {"nadie": "@nadie_x"}}})
+    with pytest.raises(DataError, match="bot.handles: unknown person nadie"):
+        load(data_dir)

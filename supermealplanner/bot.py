@@ -75,7 +75,7 @@ COMMANDS = {
     "about": "about",
     "presentacion": "about",
 }
-USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")  # Telegram's username rule
+USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")  # Telegram usernames (4-letter ones exist)
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
 
 
@@ -462,8 +462,9 @@ class Bot:
                     if r.days == "daily"
                     else ", ".join(t.raw("days")[WEEKDAYS.index(d)] for d in r.days)
                 )
-                who = ", ".join(self.mention(p) for p in r.people) if r.people else ""
-                everyone = who or ", ".join(self.mention(p.id) for p in data.household.people)
+                # plain names: describing a reminder must not notify the people it is for
+                who = ", ".join(data.household.person(p).name for p in r.people) if r.people else ""
+                everyone = who or ", ".join(p.name for p in data.household.people)
                 if r.kind == "message":  # the text as it will be sent, up to its first ": "
                     sent = r.text.format(names=everyone, today=t.date(self.state.today()))
                     label = sent.split(": ")[0] if ": " in sent else sent
