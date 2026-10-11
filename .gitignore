@@ -4,3 +4,13 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 state/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+# Beads: bead text lives in the Dolt tracker only, never in git
+.beads/issues.jsonl
+.beads/interactions.jsonl
+.beads/events.jsonl
