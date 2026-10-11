@@ -75,6 +75,7 @@ COMMANDS = {
     "about": "about",
     "presentacion": "about",
 }
+USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")  # Telegram's username rule
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
 
 
@@ -157,9 +158,10 @@ class Bot:
     def mention(self, pid: str) -> str:
         """How the bot names a person it addresses: their @handle, so Telegram notifies them;
         the plain name when they have none."""
-        handle = self.data.settings.bot.handles.get(pid) or self.usernames.get(pid)
-        if handle:
-            return handle if handle.startswith("@") else f"@{handle}"
+        for handle in (self.data.settings.bot.handles.get(pid), self.usernames.get(pid)):
+            name = (handle or "").strip().removeprefix("@")
+            if USERNAME.fullmatch(name):  # a typo in settings never replaces a working handle
+                return f"@{name}"
         return self.data.household.person(pid).name
 
     async def learn_usernames(self, client) -> None:
@@ -170,9 +172,10 @@ class Bot:
                     continue
                 try:
                     m = await self.call(client, "getChatMember", chat_id=chat, user_id=uid)
-                except TelegramError:
+                    username = (m.get("user") or {}).get("username")
+                except (TelegramError, KeyError, AttributeError, TypeError) as e:
+                    log.info("username lookup failed: %s", safe(e))
                     continue
-                username = (m.get("user") or {}).get("username")
                 if username:
                     self.usernames[pid] = username
                 break

@@ -835,3 +835,18 @@ def test_people_are_mentioned_by_telegram_handle(data_dir, tmp_path):
     pills = next(r for r in data.settings.reminders if r.id == "pills")
     assert "@luis_cocina" in b.reminder_text(pills, MONDAY)
     assert "@luis_cocina" in b.presentation()
+
+
+def test_bad_handles_and_odd_replies_fall_back_quietly(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    b.usernames["ana"] = "ana_real"
+    data.settings.bot.handles = {"ana": "ana chef", "luis": " @luis-x "}
+    assert b.mention("ana") == "@ana_real"  # invalid setting: the learned username
+    assert b.mention("luis") == "Luis"  # invalid setting, nothing learned: the name
+
+    async def call(client, method, _tries=0, **params):
+        return "not a member object"
+
+    b.call = call
+    run(b.learn_usernames(None))  # must not raise
