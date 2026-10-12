@@ -190,8 +190,24 @@ def _show(value, t) -> str:
     if isinstance(value, list):
         return ", ".join(_show(v, t) for v in value) or t("change_none")
     if isinstance(value, dict):
-        return "; ".join(f"{k} {_show(v, t)}" for k, v in value.items() if k != "id")
+        return "; ".join(
+            f"{t(f'change_field_{k}')} {_field(k, v, t)}" for k, v in value.items() if k != "id"
+        )
     return str(value)
+
+
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _field(key: str, value, t) -> str:
+    """A reminder field in the household's language: weekdays and "daily" are words, not codes."""
+    if key == "days":
+        if value == "daily":
+            return t("change_daily")
+        if isinstance(value, list):
+            short = t.raw("days_short")
+            return ", ".join(short[WEEKDAYS.index(v)] if v in WEEKDAYS else str(v) for v in value)
+    return _show(value, t)
 
 
 def _current(data: Data, edit: Edit):

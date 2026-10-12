@@ -194,6 +194,14 @@ change_members_only: Solo las personas de casa pueden cambiar los ajustes.
 change_none: (nada)
 change_yes: sí
 change_no: "no"
+change_field_at: a las
+change_field_days: días
+change_field_people: para
+change_field_text: texto
+change_field_enabled: "activo:"
+change_field_kind: tipo
+change_field_meal: comida
+change_daily: todos los días
 change_lunch_time: Hora de comer
 change_shopping_day: Día de compra
 change_guests: "Invitados ({name})"

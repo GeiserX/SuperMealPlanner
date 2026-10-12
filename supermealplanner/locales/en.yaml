@@ -195,6 +195,14 @@ change_members_only: Only the people of the household can change the settings.
 change_none: (none)
 change_yes: "yes"
 change_no: "no"
+change_field_at: at
+change_field_days: days
+change_field_people: for
+change_field_text: text
+change_field_enabled: "on:"
+change_field_kind: kind
+change_field_meal: meal
+change_daily: every day
 change_lunch_time: Lunch time
 change_shopping_day: Shopping day
 change_guests: "Guests ({name})"
