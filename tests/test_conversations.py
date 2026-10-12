@@ -331,7 +331,7 @@ def git(cwd, *args):
 def repo(data_dir, tmp_path_factory):
     """The data folder as a clone of a bare repo, the way the app pulls it."""
     remote = tmp_path_factory.mktemp("remote") / "data.git"
-    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(remote)], check=True)
     (data_dir / ".gitignore").write_text("state/\n*.db\n")
     git(data_dir, "init", "-q", "-b", "main")
     git(data_dir, "add", ".")
