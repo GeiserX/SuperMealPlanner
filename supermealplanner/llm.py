@@ -32,6 +32,8 @@ import importlib.util
 import inspect
 import os
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
 import httpx
 
@@ -181,15 +183,26 @@ def _optional(data: Data, name: str):
         raise
 
 
+@lru_cache(maxsize=8)
+def _module(path: str, mtime_ns: int):
+    """One module per plugin file version: state a plugin keeps survives between calls, and an
+    edited file (a data repo pull) is loaded again."""
+    spec = importlib.util.spec_from_file_location(f"smp_plugin_{Path(path).stem}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _load(data: Data, rel: str | None, name: str):
     if not rel:
         raise LLMError("a plugin provider needs a .py file under the data directory")
     path = (data.root / rel).resolve()
     if data.root.resolve() not in path.parents:
         raise LLMError("a plugin must live inside the data directory")
-    spec = importlib.util.spec_from_file_location(f"smp_plugin_{path.stem}", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    try:
+        mod = _module(str(path), path.stat().st_mtime_ns)
+    except FileNotFoundError:
+        raise LLMError(f"{rel} does not exist") from None
     if not hasattr(mod, name):
         raise LLMError(f"{rel} defines no {name}()")
     return getattr(mod, name)

@@ -166,6 +166,24 @@ def test_new_starts_over_and_tells_the_provider(data_dir, tmp_path):
     assert [m["content"] for m in last["new"]] == ["luis: hola otra vez"]
 
 
+def test_a_plugin_is_loaded_once_per_version_of_its_file(data_dir):
+    import os
+
+    from supermealplanner import llm
+
+    (data_dir / "plugins").mkdir()
+    path = data_dir / "plugins" / "count.py"
+    path.write_text(
+        "calls = []\ndef complete(s, m, c):\n    calls.append(1)\n    return len(calls)\n"
+    )
+    write(data_dir, "settings.yaml", {"llm": {"provider": "plugin", "plugin": "plugins/count.py"}})
+    data = load(data_dir)
+    assert [run(llm.complete(data, "s", [])) for _ in range(3)] == ["1", "2", "3"]
+    path.write_text("def complete(s, m, c):\n    return 'new'\n")
+    os.utime(path, ns=(1, 10**18))  # a pull that changed the file
+    assert run(llm.complete(data, "s", [])) == "new"
+
+
 def test_built_in_providers_still_get_rules_context_and_history(data_dir, tmp_path):
     from supermealplanner import llm
 
@@ -426,6 +444,8 @@ def test_the_bot_applies_a_change_only_after_the_askers_yes(data_dir, repo, tmp_
     assert "```change" not in said[0] and "Te lo cambio." in said[0]
     assert "Lunch time: 14:00 → 14:30" in said[1] and "yes" in said[1]
     run(b.handle(None, msg("yes", user=8)))  # someone else: not their change
+    run(b.handle(None, msg("ok, thanks")))  # not only an answer: the change keeps waiting
+    run(b.handle(None, msg("no idea what to cook")))
     assert b.state.data.household.lunch_time == "14:00"
     run(b.handle(None, msg("yes!")))
     assert b.state.data.household.lunch_time == "14:30"  # saved and reloaded

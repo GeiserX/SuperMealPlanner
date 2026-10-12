@@ -529,10 +529,12 @@ class Bot:
         if time.time() - pending.get("ts", 0) > PENDING_TTL:
             self.state.db.set_kv(key, None)
             return False
+        # only a message that is nothing but the answer: "sí", "vale, sí", "no". "si quieres..."
+        # or "no sé qué cenar" are other messages and leave the change waiting
         words = re.sub(r"[^\w\s]", " ", text.lower()).split()
-        first = words[0] if words else ""
-        yes = first in (self.t.raw("change_yes_words") or [])
-        if not yes and first not in (self.t.raw("change_no_words") or []):
+        yes = bool(words) and set(words) <= set(self.t.raw("change_yes_words") or [])
+        no = bool(words) and set(words) <= set(self.t.raw("change_no_words") or [])
+        if not (yes or no):
             return False
         self.state.db.set_kv(key, None)
         reply = await self.apply(pending) if yes else self.t("change_cancelled")
