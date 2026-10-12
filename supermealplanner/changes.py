@@ -20,6 +20,7 @@ shows the change for a person to make.
 
 from __future__ import annotations
 
+import difflib
 import io
 import json
 import logging
@@ -35,7 +36,7 @@ from pathlib import Path
 import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
-from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 from ruamel.yaml.util import load_yaml_guess_indent
 
 from .model import Data, DataError, check
@@ -59,7 +60,9 @@ ALLOWED = {
     "settings.shopping.alternatives": "shopping_alternatives",
     "settings.sections.*": "section",
     "settings.reminders.*": "reminder",
+    "settings.llm.instructions": "instructions",
 }
+INSTRUCTIONS_MAX = 4000  # characters of the assistant's own instructions a chat change may set
 LISTS_BY_ID = {"people", "reminders"}  # lists whose items are addressed by their id
 BLOCK = re.compile(r"```change[ \t]*\n(.*?)```", re.DOTALL)
 RECIPE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -159,6 +162,12 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
             }
             if kinds & PROTECTED_REMINDER_KINDS:
                 raise ChangeError("the pills reminder can only be changed by hand")
+        if label == "instructions" and not (
+            isinstance(value, str) and len(value) <= INSTRUCTIONS_MAX
+        ):
+            raise ChangeError(
+                f"{path} must be the whole new text, at most {INSTRUCTIONS_MAX} characters"
+            )
         if label == "reminder" and value is not None and not isinstance(value, dict):
             raise ChangeError(f"{path} must be the reminder's fields, or null to remove it")
         if label == "reminder" and isinstance(value, dict) and "id" in value and value["id"] != arg:
@@ -231,6 +240,10 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
             name = data.household.person(e.arg).name
         what = t(f"change_{e.label}", name=name)
         old = _current(data, e)
+        if e.label == "instructions":  # a whole text: only the lines that change
+            lines.append(f"• {what}:")
+            lines += _text_diff(old if isinstance(old, str) else "", str(e.value or ""))
+            continue
         if e.label == "reminder" and old is not None and isinstance(e.value, dict):
             new = {**old, **e.value}  # only the fields that change are sent
             old = {k: old.get(k) for k in e.value}
@@ -248,6 +261,16 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
             )
         )
     return lines
+
+
+def _text_diff(old: str, new: str) -> list[str]:
+    """The lines a new text removes (−) and adds (+), without the ones it keeps."""
+    out = []
+    for line in difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=0):
+        if line.startswith(("---", "+++", "@@")):
+            continue
+        out.append(("  + " if line[0] == "+" else "  − ") + line[1:])
+    return out
 
 
 def manual(p: Proposal) -> list[str]:
@@ -325,6 +348,10 @@ def _quote(value):
         return [_quote(v) for v in value]
     if isinstance(value, dict):
         return {k: _quote(v) for k, v in value.items()}
+    if isinstance(value, str) and "\n" in value.strip("\n"):
+        # several lines stay a readable block; ruamel falls back to quotes when a block cannot
+        # carry the text exactly
+        return LiteralScalarString(value)
     if isinstance(value, str):
         try:
             same = yaml.safe_load(value) == value

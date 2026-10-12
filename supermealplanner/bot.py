@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -88,6 +89,12 @@ USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")  # Telegram usernames (4-le
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
 AI = "ai"  # the `who` of the AI's own answers in the chat log
 PENDING_TTL = 3600  # a proposed change waits this long for its yes
+# What waits for a yes, as a list. 0.3.x kept one change as a dict under bot.pending.<chat> and reads
+# nothing else, so the list lives under its own key: a rollback to 0.3.x finds nothing it cannot read.
+WAITING = "bot.waiting.{}"
+LEGACY_PENDING = "bot.pending.{}"
+RUNNING = "bot.running"  # proposals the plugin is carrying out now, across every chat
+ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft takes minutes)
 
 
 class Bot:
@@ -102,6 +109,7 @@ class Bot:
         self.ai = asyncio.Semaphore(1)  # one AI answer at a time, in arrival order
         self.usernames: dict[str, str] = {}  # person id -> Telegram username, from getChatMember
         self.tasks: set[asyncio.Task] = set()
+        self.started = False
         self.bot_id = 0
         self.writing = asyncio.Lock()  # one settings change at a time
 
@@ -155,10 +163,13 @@ class Bot:
         record: bool = True,
         markdown: bool = False,
         who: str | None = None,
-    ) -> None:
+        ids: list[int] | None = None,
+    ) -> int | None:
         """markdown: the text is the AI's Markdown, sent as Telegram HTML; a chunk Telegram refuses
-        to parse goes again as plain text."""
-        for chunk in _chunks(text):
+        to parse goes again as plain text. Returns the id of the last message sent; `ids` collects
+        the id of every piece."""
+        sent = None
+        for chunk in _chunks(text, fences=markdown):
             params = {"chat_id": chat_id, "disable_web_page_preview": True}
             if reply_to:
                 params["reply_parameters"] = {
@@ -167,17 +178,22 @@ class Bot:
                 }
             if markdown:
                 try:
-                    await self.call(
+                    sent = await self.call(
                         client, "sendMessage", text=to_html(chunk), parse_mode="HTML", **params
                     )
+                    if ids is not None and isinstance(sent, dict) and sent.get("message_id"):
+                        ids.append(sent["message_id"])
                     continue
                 except TelegramError as e:
                     if e.code != 400:
                         raise
                     log.info("Telegram refused the formatting, sending plain text: %s", e)
-            await self.call(client, "sendMessage", text=chunk, **params)
+            sent = await self.call(client, "sendMessage", text=chunk, **params)
+            if ids is not None and isinstance(sent, dict) and sent.get("message_id"):
+                ids.append(sent["message_id"])
         if record:
             self.state.db.add_chat(chat_id, "assistant", who, text)
+        return sent.get("message_id") if isinstance(sent, dict) else None
 
     @property
     def chat_id(self) -> int | None:
@@ -253,6 +269,9 @@ class Bot:
                         await self.sync_profile(client)
                     await self.learn_usernames(client)
                     await self.check_group(client, me)
+                    if not self.started:  # once per process: a loop restart cuts nothing off
+                        self.started = True
+                        await self.interrupted(client)
                     log.warning("bot @%s up", self.username)
                     backoff = 5
                     loops = [
@@ -449,7 +468,10 @@ class Bot:
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
             # messages that came in together: an earlier turn already took this one with them
             return
-        await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
+        try:
+            await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
+        except TelegramError as e:  # only a courtesy: the answer still goes
+            log.info("typing indicator failed: %s", e)
         private = chat_id > 0
         viewer = asker if private else None
         facts = await asyncio.to_thread(
@@ -473,7 +495,7 @@ class Bot:
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return
         text, change = changes.extract(reply.text)
-        if not text and change is None:
+        if not text and change is None and not reply.proposals:
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return
         if text:
@@ -485,6 +507,8 @@ class Bot:
             db.set_kv(key, None)
         if change is not None:
             await self.propose(client, chat_id, reply_to, asker, user_id, change)
+        for proposal in reply.proposals:
+            await self.offer(client, chat_id, reply_to, asker, user_id, proposal)
 
     # ------------------------------------------------------------- settings changes
     async def propose(self, client, chat_id, reply_to, asker, user_id, change) -> None:
@@ -502,31 +526,59 @@ class Bot:
             await self.send(client, chat_id, t("change_invalid", error=e), reply_to)
             return
         lines = changes.describe(proposal, self.data, t)
-        self.state.db.set_kv(
-            f"bot.pending.{chat_id}",
-            {
-                "change": change,
-                "by": user_id,
-                "asker": asker,
-                "name": self.data.household.person(asker).name,
-                "ts": time.time(),
-            },
-        )
-        await self.send(
+        msgs: list[int] = []
+        sent = await self.send(
             client,
             chat_id,
             t("change_confirm", name=self.mention(asker), lines="\n".join(lines)),
             reply_to,
+            ids=msgs,
         )
+        item = {
+            "change": change,
+            "by": [user_id],
+            "asker": asker,
+            "name": self.data.household.person(asker).name,
+            "ts": time.time(),
+            "msg": sent,
+            "msgs": msgs,
+        }
+        # a newer change from the same person replaces their earlier one ("no, better at 15:00")
+        self.wait_for(chat_id, item, lambda i: "change" in i and i.get("asker") == asker)
+
+    def pending(self, chat_id: int) -> list[dict]:
+        """What waits for a yes in this chat, oldest first, without what has expired. A change 0.3.x
+        left under the old key moves to the new one."""
+        db, key, old_key = self.state.db, WAITING.format(chat_id), LEGACY_PENDING.format(chat_id)
+        raw = db.get_kv(key)
+        items = list(raw) if isinstance(raw, list) else []
+        old = db.get_kv(old_key)
+        if old is not None:
+            items += old if isinstance(old, list) else [old] if isinstance(old, dict) else []
+            db.set_kv(old_key, None)
+        live = [i for i in items if time.time() - i.get("ts", 0) <= PENDING_TTL]
+        if live != raw and (raw is not None or live):
+            db.set_kv(key, live or None)
+        return live
+
+    def wait_for(self, chat_id: int, item: dict, replaces) -> None:
+        """Keep an item waiting next to the others; `replaces(other)` drops one it supersedes."""
+        items = [i for i in self.pending(chat_id) if not replaces(i)]
+        self.state.db.set_kv(WAITING.format(chat_id), [*items, item])
+
+    def drop(self, chat_id: int, item: dict) -> None:
+        items = [i for i in self.pending(chat_id) if i != item]
+        self.state.db.set_kv(WAITING.format(chat_id), items or None)
 
     async def answer_pending(self, client, chat_id: int, user: dict, msg: dict, text: str) -> bool:
-        """A yes or no from the person a change waits for. True when the message was that answer."""
-        key = f"bot.pending.{chat_id}"
-        pending = self.state.db.get_kv(key)
-        if not pending or pending.get("by") != user.get("id"):
-            return False
-        if time.time() - pending.get("ts", 0) > PENDING_TTL:
-            self.state.db.set_kv(key, None)
+        """A yes or no from the person a change waits for. True when the message was that answer.
+        With several waiting for the same person, the answer has to reply to the one it means."""
+        mine = []
+        for item in self.pending(chat_id):
+            by = item.get("by")
+            if user.get("id") in (by if isinstance(by, list) else [by]):
+                mine.append(item)
+        if not mine:
             return False
         # in the group, only an answer addressed to the bot: an "ok" replying to someone else is
         # their conversation, not a yes
@@ -541,7 +593,24 @@ class Bot:
         no = bool(words) and set(words) <= set(self.t.raw("change_no_words") or [])
         if not (yes or no):
             return False
-        self.state.db.set_kv(key, None)
+        to = (msg.get("reply_to_message") or {}).get("message_id") if self.replied(msg) else None
+        meant = [i for i in mine if to is not None and to in (i.get("msgs") or [i.get("msg")])]
+        if to is not None and not meant:
+            # a change 0.3.x left waiting never kept the id of its message: any reply to the bot
+            # may be the yes to it
+            meant = [i for i in mine if i.get("msg") is None and not i.get("msgs")]
+        if to is not None and not meant:
+            # a yes to another of the bot's messages (someone else's offer, an answer) is not a
+            # yes to what waits for this person: it settles nothing
+            return False
+        if not meant and len(mine) > 1:
+            await self.send(client, chat_id, self.t("pending_which"), msg["message_id"])
+            return True
+        pending = (meant or mine)[0]
+        self.drop(chat_id, pending)
+        if yes and "proposal" in pending:
+            await self.act(client, chat_id, msg["message_id"], pending)
+            return True
         reply = await self.apply(pending) if yes else self.t("change_cancelled")
         await self.send(client, chat_id, reply, msg["message_id"])
         return True
@@ -575,6 +644,123 @@ class Bot:
             log.warning("settings change failed: %s", safe(e))
             return t("change_failed", error=type(e).__name__)
         return t("change_applied", sha=sha)
+
+    # ------------------------------------------------------------- proposals
+    async def offer(self, client, chat_id, reply_to, asker, user_id, proposal: dict) -> None:
+        """Show something the plugin would do outside the chat and wait for the right yes: the
+        asker's, or an admin's. A step that changes nothing runs at once, in the background."""
+        t, cfg = self.t, self.data.settings.bot
+        if asker is None or user_id is None:
+            await self.send(client, chat_id, t("proposal_members_only"), reply_to)
+            return
+        pending = {
+            "proposal": proposal,
+            "asker": asker,
+            "user": user_id,
+            "name": self.data.household.person(asker).name,
+            "ts": time.time(),
+        }
+        if proposal["confirm_by"] == "none":
+            await self.send(client, chat_id, proposal["summary"], reply_to)
+            task = asyncio.create_task(self.act(client, chat_id, reply_to, pending))
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
+            return
+        if proposal["confirm_by"] == "admins":
+            admins = [pid for pid in cfg.admins if pid in cfg.people]
+            ids = [cfg.people[pid] for pid in admins]
+            names = ", ".join(self.mention(pid) for pid in admins)
+        else:
+            ids, names = [user_id], self.mention(asker)
+        if not ids:
+            await self.send(client, chat_id, t("proposal_no_admins"), reply_to)
+            return
+        where, answer_to = chat_id, reply_to
+        if chat_id > 0 and user_id not in ids:
+            # nobody else can write in this private chat: the admins answer in the group
+            if self.chat_id is None:
+                await self.send(client, chat_id, t("proposal_admins_no_group"), reply_to)
+                return
+            where, answer_to = self.chat_id, None
+        msgs: list[int] = []
+        sent = await self.send(
+            client,
+            where,
+            t("proposal_confirm", name=names, summary=proposal["summary"]),
+            answer_to,
+            ids=msgs,
+        )
+        if where != chat_id:
+            await self.send(client, chat_id, t("proposal_in_group", name=names), reply_to)
+        item = {**pending, "by": ids, "msg": sent, "msgs": msgs}
+        self.wait_for(where, item, lambda i: (i.get("proposal") or {}).get("id") == proposal["id"])
+
+    async def act(self, client, chat_id: int, reply_to: int, pending: dict) -> None:
+        """Have the plugin carry out a proposal and post what came of it. Follow-ups are offered on
+        behalf of the same asker. While it runs it is written down, so a restart can say it was
+        cut off instead of leaving the asker waiting."""
+        mark = {"id": uuid.uuid4().hex, "chat": chat_id, "reply_to": reply_to, "ts": time.time()}
+        db = self.state.db
+        db.set_kv(RUNNING, [*(db.get_kv(RUNNING) or []), mark])
+        try:
+            await self._act(client, chat_id, reply_to, pending)
+        except asyncio.CancelledError:
+            raise  # the bot is stopping: the mark stays, and the next start says so
+        except BaseException:
+            self._unmark(mark)
+            raise
+        self._unmark(mark)
+
+    def _unmark(self, mark: dict) -> None:
+        db = self.state.db
+        left = [m for m in db.get_kv(RUNNING) or [] if m.get("id") != mark["id"]]
+        db.set_kv(RUNNING, left or None)
+
+    async def interrupted(self, client) -> None:
+        """Once at start: tell each chat whose proposal was running when the bot stopped that it
+        was cut off, so the asker knows to ask again."""
+        db = self.state.db
+        for m in db.get_kv(RUNNING) or []:
+            try:
+                await self.send(
+                    client,
+                    m["chat"],
+                    self.t("proposal_interrupted"),
+                    m.get("reply_to"),
+                    record=False,
+                )
+            except Exception as e:  # noqa: BLE001  best effort, like any other notice
+                log.warning("could not report an interrupted proposal: %s", safe(e))
+        db.set_kv(RUNNING, None)
+
+    async def _act(self, client, chat_id: int, reply_to: int, pending: dict) -> None:
+        try:
+            out = await asyncio.wait_for(
+                llm.act(self.data, pending["proposal"]), timeout=ACT_TIMEOUT
+            )
+            if out.text:
+                await self.send(client, chat_id, out.text, reply_to)
+            for proposal in out.proposals:
+                await self.offer(
+                    client, chat_id, reply_to, pending["asker"], pending.get("user"), proposal
+                )
+        except Exception as e:  # noqa: BLE001
+            log.warning("a proposal failed: %s", safe(e))
+            said = (
+                self.t("proposal_unsupported")
+                if isinstance(e, llm.NoAct)
+                else self.t("proposal_failed", error=safe(e))
+            )
+            try:
+                await self.send(
+                    client,
+                    chat_id,
+                    said,
+                    reply_to,
+                    record=False,
+                )
+            except Exception as e2:  # noqa: BLE001  the reply is best effort
+                log.warning("could not report the failed proposal: %s", safe(e2))
 
     async def check_group(self, client, me: dict) -> None:
         """Say once at start when the group's mentions cannot reach the bot."""
@@ -710,7 +896,8 @@ class Bot:
         async with self.ai:  # never in the middle of an answer for this chat
             conv = self.state.db.get_kv(f"bot.conversation.{chat_id}") or {}
             self.state.db.set_kv(f"bot.conversation.{chat_id}", None)
-            self.state.db.set_kv(f"bot.pending.{chat_id}", None)
+            self.state.db.set_kv(WAITING.format(chat_id), None)
+            self.state.db.set_kv(LEGACY_PENDING.format(chat_id), None)
             self.state.db.clear_chat(chat_id)
         if conv.get("id"):
             try:
@@ -991,16 +1178,35 @@ def _files(root: Path) -> dict[str, str]:
     return out
 
 
-def _chunks(text: str, size: int = 3500):
-    """Pieces Telegram accepts, cut at a line break when there is one, so Markdown stays whole."""
+def _chunks(text: str, size: int = 3500, fences: bool = True):
+    """Pieces Telegram accepts, cut at a line break when there is one, so Markdown stays whole. A
+    code block cut in two is closed at the cut and opened again in the next piece. Plain text
+    (fences=False) is only cut: nothing is added to what was written."""
+    floor = 0  # the reopened fence at the start of the text: a cut must land past it
+    room = size - 4 if fences else size  # for the closing fence a cut may add
     while len(text) > size:
-        cut = text.rfind("\n", 0, size)
-        if cut <= 0:
-            cut = size
-        yield text[:cut]
-        text = text[cut:].lstrip("\n")
+        cut = text.rfind("\n", floor + 1, room)
+        if cut <= floor:
+            cut = room
+        head, text = text[:cut], text[cut:].lstrip("\n")
+        fence = _open_fence(head) if fences else None
+        floor = 0
+        if fence is not None:
+            head += "\n```"
+            text = f"{fence}\n{text}"
+            floor = len(fence)
+        yield head
     if text:
         yield text
+
+
+def _open_fence(text: str) -> str | None:
+    """The line that opened a code block still open at the end of text, or None."""
+    fence = None
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            fence = None if fence is not None else line.strip()[:64] or "```"
+    return fence
 
 
 def to_html(md: str) -> str:

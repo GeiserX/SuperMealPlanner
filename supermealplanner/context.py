@@ -33,7 +33,8 @@ CHANGES = """
 ## Changing settings
 You may propose a change to these settings only: lunch time, shopping day, guests, batch days and
 sessions per week, the weekly rules, foods to add to the asker's own avoided foods, the shopping
-list's stores and section names, reminders other than the pills reminder, and a new recipe. Never
+list's stores and section names, reminders other than the pills reminder, a new recipe, and your own
+extra instructions (when someone asks you to answer differently from now on). Never
 pills, the pills reminder, calories, protein or goals, never someone else's avoided foods, and never
 a food taken off an avoided list (it may be there for a medical reason): for those, say that a
 person has to edit them by hand. To propose a change, say it in your answer and end the answer with
@@ -52,6 +53,8 @@ set:
   settings.shopping.alternatives: [<store id>]
   settings.sections.<section id>: <label>
   settings.reminders.<reminder id>: {at: ["12:00"], days: daily, enabled: true}   # the fields that change; null removes it
+  settings.llm.instructions: |   # the whole new text: the current instructions with the change made
+    ...
 recipe: {id: <new-id>, name: ..., meals: [lunch], kind: batch, ingredients: [{id: <ingredient id>, qty: 80}], steps: [...], nutrition: {kcal: 550, protein_g: 35}}
 ```
 
@@ -60,6 +63,10 @@ for kind message ({names} and {today} are filled in). The app shows the change t
 asked and applies it only after they say yes, so never claim it is done.
 """
 
+
+LAST_WORD = (
+    "When these instructions conflict with the rules at the top (doses, binges), the rules win."
+)
 
 SENSITIVE = ("hunger", "craving", "nausea", "binge")
 
@@ -74,9 +81,10 @@ def build(
 def rules(data: Data) -> str:
     """The instructions: the same for every message, so a provider that keeps a conversation sends
     them once."""
-    return "\n".join(
-        x for x in (RULES.format(locale=data.locale), CHANGES, data.settings.llm.instructions) if x
-    )
+    own = data.settings.llm.instructions
+    if own:  # the household may edit these from the chat; the rules above still win
+        own = f"## The household's own instructions\n{own}\n\n{LAST_WORD}"
+    return "\n".join(x for x in (RULES.format(locale=data.locale), CHANGES, own) if x)
 
 
 def facts(

@@ -182,7 +182,7 @@ bot_about_voice: "Voice notes reach me in a private chat; in the group, reply to
 # AI conversation and settings changes from the chat
 bot_new: "New conversation: I've forgotten what we talked about. Your plan and data are still here."
 bot_cmd_new: Start a new conversation with me
-bot_about_changes: "⚙️ Settings\nAsk me to change a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, or the shopping stores, or to add a recipe. I show you the change and apply it only when you say yes. Pills, calories and goals are never changed from the chat."
+bot_about_changes: "⚙️ Settings\nAsk me to change a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, the shopping stores or how I answer, or to add a recipe. I show you the change and apply it only when you say yes. Pills, calories and goals are never changed from the chat."
 change_confirm: "{name}, shall I change this?\n{lines}\nReply to this message with «yes» or «no»."
 change_yes_words: ["yes", "y", "ok", "okay", "sure", "go"]
 change_no_words: ["no", "n", "nope", "cancel"]
@@ -215,3 +215,13 @@ change_shopping_alternatives: Other stores for the list
 change_section: "List section {name}"
 change_reminder: "Reminder «{name}»"
 change_recipe: "New recipe: {name} ({n} ingredients)"
+change_instructions: The assistant's instructions
+proposal_confirm: "{name}, shall I go ahead?\n{summary}\nReply to this message with «yes» or «no»."
+proposal_no_admins: "Only an admin can approve this, and none is set (bot.admins)."
+proposal_members_only: Only the people of the household can ask for this.
+proposal_failed: "That didn't work: {error}"
+proposal_in_group: "Only {name} can approve this, so I asked in the group: an admin answers there."
+proposal_admins_no_group: "Only an admin can approve this, and this chat is yours alone: ask in the group (bot.chat_id is not set)."
+proposal_unsupported: "The AI provider cannot carry out proposals."
+proposal_interrupted: "I restarted while I was working on this, so it did not finish. Ask for it again if you still want it."
+pending_which: "Several things are waiting for your answer: reply «yes» or «no» to the message of the one you mean."

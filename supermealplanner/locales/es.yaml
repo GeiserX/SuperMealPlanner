@@ -181,7 +181,7 @@ bot_about_voice: "Las notas de voz me llegan por privado; en el grupo, mandádme
 # conversación con la IA y cambios de ajustes desde el chat
 bot_new: "Conversación nueva: he olvidado lo que hablamos. Vuestro plan y vuestros datos siguen aquí."
 bot_cmd_new: Empezar una conversación nueva conmigo
-bot_about_changes: "⚙️ Ajustes\nPedidme cambiar un recordatorio, los días de batch, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, o las tiendas de la compra, o añadir una receta. Os enseño el cambio y solo lo aplico cuando me decís que sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
+bot_about_changes: "⚙️ Ajustes\nPedidme cambiar un recordatorio, los días de batch, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, o las tiendas de la compra o cómo os respondo, o añadir una receta. Os enseño el cambio y solo lo aplico cuando me decís que sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
 change_confirm: "{name}, ¿hago este cambio?\n{lines}\nResponde a este mensaje con «sí» o «no»."
 change_yes_words: ["sí", "si", "vale", "ok", "okay", "claro", "dale", "adelante", "venga", "yes"]
 change_no_words: ["no", "nop", "cancela", "cancelar"]
@@ -214,3 +214,13 @@ change_shopping_alternatives: Otras tiendas de la lista
 change_section: "Sección de la lista {name}"
 change_reminder: "Recordatorio «{name}»"
 change_recipe: "Receta nueva: {name} ({n} ingredientes)"
+change_instructions: Instrucciones del asistente
+proposal_confirm: "{name}, ¿lo hago?\n{summary}\nResponde a este mensaje con «sí» o «no»."
+proposal_no_admins: "Esto solo lo puede aprobar un administrador, y no hay ninguno configurado (bot.admins)."
+proposal_members_only: Solo las personas de casa pueden pedir esto.
+proposal_failed: "No ha salido bien: {error}"
+proposal_in_group: "Esto solo lo puede aprobar {name}, así que lo he preguntado en el grupo: allí contesta un administrador."
+proposal_admins_no_group: "Esto solo lo puede aprobar un administrador, y este chat es solo tuyo: pregúntalo en el grupo (falta bot.chat_id)."
+proposal_unsupported: "El proveedor de IA no puede llevar a cabo propuestas."
+proposal_interrupted: "Me reinicié mientras trabajaba en esto y no terminó. Pídemelo otra vez si aún lo quieres."
+pending_which: "Hay varias cosas esperando tu respuesta: responde «sí» o «no» al mensaje de la que quieras."
