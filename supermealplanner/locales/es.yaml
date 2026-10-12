@@ -219,4 +219,7 @@ proposal_confirm: "{name}, ¿lo hago?\n{summary}\nResponde a este mensaje con «
 proposal_no_admins: "Esto solo lo puede aprobar un administrador, y no hay ninguno configurado (bot.admins)."
 proposal_members_only: Solo las personas de casa pueden pedir esto.
 proposal_failed: "No ha salido bien: {error}"
+proposal_in_group: "Esto solo lo puede aprobar {name}, así que lo he preguntado en el grupo: allí contesta un administrador."
+proposal_admins_no_group: "Esto solo lo puede aprobar un administrador, y este chat es solo tuyo: pregúntalo en el grupo (falta bot.chat_id)."
+proposal_unsupported: "El proveedor de IA no puede llevar a cabo propuestas."
 pending_which: "Hay varias cosas esperando tu respuesta: responde «sí» o «no» al mensaje de la que quieras."

@@ -670,10 +670,10 @@ def test_in_the_group_only_an_answer_to_the_bot_settles_a_change(data_dir, tmp_p
     sent, asked = len(ChatBot.texts(b)), len(turns(data_dir))
     run(b.handle(None, msg("ok", reply_to_message={"from": {"id": 8}})))  # to Ana, not the bot
     run(b.handle(None, msg("no")))  # said to the room
-    assert db.get_kv("bot.pending.-100") is not None
+    assert db.get_kv("bot.waiting.-100") is not None
     assert len(ChatBot.texts(b)) == sent and len(turns(data_dir)) == asked  # no answer at all
     run(b.handle(None, msg("@ChefBot yes")))  # a mention is addressed to the bot
-    assert db.get_kv("bot.pending.-100") is None
+    assert db.get_kv("bot.waiting.-100") is None
     assert 'household.yaml: shopping_day = "friday"' in ChatBot.texts(b)[-1]
     assert len(turns(data_dir)) == asked  # the answer, not a new question for the AI
 
@@ -697,14 +697,14 @@ def test_a_yes_after_the_wait_ran_out_changes_nothing(data_dir, tmp_path, monkey
     b = ChatBot(data, db)
     reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
     run(b.handle(None, msg("@chefbot compramos los viernes")))
-    (pending,) = db.get_kv("bot.pending.-100")
-    db.set_kv("bot.pending.-100", [{**pending, "ts": time.time() - PENDING_TTL - 1}])
+    (pending,) = db.get_kv("bot.waiting.-100")
+    db.set_kv("bot.waiting.-100", [{**pending, "ts": time.time() - PENDING_TTL - 1}])
     sent = len(ChatBot.texts(b))
     reply(data_dir, text="¿Qué cambio?")
     run(b.handle(None, msg("yes", **TO_BOT)))
     # neither applied nor shown for a person to make: a new message for the AI
     assert ChatBot.texts(b)[sent:] == ["¿Qué cambio?"]
-    assert db.get_kv("bot.pending.-100") is None
+    assert db.get_kv("bot.waiting.-100") is None
 
 
 def test_the_bot_lets_a_person_add_only_to_their_own_avoided_foods(data_dir, tmp_path, monkeypatch):
@@ -715,14 +715,14 @@ def test_the_bot_lets_a_person_add_only_to_their_own_avoided_foods(data_dir, tmp
     reply(data_dir, text=block({"set": {"household.people.luis.avoid_ingredients": ["salmon"]}}))
     run(b.handle(None, msg("@chefbot Luis ya no evita espinacas", user=8)))  # Ana, for Luis
     assert "only the person themselves" in ChatBot.texts(b)[-1]
-    assert db.get_kv("bot.pending.-100") is None
+    assert db.get_kv("bot.waiting.-100") is None
     reply(
         data_dir,
         text=block({"set": {"household.people.luis.avoid_ingredients": ["espinaca", "salmon"]}}),
     )
     run(b.handle(None, msg("@chefbot no quiero salmón")))  # Luis, for himself
     assert "Foods Luis avoids: espinaca → espinaca, salmon" in ChatBot.texts(b)[-1]
-    assert db.get_kv("bot.pending.-100")[0]["asker"] == "luis"
+    assert db.get_kv("bot.waiting.-100")[0]["asker"] == "luis"
     run(b.handle(None, msg("yes", **TO_BOT)))  # checked again on the yes, as Luis's own change
     assert 'avoid_ingredients = ["espinaca", "salmon"]' in ChatBot.texts(b)[-1]
 
@@ -734,7 +734,7 @@ def test_forbidden_changes_and_strangers_are_refused(data_dir, tmp_path):
     reply(data_dir, text=block({"set": {"household.people.luis.kcal.start": 1200}}))
     run(b.handle(None, msg("@chefbot bájame las calorías")))
     assert "cannot be changed from the chat" in ChatBot.texts(b)[-1]
-    assert db.get_kv("bot.pending.-100") is None
+    assert db.get_kv("bot.waiting.-100") is None
     reply(data_dir, text=block({"set": {"household.lunch_time": "15:00"}}))
     run(b.handle(None, msg("@chefbot comemos a las 15", user=555)))  # in the group, not household
     assert ChatBot.texts(b)[-1] == b.t("change_members_only")
@@ -794,7 +794,7 @@ def test_a_proposal_waits_for_the_askers_yes_and_the_plugin_carries_it_out(data_
     run(b.handle(None, msg("yes", **TO_BOT)))
     assert [a["id"] for a in acts(data_dir)] == ["j1:1"]
     assert ChatBot.texts(b, -100)[-1] == "done j1:1"
-    assert db.get_kv("bot.pending.-100") is None
+    assert db.get_kv("bot.waiting.-100") is None
     run(b.handle(None, msg("yes", **TO_BOT)))  # once only
     assert len(acts(data_dir)) == 1
 
@@ -824,7 +824,7 @@ def test_an_admin_proposal_with_no_admins_is_refused(data_dir, tmp_path):
     reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
     run(b.handle(None, msg("@chefbot quiero un comando /sopa")))
     assert ChatBot.texts(b, -100)[-1] == b.t("proposal_no_admins")
-    assert db.get_kv("bot.pending.-100") is None
+    assert db.get_kv("bot.waiting.-100") is None
 
 
 def test_a_step_that_changes_nothing_runs_at_once_and_offers_what_follows(data_dir, tmp_path):
@@ -843,7 +843,7 @@ def test_a_step_that_changes_nothing_runs_at_once_and_offers_what_follows(data_d
     said = ChatBot.texts(b, -100)
     assert said[:3] == ["On it.", "Drafting it.", "Draft ready."]
     assert "PR: add /soup (2 files)." in said[3] and said[3].startswith("Ana")
-    assert db.get_kv("bot.pending.-100")[0]["asker"] == "luis"
+    assert db.get_kv("bot.waiting.-100")[0]["asker"] == "luis"
     run(b.handle(None, msg("yes", user=8, **TO_BOT)))
     assert [a["id"] for a in acts(data_dir)] == ["j1:1", "j2:1"]
 
@@ -869,7 +869,7 @@ def test_a_plugin_without_act_says_so(data_dir, tmp_path):
     reply(data_dir, text="Sure.", proposals=[offer()])
     run(b.handle(None, msg("@chefbot cambia el código")))
     run(b.handle(None, msg("yes", **TO_BOT)))
-    assert "cannot carry out proposals" in ChatBot.texts(b, -100)[-1]
+    assert ChatBot.texts(b, -100)[-1] == b.t("proposal_unsupported")
 
 
 def test_a_failed_typing_indicator_never_stops_an_answer(data_dir, tmp_path):
@@ -904,7 +904,7 @@ def test_each_offer_waits_on_its_own_and_a_yes_runs_only_the_one_it_answers(
     change_prompt = b.calls[-1]
     reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
     run(b.handle(None, msg("@chefbot quiero un comando /sopa")))
-    assert len(db.get_kv("bot.pending.-100")) == 2  # the change still waits
+    assert len(db.get_kv("bot.waiting.-100")) == 2  # the change still waits
     reply(data_dir, text="ok")
     run(b.handle(None, msg("yes", **TO_BOT)))  # which one?
     assert ChatBot.texts(b, -100)[-1] == b.t("pending_which") and acts(data_dir) == []
@@ -915,11 +915,11 @@ def test_each_offer_waits_on_its_own_and_a_yes_runs_only_the_one_it_answers(
     )
     run(b.handle(None, msg("yes", reply_to_message={"from": {"id": 99}, "message_id": pr_prompt})))
     assert [a["id"] for a in acts(data_dir)] == ["j1:1"]  # only the pull request
-    (left,) = db.get_kv("bot.pending.-100")
+    (left,) = db.get_kv("bot.waiting.-100")
     assert left["change"] and change_prompt[1]["text"].startswith("Luis")
     run(b.handle(None, msg("yes", **TO_BOT)))  # one left: a plain yes is enough
     assert 'household.yaml: shopping_day = "friday"' in ChatBot.texts(b, -100)[-1]
-    assert db.get_kv("bot.pending.-100") is None
+    assert db.get_kv("bot.waiting.-100") is None
 
 
 def test_a_newer_change_from_the_same_person_replaces_the_older(data_dir, tmp_path, monkeypatch):
@@ -931,7 +931,7 @@ def test_a_newer_change_from_the_same_person_replaces_the_older(data_dir, tmp_pa
     run(b.handle(None, msg("@chefbot compramos los viernes")))
     reply(data_dir, text=block({"set": {"household.shopping_day": "saturday"}}))
     run(b.handle(None, msg("@chefbot no, mejor los sábados")))
-    (item,) = db.get_kv("bot.pending.-100")
+    (item,) = db.get_kv("bot.waiting.-100")
     assert item["change"]["set"]["household.shopping_day"] == "saturday"
 
 
@@ -945,3 +945,137 @@ def test_the_households_own_instructions_never_outrank_the_rules(data_dir):
     rules = context.rules(load(data_dir))
     assert rules.index("Never suggest compensating") < rules.index("Be brief.")
     assert rules.rstrip().endswith(context.LAST_WORD)
+
+
+def prompt_id(b, text: str) -> int:
+    """The message id ChatBot gave the last message sent that holds `text`."""
+    return max(
+        1000 + n + 1 for n, (m, p) in enumerate(b.calls) if m == "sendMessage" and text in p["text"]
+    )
+
+
+def test_a_yes_to_someone_elses_offer_approves_nothing_of_ones_own(data_dir, tmp_path, monkeypatch):
+    data = plugin_data(data_dir, admins=["ana"])
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
+    run(b.handle(None, msg("@chefbot quiero un comando /sopa")))  # waits for Ana
+    reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
+    run(b.handle(None, msg("@chefbot compramos los viernes")))  # waits for Luis
+    luis_prompt = prompt_id(b, "shall I change this?")
+    reply(data_dir, text="ok")
+    to_luis = {"from": {"id": 99}, "message_id": luis_prompt}
+    run(b.handle(None, msg("yes", user=8, reply_to_message=to_luis)))
+    assert acts(data_dir) == [], "Ana's yes to Luis's prompt opened her pull request"
+    assert len(db.get_kv("bot.waiting.-100")) == 2  # both still wait
+    ana_prompt = prompt_id(b, "Open a pull request")
+    to_ana = {"from": {"id": 99}, "message_id": ana_prompt}
+    run(b.handle(None, msg("yes", user=8, reply_to_message=to_ana)))
+    assert [a["id"] for a in acts(data_dir)] == ["j1:1"]
+
+
+def test_a_yes_to_any_piece_of_a_long_offer_counts(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    long = "Open a pull request:\n" + "\n".join(f"+ line {n}" for n in range(600))
+    reply(data_dir, text="Drafted.", proposals=[offer(summary=long)])
+    run(b.handle(None, msg("@chefbot quiero un comando /sopa")))
+    (item,) = db.get_kv("bot.waiting.-100")
+    assert len(item["msgs"]) > 1
+    reply(data_dir, text="ok")
+    first = {"from": {"id": 99}, "message_id": item["msgs"][0]}
+    run(b.handle(None, msg("yes", reply_to_message=first)))
+    assert [a["id"] for a in acts(data_dir)] == ["j1:1"]
+
+
+def test_an_admin_offer_from_a_private_chat_waits_in_the_group(data_dir, tmp_path):
+    data = plugin_data(data_dir, admins=["ana"], private_chats=True)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
+    run(b.handle(None, msg("quiero un comando /sopa", chat=7, user=7)))  # Luis, privately
+    private, group = ChatBot.texts(b, 7), ChatBot.texts(b, -100)
+    assert private[-1] == b.t("proposal_in_group", name="Ana")
+    assert group and group[-1].startswith("Ana, shall I go ahead?")
+    assert db.get_kv("bot.waiting.7") is None
+    (item,) = db.get_kv("bot.waiting.-100")
+    assert item["by"] == [8] and item["asker"] == "luis"
+    reply(data_dir, text="ok")
+    to_prompt = {"from": {"id": 99}, "message_id": item["msg"]}
+    run(b.handle(None, msg("yes", user=8, reply_to_message=to_prompt)))
+    assert [a["id"] for a in acts(data_dir)] == ["j1:1"]
+    assert ChatBot.texts(b, -100)[-1] == "done j1:1"
+
+
+def test_an_admins_own_private_offer_stays_in_the_private_chat(data_dir, tmp_path):
+    data = plugin_data(data_dir, admins=["ana"], private_chats=True)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
+    run(b.handle(None, msg("quiero un comando /sopa", chat=8, user=8)))
+    assert ChatBot.texts(b, 8)[-1].startswith("Ana, shall I go ahead?")
+    assert ChatBot.texts(b, -100) == []
+    reply(data_dir, text="ok")
+    run(b.handle(None, msg("yes", chat=8, user=8)))
+    assert [a["id"] for a in acts(data_dir)] == ["j1:1"]
+
+
+def test_an_admin_offer_from_a_private_chat_with_no_group_is_refused(data_dir, tmp_path):
+    data = plugin_data(data_dir, admins=["ana"], private_chats=True, chat_id=None)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
+    run(b.handle(None, msg("quiero un comando /sopa", chat=7, user=7)))
+    assert ChatBot.texts(b, 7)[-1] == b.t("proposal_admins_no_group")
+    assert db.get_kv("bot.waiting.7") is None
+
+
+def test_a_change_waiting_from_0_3_is_still_answered_and_the_list_never_takes_its_key(
+    data_dir, tmp_path, monkeypatch
+):
+    data = plugin_data(data_dir)
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    old = {
+        "change": {"set": {"household.shopping_day": "friday"}},
+        "by": 7,
+        "asker": "luis",
+        "name": "Luis",
+        "ts": time.time(),
+    }
+    db.set_kv("bot.pending.-100", old)  # what 0.3.1 left behind
+    reply(data_dir, text="Drafted.", proposals=[offer()])
+    run(b.handle(None, msg("@chefbot quiero un comando /sopa")))
+    assert db.get_kv("bot.pending.-100") is None  # 0.3.1 reads it as a dict: never a list there
+    assert [("change" in i) for i in db.get_kv("bot.waiting.-100")] == [True, False]
+    reply(data_dir, text="ok")
+    run(b.handle(None, msg("no", **TO_BOT)))  # two wait for Luis: which one?
+    assert ChatBot.texts(b, -100)[-1] == b.t("pending_which")
+
+
+def test_new_instructions_stay_a_readable_block_and_show_only_what_changes(data_dir):
+    bot_data(data_dir)
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["llm"] = {"instructions": "Responde en español.\nSé breve.\nUsa listas."}
+    write(data_dir, "settings.yaml", raw)
+    data = load(data_dir)
+    new = "Responde en español.\nSé muy breve.\nUsa listas.\n  con sangría\n"
+    p = changes.parse({"set": {"settings.llm.instructions": new}}, data, "luis")
+    lines = changes.describe(p, data, Translator("es"))
+    assert lines == [
+        "• Instrucciones del asistente:",
+        "  − Sé breve.",
+        "  + Sé muy breve.",
+        "  +   con sangría",
+    ]
+    text = changes.render(data_dir, p)["settings.yaml"]
+    assert "instructions: |" in text and "\\n" not in text
+    assert yaml.safe_load(text)["llm"]["instructions"] == new
+    odd = "Una línea con espacio al final \n\tY un tabulador."  # a block cannot carry it: quotes
+    p = changes.parse({"set": {"settings.llm.instructions": odd}}, data, "luis")
+    assert (
+        yaml.safe_load(changes.render(data_dir, p)["settings.yaml"])["llm"]["instructions"] == odd
+    )

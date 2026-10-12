@@ -54,6 +54,10 @@ class LLMError(Exception):
     pass
 
 
+class NoAct(LLMError):
+    """The provider has no act(), so it cannot carry out proposals."""
+
+
 @dataclass
 class Reply:
     text: str
@@ -108,7 +112,7 @@ async def act(data: Data, proposal: dict) -> Reply:
     """Carry out a proposal the plugin made, once the right person said yes."""
     fn = _optional(data, "act") if data.settings.llm.provider == "plugin" else None
     if fn is None:
-        raise LLMError("the provider cannot carry out proposals")
+        raise NoAct("the provider cannot carry out proposals")
     out = await _call(fn, proposal, data.settings.llm.model_dump())
     if isinstance(out, dict):
         return Reply(str(out.get("text", "")).strip(), proposals=_proposals(out.get("proposals")))

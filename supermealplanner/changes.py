@@ -20,6 +20,7 @@ shows the change for a person to make.
 
 from __future__ import annotations
 
+import difflib
 import io
 import json
 import logging
@@ -35,7 +36,7 @@ from pathlib import Path
 import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
-from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 from ruamel.yaml.util import load_yaml_guess_indent
 
 from .model import Data, DataError, check
@@ -239,6 +240,10 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
             name = data.household.person(e.arg).name
         what = t(f"change_{e.label}", name=name)
         old = _current(data, e)
+        if e.label == "instructions":  # a whole text: only the lines that change
+            lines.append(f"• {what}:")
+            lines += _text_diff(old if isinstance(old, str) else "", str(e.value or ""))
+            continue
         if e.label == "reminder" and old is not None and isinstance(e.value, dict):
             new = {**old, **e.value}  # only the fields that change are sent
             old = {k: old.get(k) for k in e.value}
@@ -256,6 +261,16 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
             )
         )
     return lines
+
+
+def _text_diff(old: str, new: str) -> list[str]:
+    """The lines a new text removes (−) and adds (+), without the ones it keeps."""
+    out = []
+    for line in difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=0):
+        if line.startswith(("---", "+++", "@@")):
+            continue
+        out.append(("  + " if line[0] == "+" else "  − ") + line[1:])
+    return out
 
 
 def manual(p: Proposal) -> list[str]:
@@ -333,6 +348,10 @@ def _quote(value):
         return [_quote(v) for v in value]
     if isinstance(value, dict):
         return {k: _quote(v) for k, v in value.items()}
+    if isinstance(value, str) and "\n" in value.strip("\n"):
+        # several lines stay a readable block; ruamel falls back to quotes when a block cannot
+        # carry the text exactly
+        return LiteralScalarString(value)
     if isinstance(value, str):
         try:
             same = yaml.safe_load(value) == value
