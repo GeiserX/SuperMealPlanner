@@ -275,6 +275,7 @@ class Bot(Loose):
     token_env: str = "TELEGRAM_BOT_TOKEN"
     chat_id: int | None = None  # the household group; reminders go here
     people: dict[str, int] = {}  # person id -> Telegram user id
+    admins: list[str] = []  # person ids whose yes approves what only an admin may (a pull request)
     handles: dict[str, str] = {}  # person id -> @handle; looked up from Telegram when left out
     history: int = 20  # recent messages kept as context for the AI
     # in a group the AI answers only a message that mentions the bot's @handle or replies to it; a
@@ -443,6 +444,9 @@ def load(root: str | Path) -> Data:
     for pid in settings.bot.handles:
         if pid not in people:
             errors.append(f"settings.yaml bot.handles: unknown person {pid}")
+    for pid in settings.bot.admins:
+        if pid not in settings.bot.people:
+            errors.append(f"settings.yaml bot.admins: {pid} is not in bot.people")
     for r in settings.reminders:
         if r.kind == "message" and not r.text:
             errors.append(f"settings.yaml reminder {r.id}: kind message needs text")

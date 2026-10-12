@@ -31,10 +31,19 @@ def converse(turn, settings):
         raise RuntimeError("provider down")
     return {"text": cfg.get("text", "ok"),
             "conversation": cfg.get("conversation", turn["conversation"] or "c1"),
-            "kept": cfg.get("kept", True)}
+            "kept": cfg.get("kept", True),
+            "proposals": cfg.get("proposals", [])}
 
 def forget(conversation, settings):
     (HERE / "forgot.txt").write_text(conversation)
+
+def act(proposal, settings):
+    with (HERE / "acts.jsonl").open("a") as f:
+        f.write(json.dumps(proposal) + "\\n")
+    out = proposal.get("then", "done " + proposal["id"])
+    if out == "fail":
+        raise RuntimeError("the remote side refused")
+    return out
 """
 
 
@@ -83,6 +92,22 @@ def reply(data_dir, **cfg):
 
 
 TO_BOT = {"reply_to_message": {"from": {"id": 99}}}  # a reply to one of the bot's messages
+
+
+def acts(data_dir):
+    path = data_dir / "plugins" / "acts.jsonl"
+    return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
+
+
+def settle(b, message):
+    """Handle a message and wait for what it started in the background."""
+
+    async def go():
+        await b.handle(None, message)
+        while b.tasks:
+            await asyncio.gather(*list(b.tasks))
+
+    run(go())
 
 
 # ---------------------------------------------------------------- one conversation per chat
@@ -346,6 +371,20 @@ def test_markup_telegram_refuses_goes_again_as_plain_text(data_dir, tmp_path):
         botmod.to_html = real
     sent = [(p["text"], p.get("parse_mode")) for m, p in b.calls if m == "sendMessage"]
     assert sent == [("<b>hola</b>", "HTML"), ("<bad>", "HTML"), ("`<bad>` hola", None)]
+
+
+def test_a_code_block_cut_in_two_stays_a_code_block():
+    from supermealplanner.bot import _chunks
+
+    text = "Mira:\n```python\n" + "\n".join(f"x = {i}  # <b>" for i in range(400)) + "\n```\nFin."
+    parts = list(_chunks(text))
+    assert len(parts) > 1 and all(len(p) <= 3500 for p in parts)
+    for part in parts:
+        html = to_html(part)
+        assert "```" not in html and "<pre>" in html and nested(html)
+    assert parts[1].startswith("```python\n")
+    # a fence line longer than a whole piece still ends: no loop
+    assert len(list(_chunks("```" + "y" * 5000 + "\n" + "z" * 5000))) >= 3
 
 
 def test_long_answers_are_cut_at_line_breaks():
@@ -712,3 +751,142 @@ def test_a_reminder_change_reads_in_the_household_language(data_dir):
     assert "a las 12:00, 17:00" in line
     assert "días lun" in line
     assert " at " not in line and "monday" not in line
+
+
+def test_instructions_change_only_as_a_whole_text(data):
+    p = changes.parse(
+        {"set": {"settings.llm.instructions": "Answer in short lines."}}, data, "luis"
+    )
+    assert p.edits[0].label == "instructions"
+    for bad in (["a list"], "x" * (changes.INSTRUCTIONS_MAX + 1)):
+        with pytest.raises(changes.ChangeError, match="whole new text"):
+            changes.parse({"set": {"settings.llm.instructions": bad}}, data, "luis")
+    with pytest.raises(changes.ChangeError, match="cannot be changed"):
+        changes.parse({"set": {"settings.llm.model": "other"}}, data, "luis")
+
+
+# ---------------------------------------------------------------- a plugin's proposals
+
+
+def offer(**extra):
+    return {
+        "id": "j1:1",
+        "summary": "Open a pull request: add /soup.",
+        "confirm_by": "asker",
+        **extra,
+    }
+
+
+def test_a_proposal_waits_for_the_askers_yes_and_the_plugin_carries_it_out(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text="I can draft that.", proposals=[offer(), {"id": "", "summary": "x"}])
+    run(b.handle(None, msg("@chefbot quiero un comando /sopa")))
+    assert turns(data_dir)[-1]["proposals"] is True  # the plugin learns the app can confirm
+    said = ChatBot.texts(b, -100)
+    assert said[0] == "I can draft that."
+    assert "Open a pull request: add /soup." in said[1] and "yes" in said[1]
+    assert len(said) == 2  # the malformed proposal is dropped
+    reply(data_dir, text="ok")
+    run(b.handle(None, msg("yes", user=8, **TO_BOT)))  # someone else's yes
+    assert acts(data_dir) == []
+    run(b.handle(None, msg("yes", **TO_BOT)))
+    assert [a["id"] for a in acts(data_dir)] == ["j1:1"]
+    assert ChatBot.texts(b, -100)[-1] == "done j1:1"
+    assert db.get_kv("bot.pending.-100") is None
+    run(b.handle(None, msg("yes", **TO_BOT)))  # once only
+    assert len(acts(data_dir)) == 1
+
+
+def test_an_admin_proposal_takes_only_an_admins_yes(data_dir, tmp_path):
+    data = plugin_data(data_dir, admins=["ana"])
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
+    run(b.handle(None, msg("@chefbot quiero un comando /sopa")))  # Luis asks
+    assert ChatBot.texts(b, -100)[-1].startswith("Ana, shall I go ahead?")
+    reply(data_dir, text="ok")
+    run(b.handle(None, msg("yes", **TO_BOT)))  # the asker is not an admin
+    assert acts(data_dir) == []
+    run(b.handle(None, msg("no", user=8, **TO_BOT)))
+    assert ChatBot.texts(b, -100)[-1] == b.t("change_cancelled") and acts(data_dir) == []
+    reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
+    run(b.handle(None, msg("@chefbot quiero un comando /sopa")))
+    run(b.handle(None, msg("yes", user=8, **TO_BOT)))
+    assert len(acts(data_dir)) == 1
+
+
+def test_an_admin_proposal_with_no_admins_is_refused(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
+    run(b.handle(None, msg("@chefbot quiero un comando /sopa")))
+    assert ChatBot.texts(b, -100)[-1] == b.t("proposal_no_admins")
+    assert db.get_kv("bot.pending.-100") is None
+
+
+def test_a_step_that_changes_nothing_runs_at_once_and_offers_what_follows(data_dir, tmp_path):
+    data = plugin_data(data_dir, admins=["ana"])
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    follow = offer(id="j2:1", summary="PR: add /soup (2 files).", confirm_by="admins")
+    draft = offer(
+        confirm_by="none",
+        summary="Drafting it.",
+        then={"text": "Draft ready.", "proposals": [follow]},
+    )
+    reply(data_dir, text="On it.", proposals=[draft])
+    settle(b, msg("@chefbot quiero un comando /sopa"))
+    assert [a["id"] for a in acts(data_dir)] == ["j1:1"]  # no yes needed to draft
+    said = ChatBot.texts(b, -100)
+    assert said[:3] == ["On it.", "Drafting it.", "Draft ready."]
+    assert "PR: add /soup (2 files)." in said[3] and said[3].startswith("Ana")
+    assert db.get_kv("bot.pending.-100")["asker"] == "luis"
+    run(b.handle(None, msg("yes", user=8, **TO_BOT)))
+    assert [a["id"] for a in acts(data_dir)] == ["j1:1", "j2:1"]
+
+
+def test_strangers_start_nothing_and_a_failed_step_is_said(data_dir, tmp_path):
+    data = plugin_data(data_dir, group_open=True)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text="Sure.", proposals=[offer(confirm_by="none")])
+    settle(b, msg("@chefbot cambia el código", user=555))
+    assert ChatBot.texts(b, -100)[-1] == b.t("proposal_members_only") and acts(data_dir) == []
+    reply(data_dir, text="Sure.", proposals=[offer(then="fail")])
+    run(b.handle(None, msg("@chefbot cambia el código")))
+    run(b.handle(None, msg("yes", **TO_BOT)))
+    assert "the remote side refused" in ChatBot.texts(b, -100)[-1]
+
+
+def test_a_plugin_without_act_says_so(data_dir, tmp_path):
+    plugin_data(data_dir)
+    plugin = data_dir / "plugins" / "ai.py"
+    plugin.write_text(plugin.read_text().split("def act(")[0])
+    b = ChatBot(load(data_dir), DB(tmp_path / "b.db"))
+    reply(data_dir, text="Sure.", proposals=[offer()])
+    run(b.handle(None, msg("@chefbot cambia el código")))
+    run(b.handle(None, msg("yes", **TO_BOT)))
+    assert "cannot carry out proposals" in ChatBot.texts(b, -100)[-1]
+
+
+def test_a_failed_typing_indicator_never_stops_an_answer(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    sent = b.call
+
+    async def call(client, method, _tries=0, **params):
+        if method == "sendChatAction":
+            raise TelegramError(method, "Too Many Requests", 429)
+        return await sent(client, method, _tries, **params)
+
+    b.call = call
+    run(b.handle(None, msg("hola", chat=7, user=7)))
+    assert ChatBot.texts(b, 7) == ["ok"]
+
+
+def test_admins_must_be_people_the_bot_knows(data_dir):
+    with pytest.raises(Exception, match="bot.admins: nadie is not in bot.people"):
+        bot_data(data_dir, admins=["nadie"])

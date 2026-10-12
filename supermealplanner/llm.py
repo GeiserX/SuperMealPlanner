@@ -23,6 +23,16 @@ turn is {"conversation": the id it returned last time in this chat, or None,
 It returns the answer, or {"text": answer, "conversation": id or None, "kept": bool}. The app keeps
 the id per chat and sends it back with the next message; None starts over with the full history next
 time, and kept False (the provider did not store this turn) sends these messages again.
+
+The app sets turn["proposals"] = True when it can carry out proposals. Then the dict may also hold
+"proposals": [{"id": str, "summary": str, "confirm_by": "asker" | "admins" | "none", ...}, ...], things
+the plugin would do outside the chat (open a pull request, for example). The app shows each summary as
+plain text and, after a yes from the person who asked ("asker") or from one of bot.admins ("admins"),
+calls
+      def act(proposal: dict, settings: dict) -> str | dict
+with the same dict. "none" (a step that changes nothing, such as drafting) runs at once, in the
+background, and only for a household member. act returns the text to post, or {"text": ...,
+"proposals": [...]} with follow-ups, which are offered the same way.
 """
 
 from __future__ import annotations
@@ -31,7 +41,7 @@ import asyncio
 import importlib.util
 import inspect
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -49,6 +59,26 @@ class Reply:
     text: str
     conversation: str | None = None
     kept: bool = True
+    proposals: list[dict] = field(default_factory=list)
+
+
+CONFIRM_BY = ("asker", "admins", "none")
+
+
+def _proposals(raw) -> list[dict]:
+    """The well-formed proposals in a plugin's answer; anything else is dropped."""
+    out = []
+    for p in raw if isinstance(raw, list) else []:
+        if (
+            isinstance(p, dict)
+            and isinstance(p.get("id"), str)
+            and p["id"]
+            and isinstance(p.get("summary"), str)
+            and p["summary"].strip()
+            and p.get("confirm_by") in CONFIRM_BY
+        ):
+            out.append(p)
+    return out
 
 
 async def converse(data: Data, turn: dict) -> Reply:
@@ -62,14 +92,26 @@ async def converse(data: Data, turn: dict) -> Reply:
             messages.insert(0, {"role": "user", "content": "(conversation start)"})
         system = f"{turn['rules']}\n\n{turn['context']}"
         return Reply(await complete(data, system, messages))
-    out = await _call(fn, turn, cfg.model_dump())
+    out = await _call(fn, {**turn, "proposals": True}, cfg.model_dump())
     if isinstance(out, dict):
         conv = out.get("conversation")
         return Reply(
             str(out.get("text", "")).strip(),
             str(conv) if conv else None,
             bool(out.get("kept", True)),
+            _proposals(out.get("proposals")),
         )
+    return Reply(str(out).strip())
+
+
+async def act(data: Data, proposal: dict) -> Reply:
+    """Carry out a proposal the plugin made, once the right person said yes."""
+    fn = _optional(data, "act") if data.settings.llm.provider == "plugin" else None
+    if fn is None:
+        raise LLMError("the provider cannot carry out proposals")
+    out = await _call(fn, proposal, data.settings.llm.model_dump())
+    if isinstance(out, dict):
+        return Reply(str(out.get("text", "")).strip(), proposals=_proposals(out.get("proposals")))
     return Reply(str(out).strip())
 
 

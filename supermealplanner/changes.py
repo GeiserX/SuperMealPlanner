@@ -59,7 +59,9 @@ ALLOWED = {
     "settings.shopping.alternatives": "shopping_alternatives",
     "settings.sections.*": "section",
     "settings.reminders.*": "reminder",
+    "settings.llm.instructions": "instructions",
 }
+INSTRUCTIONS_MAX = 4000  # characters of the assistant's own instructions a chat change may set
 LISTS_BY_ID = {"people", "reminders"}  # lists whose items are addressed by their id
 BLOCK = re.compile(r"```change[ \t]*\n(.*?)```", re.DOTALL)
 RECIPE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -159,6 +161,12 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
             }
             if kinds & PROTECTED_REMINDER_KINDS:
                 raise ChangeError("the pills reminder can only be changed by hand")
+        if label == "instructions" and not (
+            isinstance(value, str) and len(value) <= INSTRUCTIONS_MAX
+        ):
+            raise ChangeError(
+                f"{path} must be the whole new text, at most {INSTRUCTIONS_MAX} characters"
+            )
         if label == "reminder" and value is not None and not isinstance(value, dict):
             raise ChangeError(f"{path} must be the reminder's fields, or null to remove it")
         if label == "reminder" and isinstance(value, dict) and "id" in value and value["id"] != arg:

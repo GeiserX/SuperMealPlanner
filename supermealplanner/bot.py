@@ -88,6 +88,7 @@ USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")  # Telegram usernames (4-le
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
 AI = "ai"  # the `who` of the AI's own answers in the chat log
 PENDING_TTL = 3600  # a proposed change waits this long for its yes
+ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft takes minutes)
 
 
 class Bot:
@@ -449,7 +450,10 @@ class Bot:
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
             # messages that came in together: an earlier turn already took this one with them
             return
-        await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
+        try:
+            await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
+        except TelegramError as e:  # only a courtesy: the answer still goes
+            log.info("typing indicator failed: %s", e)
         private = chat_id > 0
         viewer = asker if private else None
         facts = await asyncio.to_thread(
@@ -473,7 +477,7 @@ class Bot:
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return
         text, change = changes.extract(reply.text)
-        if not text and change is None:
+        if not text and change is None and not reply.proposals:
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return
         if text:
@@ -485,6 +489,8 @@ class Bot:
             db.set_kv(key, None)
         if change is not None:
             await self.propose(client, chat_id, reply_to, asker, user_id, change)
+        for proposal in reply.proposals:
+            await self.offer(client, chat_id, reply_to, asker, user_id, proposal)
 
     # ------------------------------------------------------------- settings changes
     async def propose(self, client, chat_id, reply_to, asker, user_id, change) -> None:
@@ -523,7 +529,8 @@ class Bot:
         """A yes or no from the person a change waits for. True when the message was that answer."""
         key = f"bot.pending.{chat_id}"
         pending = self.state.db.get_kv(key)
-        if not pending or pending.get("by") != user.get("id"):
+        by = (pending or {}).get("by")
+        if not pending or user.get("id") not in (by if isinstance(by, list) else [by]):
             return False
         if time.time() - pending.get("ts", 0) > PENDING_TTL:
             self.state.db.set_kv(key, None)
@@ -542,6 +549,9 @@ class Bot:
         if not (yes or no):
             return False
         self.state.db.set_kv(key, None)
+        if yes and "proposal" in pending:
+            await self.act(client, chat_id, msg["message_id"], pending)
+            return True
         reply = await self.apply(pending) if yes else self.t("change_cancelled")
         await self.send(client, chat_id, reply, msg["message_id"])
         return True
@@ -575,6 +585,70 @@ class Bot:
             log.warning("settings change failed: %s", safe(e))
             return t("change_failed", error=type(e).__name__)
         return t("change_applied", sha=sha)
+
+    # ------------------------------------------------------------- proposals
+    async def offer(self, client, chat_id, reply_to, asker, user_id, proposal: dict) -> None:
+        """Show something the plugin would do outside the chat and wait for the right yes: the
+        asker's, or an admin's. A step that changes nothing runs at once, in the background."""
+        t, cfg = self.t, self.data.settings.bot
+        if asker is None or user_id is None:
+            await self.send(client, chat_id, t("proposal_members_only"), reply_to)
+            return
+        pending = {
+            "proposal": proposal,
+            "asker": asker,
+            "user": user_id,
+            "name": self.data.household.person(asker).name,
+            "ts": time.time(),
+        }
+        if proposal["confirm_by"] == "none":
+            await self.send(client, chat_id, proposal["summary"], reply_to)
+            task = asyncio.create_task(self.act(client, chat_id, reply_to, pending))
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
+            return
+        if proposal["confirm_by"] == "admins":
+            admins = [pid for pid in cfg.admins if pid in cfg.people]
+            ids = [cfg.people[pid] for pid in admins]
+            names = ", ".join(self.mention(pid) for pid in admins)
+        else:
+            ids, names = [user_id], self.mention(asker)
+        if not ids:
+            await self.send(client, chat_id, t("proposal_no_admins"), reply_to)
+            return
+        self.state.db.set_kv(f"bot.pending.{chat_id}", {**pending, "by": ids})
+        await self.send(
+            client,
+            chat_id,
+            t("proposal_confirm", name=names, summary=proposal["summary"]),
+            reply_to,
+        )
+
+    async def act(self, client, chat_id: int, reply_to: int, pending: dict) -> None:
+        """Have the plugin carry out a proposal and post what came of it. Follow-ups are offered on
+        behalf of the same asker."""
+        try:
+            out = await asyncio.wait_for(
+                llm.act(self.data, pending["proposal"]), timeout=ACT_TIMEOUT
+            )
+            if out.text:
+                await self.send(client, chat_id, out.text, reply_to)
+            for proposal in out.proposals:
+                await self.offer(
+                    client, chat_id, reply_to, pending["asker"], pending.get("user"), proposal
+                )
+        except Exception as e:  # noqa: BLE001
+            log.warning("a proposal failed: %s", safe(e))
+            try:
+                await self.send(
+                    client,
+                    chat_id,
+                    self.t("proposal_failed", error=safe(e)),
+                    reply_to,
+                    record=False,
+                )
+            except Exception as e2:  # noqa: BLE001  the reply is best effort
+                log.warning("could not report the failed proposal: %s", safe(e2))
 
     async def check_group(self, client, me: dict) -> None:
         """Say once at start when the group's mentions cannot reach the bot."""
@@ -992,15 +1066,33 @@ def _files(root: Path) -> dict[str, str]:
 
 
 def _chunks(text: str, size: int = 3500):
-    """Pieces Telegram accepts, cut at a line break when there is one, so Markdown stays whole."""
+    """Pieces Telegram accepts, cut at a line break when there is one, so Markdown stays whole. A
+    code block cut in two is closed at the cut and opened again in the next piece."""
+    floor = 0  # the reopened fence at the start of the text: a cut must land past it
+    room = size - 4  # for the closing fence a cut may add
     while len(text) > size:
-        cut = text.rfind("\n", 0, size)
-        if cut <= 0:
-            cut = size
-        yield text[:cut]
-        text = text[cut:].lstrip("\n")
+        cut = text.rfind("\n", floor + 1, room)
+        if cut <= floor:
+            cut = room
+        head, text = text[:cut], text[cut:].lstrip("\n")
+        fence = _open_fence(head)
+        floor = 0
+        if fence is not None:
+            head += "\n```"
+            text = f"{fence}\n{text}"
+            floor = len(fence)
+        yield head
     if text:
         yield text
+
+
+def _open_fence(text: str) -> str | None:
+    """The line that opened a code block still open at the end of text, or None."""
+    fence = None
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            fence = None if fence is not None else line.strip()[:64] or "```"
+    return fence
 
 
 def to_html(md: str) -> str:
