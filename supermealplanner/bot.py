@@ -528,6 +528,12 @@ class Bot:
         if time.time() - pending.get("ts", 0) > PENDING_TTL:
             self.state.db.set_kv(key, None)
             return False
+        # in the group, only an answer addressed to the bot: an "ok" replying to someone else is
+        # their conversation, not a yes
+        if msg["chat"].get("type") != "private" and not (self.replied(msg) or self.mentioned(text)):
+            return False
+        if self.username:  # "@chefbot sí" is the answer too
+            text = re.sub(rf"@{re.escape(self.username)}\b", " ", text, flags=re.IGNORECASE)
         # only a message that is nothing but the answer: "sí", "vale, sí", "no". "si quieres..."
         # or "no sé qué cenar" are other messages and leave the change waiting
         words = re.sub(r"[^\w\s]", " ", text.lower()).split()
@@ -1006,12 +1012,15 @@ def to_html(md: str) -> str:
         kept.append(markup)
         return f"\x00{len(kept) - 1}\x00"
 
-    def inline(s: str) -> str:  # s is already escaped
-        s = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"<b>\1</b>", s)
-        s = re.sub(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)", r"<b>\1</b>", s)
-        s = re.sub(r"~~(?=\S)(.+?)(?<=\S)~~", r"<s>\1</s>", s)
-        s = re.sub(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])", r"<i>\1</i>", s)
-        return re.sub(r"(?<!\w)_(?=[^\s_])(.+?)(?<=[^\s_])_(?!\w)", r"<i>\1</i>", s)
+    def inline(s: str) -> str:  # s is already escaped, so every "<" is a tag added here
+        # the text inside may hold whole tags, never half of one: "**a *b** c*" stays crossed
+        # Markdown instead of becoming crossed HTML that Telegram refuses
+        body = r"((?:[^<\n]|<([bs])>[^<\n]*</\2>)+?)"  # one line, as before
+        s = re.sub(r"\*\*(?=\S)" + body + r"(?<=\S)\*\*", r"<b>\1</b>", s)
+        s = re.sub(r"(?<!\w)__(?=\S)" + body + r"(?<=\S)__(?!\w)", r"<b>\1</b>", s)
+        s = re.sub(r"~~(?=\S)" + body + r"(?<=\S)~~", r"<s>\1</s>", s)
+        s = re.sub(r"(?<![\w*])\*(?=[^\s*])" + body + r"(?<=[^\s*])\*(?![\w*])", r"<i>\1</i>", s)
+        return re.sub(r"(?<!\w)_(?=[^\s_])" + body + r"(?<=[^\s_])_(?!\w)", r"<i>\1</i>", s)
 
     s = md.replace("\x00", "")
     s = re.sub(
@@ -1022,7 +1031,9 @@ def to_html(md: str) -> str:
     )
     s = re.sub(r"`([^`\n]+)`", lambda m: stash(f"<code>{html.escape(m.group(1), False)}</code>"), s)
     s = re.sub(
-        r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)",
+        # one level of parentheses in the URL (Wikipedia's "Paella_(dish)"); a code span is never
+        # part of one
+        r"\[([^\]\n]+)\]\((https?://(?:[^()\s\x00]|\([^()\s\x00]*\))+)\)",
         lambda m: stash(
             f'<a href="{html.escape(m.group(2), quote=True)}">'
             f"{inline(html.escape(m.group(1), quote=False))}</a>"

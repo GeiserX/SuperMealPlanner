@@ -15,7 +15,7 @@ import os
 import subprocess
 
 from .calendar import busy_afternoons
-from .changes import GIT_LOCK
+from .changes import GIT_LOCK, git_env
 from .model import DataError
 from .planner import PlanError, generate, load_plan, plans_dir, repair
 from .targets import evaluate, sync_start
@@ -27,17 +27,15 @@ def pull(state) -> None:
     root = state.root
     if os.environ.get("SMP_GIT_PULL") != "1" or not (root / ".git").exists():
         return
-    cmd = ["git", "-C", str(root)]
-    token = os.environ.get("SMP_GIT_TOKEN", "")
-    if token:  # passed per call, never written to the checkout's config
-        cmd += ["-c", f"http.extraHeader=Authorization: token {token}"]
+    env = git_env(os.environ.get("SMP_GIT_TOKEN", ""))
     with GIT_LOCK:  # never in the middle of a change the bot is saving
         r = subprocess.run(
-            [*cmd, "pull", "--ff-only", "--quiet"],
+            ["git", "-C", str(root), "pull", "--ff-only", "--quiet"],
             capture_output=True,
             text=True,
             timeout=120,
             check=False,
+            env=env,
         )
     if r.returncode != 0:
         log.warning("git pull failed: %s", r.stderr.strip()[:300])

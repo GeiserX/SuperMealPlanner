@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import subprocess
 import time
 
@@ -79,6 +80,9 @@ def turns(data_dir):
 
 def reply(data_dir, **cfg):
     (data_dir / "plugins" / "reply.json").write_text(json.dumps(cfg))
+
+
+TO_BOT = {"reply_to_message": {"from": {"id": 99}}}  # a reply to one of the bot's messages
 
 
 # ---------------------------------------------------------------- one conversation per chat
@@ -255,6 +259,19 @@ def test_a_private_turn_never_carries_someone_elses_health_data(data_dir, tmp_pa
     assert "Vitamin D" in luis and "nota-privada-de-luis" in luis and "Hierro" not in luis
 
 
+def test_a_private_turn_lists_only_the_askers_own_avoided_foods(data_dir, tmp_path):
+    data = plugin_data(data_dir)  # Luis avoids espinaca
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    run(b.handle(None, msg("hola", chat=8, user=8)))  # Ana, privately
+    ana = turns(data_dir)[-1]["context"]
+    assert "household.people.ana.avoid_ingredients" in ana
+    assert "household.people.luis" not in ana and "espinaca" not in ana
+    run(b.handle(None, msg("hola", chat=7, user=7)))  # Luis, privately
+    assert "household.people.luis.avoid_ingredients: ['espinaca']" in turns(data_dir)[-1]["context"]
+    run(b.handle(None, msg("@chefbot hola")))  # the group sees the household's settings
+    assert "household.people.luis.avoid_ingredients" in turns(data_dir)[-1]["context"]
+
+
 def test_start_warns_when_the_group_cannot_see_mentions(data_dir, tmp_path, caplog):
     data = bot_data(data_dir)
     b = ChatBot(data, DB(tmp_path / "b.db"))
@@ -287,6 +304,28 @@ def test_markdown_becomes_safe_telegram_html():
     assert "@ana_maria_92" in out and "a*b*c" in out
     assert '<a href="javascript' not in out
     assert to_html("```\n<b>\n```") == "<pre>&lt;b&gt;</pre>"
+
+
+def nested(markup: str) -> bool:
+    """Every tag closes in order: what Telegram's HTML parser accepts."""
+    open_ = []
+    for close, tag in re.findall(r"<(/?)(\w+)[^>]*>", markup):
+        if not close:
+            open_.append(tag)
+        elif not open_ or open_.pop() != tag:
+            return False
+    return not open_
+
+
+def test_links_with_parentheses_and_crossed_emphasis_stay_valid():
+    wiki = to_html("[w](https://en.wikipedia.org/wiki/Paella_(dish)) y más")
+    assert wiki == '<a href="https://en.wikipedia.org/wiki/Paella_(dish)">w</a> y más'
+    assert not re.search(r'href="[^"]*<', to_html("[x](https://a.example/`b`)"))  # no tag in a URL
+    for md in ("**a *b** c*", "*a **b* c**", "~~a **b~~ c**", "_a **b_ c**", "**a ~~b** c~~"):
+        assert nested(to_html(md)), md
+    assert to_html("_see **this**_") == "<i>see <b>this</b></i>"  # whole tags may nest
+    assert to_html("**a ~~b~~ c**") == "<b>a <s>b</s> c</b>"
+    assert to_html("**a\nb**") == "**a\nb**"  # emphasis never spans lines
 
 
 def test_markup_telegram_refuses_goes_again_as_plain_text(data_dir, tmp_path):
@@ -511,6 +550,39 @@ def test_a_push_that_fails_leaves_the_folder_as_it_was(data_dir, repo):
     assert load(data_dir).household.lunch_time == "14:00"
 
 
+def test_the_write_token_never_shows_on_a_command_line(data_dir, repo, monkeypatch):
+    from supermealplanner import scheduler
+
+    calls = []
+    real = subprocess.run
+
+    def spy(cmd, *a, **kw):
+        calls.append((cmd, kw.get("env") or {}))
+        return real(cmd, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    data = bot_data(data_dir)
+    git(data_dir, "add", ".")
+    git(data_dir, "commit", "-q", "-m", "settings")
+    git(data_dir, "push", "-q")
+    p = changes.parse({"set": {"household.lunch_time": "14:30"}}, data)
+    changes.apply(data_dir, p, "chat: x", "sekret-w")
+    monkeypatch.setenv("SMP_GIT_PULL", "1")
+    monkeypatch.setenv("SMP_GIT_TOKEN", "sekret-r")
+    scheduler.pull(type("S", (), {"root": data_dir, "reload": lambda self: None})())
+    sent = {
+        (next(a for a in cmd[3:] if a in ("pull", "push")), e["GIT_CONFIG_VALUE_0"])
+        for cmd, e in calls
+        if e.get("GIT_CONFIG_KEY_0") == "http.extraHeader"
+    }
+    assert sent == {
+        ("pull", "Authorization: token sekret-w"),  # the change's pull and push
+        ("push", "Authorization: token sekret-w"),
+        ("pull", "Authorization: token sekret-r"),  # the hourly pull
+    }
+    assert not any("sekret" in " ".join(cmd) for cmd, _ in calls)
+
+
 def test_the_bot_applies_a_change_only_after_the_askers_yes(data_dir, repo, tmp_path, monkeypatch):
     data = plugin_data(data_dir)
     git(data_dir, "add", ".")
@@ -523,11 +595,11 @@ def test_the_bot_applies_a_change_only_after_the_askers_yes(data_dir, repo, tmp_
     said = ChatBot.texts(b, -100)
     assert "```change" not in said[0] and "Te lo cambio." in said[0]
     assert "Lunch time: 14:00 → 14:30" in said[1] and "yes" in said[1]
-    run(b.handle(None, msg("yes", user=8)))  # someone else: not their change
-    run(b.handle(None, msg("ok, thanks")))  # not only an answer: the change keeps waiting
-    run(b.handle(None, msg("no idea what to cook")))
+    run(b.handle(None, msg("yes", user=8, **TO_BOT)))  # someone else: not their change
+    run(b.handle(None, msg("ok, thanks", **TO_BOT)))  # not only an answer: the change waits
+    run(b.handle(None, msg("no idea what to cook", **TO_BOT)))
     assert b.state.data.household.lunch_time == "14:00"
-    run(b.handle(None, msg("yes!")))
+    run(b.handle(None, msg("yes!", **TO_BOT)))
     assert b.state.data.household.lunch_time == "14:30"  # saved and reloaded
     assert ChatBot.texts(b, -100)[-1].startswith("Done")
     assert git(repo, "log", "-1", "--format=%s").startswith("chat: Lunch time")
@@ -541,12 +613,42 @@ def test_no_cancels_and_without_write_access_the_bot_shows_the_change(
     b = ChatBot(data, DB(tmp_path / "b.db"))
     reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
     run(b.handle(None, msg("@chefbot compramos los viernes")))
-    run(b.handle(None, msg("no")))
+    run(b.handle(None, msg("no", **TO_BOT)))
     assert ChatBot.texts(b)[-1] == b.t("change_cancelled")
     run(b.handle(None, msg("@chefbot compramos los viernes")))
-    run(b.handle(None, msg("ok")))
+    run(b.handle(None, msg("ok", **TO_BOT)))
     assert 'household.yaml: shopping_day = "friday"' in ChatBot.texts(b)[-1]
     assert b.state.data.household.shopping_day != "friday"
+
+
+def test_in_the_group_only_an_answer_to_the_bot_settles_a_change(data_dir, tmp_path, monkeypatch):
+    data = plugin_data(data_dir)
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
+    run(b.handle(None, msg("@chefbot compramos los viernes")))
+    sent, asked = len(ChatBot.texts(b)), len(turns(data_dir))
+    run(b.handle(None, msg("ok", reply_to_message={"from": {"id": 8}})))  # to Ana, not the bot
+    run(b.handle(None, msg("no")))  # said to the room
+    assert db.get_kv("bot.pending.-100") is not None
+    assert len(ChatBot.texts(b)) == sent and len(turns(data_dir)) == asked  # no answer at all
+    run(b.handle(None, msg("@ChefBot yes")))  # a mention is addressed to the bot
+    assert db.get_kv("bot.pending.-100") is None
+    assert 'household.yaml: shopping_day = "friday"' in ChatBot.texts(b)[-1]
+    assert len(turns(data_dir)) == asked  # the answer, not a new question for the AI
+
+
+def test_in_a_private_chat_a_plain_yes_settles_a_change(data_dir, tmp_path, monkeypatch):
+    data = plugin_data(data_dir)
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
+    run(b.handle(None, msg("compramos los viernes", chat=7, user=7)))
+    run(b.handle(None, msg("yes", chat=7, user=7)))
+    assert db.get_kv("bot.pending.7") is None
+    assert 'household.yaml: shopping_day = "friday"' in ChatBot.texts(b, 7)[-1]
 
 
 def test_a_yes_after_the_wait_ran_out_changes_nothing(data_dir, tmp_path, monkeypatch):
@@ -559,8 +661,10 @@ def test_a_yes_after_the_wait_ran_out_changes_nothing(data_dir, tmp_path, monkey
     pending = db.get_kv("bot.pending.-100")
     db.set_kv("bot.pending.-100", {**pending, "ts": time.time() - PENDING_TTL - 1})
     sent = len(ChatBot.texts(b))
-    run(b.handle(None, msg("yes")))
-    assert len(ChatBot.texts(b)) == sent  # neither applied nor shown for a person to make
+    reply(data_dir, text="¿Qué cambio?")
+    run(b.handle(None, msg("yes", **TO_BOT)))
+    # neither applied nor shown for a person to make: a new message for the AI
+    assert ChatBot.texts(b)[sent:] == ["¿Qué cambio?"]
     assert db.get_kv("bot.pending.-100") is None
 
 
@@ -580,7 +684,7 @@ def test_the_bot_lets_a_person_add_only_to_their_own_avoided_foods(data_dir, tmp
     run(b.handle(None, msg("@chefbot no quiero salmón")))  # Luis, for himself
     assert "Foods Luis avoids: espinaca → espinaca, salmon" in ChatBot.texts(b)[-1]
     assert db.get_kv("bot.pending.-100")["asker"] == "luis"
-    run(b.handle(None, msg("yes")))  # checked again on the yes, still as Luis's own change
+    run(b.handle(None, msg("yes", **TO_BOT)))  # checked again on the yes, as Luis's own change
     assert 'avoid_ingredients = ["espinaca", "salmon"]' in ChatBot.texts(b)[-1]
 
 

@@ -164,12 +164,14 @@ def facts(
                 out.append(
                     f"- {t.date(d.date)}: lunch {data.recipes[d.lunch].name if d.lunch in data.recipes else '?'}{side}; dinner {data.recipes[d.dinner].name if d.dinner in data.recipes else '?'}"
                 )
-    out.append(settings_now(data))
+    out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)
 
 
-def settings_now(data: Data) -> str:
-    """The values a change may touch, with the ids a change block names."""
+def settings_now(data: Data, viewer: str | None = None) -> str:
+    """The values a change may touch, with the ids a change block names. viewer: in a private chat,
+    only their own avoided foods are listed (they can be medical, and only the asker may add to
+    their own list anyway)."""
     hh, st = data.household, data.settings
     stores = ", ".join(f"{sid} ({s.name})" for sid, s in st.stores.items()) or "none"
     out = [
@@ -182,7 +184,8 @@ def settings_now(data: Data) -> str:
         f"- settings.sections: {st.sections or '{}'}",
     ]
     for p in hh.people:
-        out.append(f"- household.people.{p.id}.avoid_ingredients: {p.avoid_ingredients}")
+        if viewer is None or p.id == viewer:
+            out.append(f"- household.people.{p.id}.avoid_ingredients: {p.avoid_ingredients}")
     out.append("- reminders:")
     for r in st.reminders:
         out.append(

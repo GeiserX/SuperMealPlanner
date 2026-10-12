@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -360,10 +361,21 @@ def validate(root: Path, texts: dict[str, str]) -> None:
             raise ChangeError(f"the data would not validate: {str(e)[:500]}") from None
 
 
+def git_env(token: str = "") -> dict[str, str] | None:
+    """The environment for one git call that sends the token. It goes in the environment, never
+    on the command line, where any process could read it, nor in the checkout's config."""
+    if not token:
+        return None
+    env = dict(os.environ)
+    n = int(env.get("GIT_CONFIG_COUNT") or 0)
+    env["GIT_CONFIG_COUNT"] = str(n + 1)
+    env[f"GIT_CONFIG_KEY_{n}"] = "http.extraHeader"
+    env[f"GIT_CONFIG_VALUE_{n}"] = f"Authorization: token {token}"
+    return env
+
+
 def _git(root: Path, *args: str, token: str = "") -> subprocess.CompletedProcess:
     cmd = ["git", "-C", str(root)]
-    if token:  # passed per call, never written to the checkout's config
-        cmd += ["-c", f"http.extraHeader=Authorization: token {token}"]
     cmd += [
         "-c",
         "user.name=SuperMealPlanner",
@@ -371,7 +383,9 @@ def _git(root: Path, *args: str, token: str = "") -> subprocess.CompletedProcess
         "user.email=supermealplanner@localhost",
         *args,
     ]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=120, check=False, env=git_env(token)
+    )
 
 
 def apply(root: Path, p: Proposal, message: str, token: str) -> str:
