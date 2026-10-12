@@ -96,9 +96,7 @@ bot:
   chat_id: -1001234567890     # the household group; send /chatid in the group to get it
   people: {alex: 111111111, sam: 222222222}   # person id -> Telegram user id
   handles: {sam: "@sam_cooks"}  # optional: how to @mention someone; looked up from Telegram when left out
-  wake_words: [chef]          # the AI answers when a message names it, mentions the bot or replies to it
-  respond: mentions           # mentions | all: "all" sends every group message to the AI
-  voice: true                 # transcribe voice notes; they always go to the AI
+  voice: true                 # transcribe voice notes; in the group only one that replies to the bot
   private_chats: true         # people in bot.people may also write to the bot privately
   group_open: false           # true: anyone in the group may use the bot, not only bot.people
   sync_profile: true          # at start, set the bot's command menu and descriptions in Telegram
@@ -130,6 +128,32 @@ reminders:
 Reminder times are `HH:MM` in the household timezone; a bad time or an unknown `{placeholder}` is rejected when the data loads. Reminder kinds: `message` sends its text (`{names}` and `{today}` are filled in); `meal` sends today's `meal` (breakfast, lunch or dinner) with where it comes from and the recipe link; `shopping` links the week's list; `batch` lists today's batch dishes, only on batch days; `defrost` fires only when tomorrow's lunch is in the freezer; `pills_lunch` asks each person with lunch pills who has not logged them yet.
 
 The `plugin` provider loads a Python file from the data directory that defines `complete(system, messages, settings) -> str` (sync or async). Use it for any model or gateway the built-in providers do not cover.
+
+A plugin can also keep the conversation on its side, so each message sends only what is new instead of the whole history. It then defines `converse(turn, settings)` and, optionally, `forget(conversation, settings)`, which `/new` calls:
+
+| `turn` key | what it holds |
+|---|---|
+| `conversation` | the id the plugin returned last time in this chat, or `None` |
+| `rules` | the instructions; they stay the same from one message to the next |
+| `context` | the household's data as of now: people, plates, the week, recent logs, the settings a change may touch |
+| `new` | the messages the plugin has not seen yet (every recent message when `conversation` is `None`) |
+| `history` | the earlier messages, a recap for when the plugin has to start over |
+| `files` | `ingredients.yaml` and every `recipes/*.yaml`, as text, for a model that can read files |
+
+It returns the answer, or `{"text": ..., "conversation": id, "kept": true}`. The app keeps the id per chat and sends it back with the next message. `conversation: None` makes the next message carry the whole history again; `kept: false` (the plugin's side did not store this turn) sends these messages again with the next one. The app stops waiting after `llm.timeout_s` (in `settings`), but it cannot stop a plugin's thread: a plugin that waits on a remote turn should give up, and cancel that turn, a little before then, so a turn the app has stopped waiting for is never stored on the plugin's side.
+
+### Changes from the chat
+
+The AI may propose a change to a short list of settings: `household.lunch_time`, `shopping_day`, `guests`, `batch.preferred_days`, `batch.sessions_per_week`, the weekly `rules`, additions to the asker's own `avoid_ingredients`, `shopping.primary` and `alternatives`, `sections`, `reminders` other than the `pills_lunch` one, and a new recipe. Pills, the pills reminder, calorie and protein targets and goals are never on it. Avoided foods are often medical, so nobody can change another person's list from the chat, and a food comes off a list only by hand. The bot shows the change in plain words and waits for the person who asked to answer yes or no; in the group the answer has to reply to the bot or mention it, so an "ok" said to someone else is not a yes. On yes it pulls the data repo, edits the file (comments and layout stay), runs the same validation as `smp check` on a copy, and pushes one git commit, so every change can be reverted. That needs the data folder to be a git checkout and `SMP_GIT_WRITE_TOKEN` (a token that may push to the data repo). Without them the bot shows the change for a person to make by hand.
+
+### Environment
+
+| variable | what it does |
+|---|---|
+| `SMP_DATA` | the data directory, `/data` by default |
+| `SMP_GIT_PULL=1` | pull the data directory every hour when it is a git checkout |
+| `SMP_GIT_TOKEN` | optional read token for that pull over https |
+| `SMP_GIT_WRITE_TOKEN` | optional token that may push: lets the bot save changes made from the chat |
 
 ## ingredients.yaml
 

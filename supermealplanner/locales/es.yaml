@@ -123,6 +123,7 @@ bot_help: |
   /lista: la lista de la compra de esta semana
   /peso 82.4 · /cintura 95 · /antojo 7 · /agua: apuntar lo tuyo
   /presentacion: todo lo que hago
+  /nuevo: empezar una conversación nueva conmigo
   /chatid: el id de este chat
   Pregunta lo que quieras con tus palabras y te respondo con nuestro plan y datos.
 bot_unknown_person: "Todavía no sé quién eres. Añade tu id de Telegram en settings.yaml (bot.people). Tu id es {id}."
@@ -144,7 +145,7 @@ reminder_pills_lunch: "💊 {name}, ¿te has tomado las pastillas de la comida? 
 bot_pills_logged: "Apuntado: pastillas de la comida tomadas, {name}."
 
 # bot profile and presentation (/presentacion)
-bot_commands: {today: hoy, tomorrow: manana, week: semana, list: lista, weight: peso, waist: cintura, craving: antojo, water: agua, pills: pastillas, about: presentacion, help: ayuda}
+bot_commands: {today: hoy, tomorrow: manana, week: semana, list: lista, weight: peso, waist: cintura, craving: antojo, water: agua, pills: pastillas, about: presentacion, help: ayuda, new: nuevo}
 bot_cmd_today: Las comidas de hoy y el plato de cada uno
 bot_cmd_tomorrow: Las comidas de mañana
 bot_cmd_week: El menú de la semana
@@ -172,8 +173,36 @@ bot_about_kind_pills_lunch: "💊 Pastillas de la comida (solo si no están marc
 bot_about_log: "📝 Apuntar\n/peso 82,4 · /cintura 95 · /antojo 6 · /agua · /pastillas\nCon la tendencia del peso ajusto las calorías poco a poco."
 bot_about_reminder: "• {label}: {times} ({days})"
 bot_about_reminder_for: "• {label}: {times} ({days}) · {people}"
-bot_about_ask: "💬 Preguntarme\nMencionadme o respondedme y os contesto con vuestro plan y vuestros datos. Nunca cambio una dosis: eso es cosa de vuestros médicos."
-bot_about_names: "Me podéis llamar: {names}"
+bot_about_ask: "💬 Preguntarme\nPor privado os contesto siempre; en el grupo, mencionadme o respondedme. Contesto con vuestro plan y vuestros datos y recuerdo la conversación hasta /nuevo. Nunca cambio una dosis: eso es cosa de vuestros médicos."
 bot_about_private: "🔒 También me podéis escribir por privado. Ahí nunca comparto los pesos, registros, objetivos ni pastillas de nadie más."
 bot_about_calendar: "Los días de batch se mueven a las tardes libres de vuestro calendario."
-bot_about_voice: "Las notas de voz siempre me llegan."
+bot_about_voice: "Las notas de voz me llegan por privado; en el grupo, mandádmelas como respuesta a un mensaje mío."
+
+# conversación con la IA y cambios de ajustes desde el chat
+bot_new: "Conversación nueva: he olvidado lo que hablamos. Vuestro plan y vuestros datos siguen aquí."
+bot_cmd_new: Empezar una conversación nueva conmigo
+bot_about_changes: "⚙️ Ajustes\nPedidme cambiar un recordatorio, los días de batch, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, o las tiendas de la compra, o añadir una receta. Os enseño el cambio y solo lo aplico cuando me decís que sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
+change_confirm: "{name}, ¿hago este cambio?\n{lines}\nResponde a este mensaje con «sí» o «no»."
+change_yes_words: ["sí", "si", "vale", "ok", "okay", "claro", "dale", "adelante", "venga", "yes"]
+change_no_words: ["no", "nop", "cancela", "cancelar"]
+change_cancelled: Vale, no cambio nada.
+change_applied: "Hecho, ya está guardado (cambio {sha}). Se puede deshacer desde el repositorio de datos."
+change_failed: "No he podido guardar el cambio, no se ha tocado nada: {error}"
+change_invalid: "Ese cambio no lo puedo hacer: {error}"
+change_manual: "Aquí no puedo editar los ajustes yo (no tengo permiso de escritura en el repositorio de datos). Una persona puede hacer este cambio a mano:"
+change_members_only: Solo las personas de casa pueden cambiar los ajustes.
+change_none: (nada)
+change_yes: sí
+change_no: "no"
+change_lunch_time: Hora de comer
+change_shopping_day: Día de compra
+change_guests: "Invitados ({name})"
+change_batch_days: Días de batch
+change_batch_sessions: Sesiones de batch por semana
+change_rule: "Regla semanal {name}"
+change_avoid: "Alimentos que evita {name}"
+change_shopping_primary: Tienda principal de la lista
+change_shopping_alternatives: Otras tiendas de la lista
+change_section: "Sección de la lista {name}"
+change_reminder: "Recordatorio «{name}»"
+change_recipe: "Receta nueva: {name} ({n} ingredientes)"

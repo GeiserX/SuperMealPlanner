@@ -128,9 +128,13 @@ def test_store_view_writes_whole_list_for_one_store(data_dir, tmp_path):
 class FakeState:
     def __init__(self, data, db, today):
         self.data, self.db, self._today = data, db, today
+        self.root = data.root
 
     def today(self):
         return self._today
+
+    def reload(self):
+        self.data = load(self.root)
 
 
 class FakeBot:
@@ -142,10 +146,10 @@ class FakeBot:
         b = Bot(FakeState(data, db, today))
         b.token, b.username, b.sent, b.asked = "x", "chefbot", [], []
 
-        async def send(client, chat_id, text, reply_to=None, record=True):
+        async def send(client, chat_id, text, reply_to=None, record=True, **kw):
             b.sent.append((chat_id, text))
 
-        async def ask(client, chat_id, reply_to, asker=None):
+        async def ask(client, chat_id, reply_to, asker=None, user_id=None):
             b.asked.append(chat_id)
 
         async def transcribe(client, voice):
@@ -221,31 +225,48 @@ def test_bot_ignores_strangers_and_other_chats(data_dir, tmp_path):
     assert db.weights("luis") == [] and b.sent == []
 
 
-def test_ai_wakes_on_mention_wake_word_or_reply_only(data_dir, tmp_path):
-    data = bot_data(data_dir, wake_words=["chef"])
+def test_ai_wakes_on_mention_or_reply_only(data_dir, tmp_path):
+    data = bot_data(data_dir, wake_words=["chef"])  # a key older data still has: it calls nothing
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    run(b.handle(None, msg("qué bien huele")))
+    run(b.handle(None, msg("Chef, ¿qué hay hoy?")))
+    run(b.handle(None, msg("escribe a @chefbotx")))  # another handle that starts the same
+    assert b.asked == []
+    run(b.handle(None, msg("hola @ChefBot")))
+    run(b.handle(None, msg("vale", reply_to_message={"from": {"username": "chefbot"}})))
+    assert len(b.asked) == 2
+
+
+def test_a_group_never_sends_every_message_to_the_ai_but_a_private_chat_does(data_dir, tmp_path):
+    data = bot_data(data_dir, respond="all")  # the old setting no longer opens the group
     b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
     run(b.handle(None, msg("qué bien huele")))
     assert b.asked == []
-    run(b.handle(None, msg("Chef, ¿qué hay hoy?")))
-    run(b.handle(None, msg("hola @chefbot")))
-    run(b.handle(None, msg("vale", reply_to_message={"from": {"username": "chefbot"}})))
-    assert len(b.asked) == 3
+    run(b.handle(None, msg("qué bien huele", chat=7, user=7)))
+    assert b.asked == [7]
 
 
-def test_respond_all_sends_every_message_to_the_ai(data_dir, tmp_path):
-    data = bot_data(data_dir, respond="all")
-    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
-    run(b.handle(None, msg("qué bien huele")))
-    assert b.asked == [-100]
-
-
-def test_voice_notes_are_transcribed_and_go_to_the_ai(data_dir, tmp_path):
-    data = bot_data(data_dir)
+def test_voice_notes_reach_the_ai_privately_or_as_a_reply(data_dir, tmp_path):
+    data = bot_data(data_dir, wake_words=["cenamos"])  # a word said in the note calls nothing
     db = DB(tmp_path / "b.db")
     b = FakeBot(data, db, MONDAY)
-    run(b.handle(None, msg(voice={"file_id": "f"})))
-    assert b.asked == [-100]
-    assert "cenamos" in db.recent_chat(-100, 5)[-1]["text"]
+    heard = []
+    transcribe = b.transcribe
+
+    async def counting(client, voice):
+        heard.append(voice)
+        return await transcribe(client, voice)
+
+    b.transcribe = counting
+    run(b.handle(None, msg(voice={"file_id": "f"})))  # group, nobody called the bot
+    assert b.asked == [] and db.recent_chat(-100, 5) == []
+    assert heard == []  # not even transcribed
+    run(b.handle(None, msg(voice={"file_id": "f"}, chat=7, user=7)))  # private: always
+    assert b.asked == [7]
+    assert "cenamos" in db.recent_chat(7, 5)[-1]["text"]
+    reply = {"from": {"username": "chefbot"}}
+    run(b.handle(None, msg(voice={"file_id": "f"}, reply_to_message=reply)))
+    assert b.asked == [7, -100] and len(heard) == 2
 
 
 def test_reminders_fire_once_in_their_window(data_dir, tmp_path):

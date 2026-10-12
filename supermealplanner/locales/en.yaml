@@ -124,6 +124,7 @@ bot_help: |
   /list: this week's shopping list
   /weight 82.4 · /waist 95 · /craving 7 · /water: log for yourself
   /about: everything I do
+  /new: start a new conversation with me
   /chatid: this chat's id
   Ask anything else in plain words and I'll answer from our plan and data.
 bot_unknown_person: "I don't know who you are yet. Add your Telegram id to settings.yaml (bot.people). Your id is {id}."
@@ -173,8 +174,36 @@ bot_about_kind_pills_lunch: "💊 Lunch pills (only if not marked yet)"
 bot_about_log: "📝 Logging\n/weight 82.4 · /waist 95 · /craving 6 · /water · /pills\nCalories follow the weight trend slowly."
 bot_about_reminder: "• {label}: {times} ({days})"
 bot_about_reminder_for: "• {label}: {times} ({days}) · {people}"
-bot_about_ask: "💬 Ask me\nMention me or reply to me and I answer from your plan and data. I never change a dose: that is for your clinicians."
-bot_about_names: "Call me: {names}"
+bot_about_ask: "💬 Ask me\nIn a private chat I always answer; in the group, mention me or reply to me. I answer from your plan and data and remember our conversation until /new. I never change a dose: that is for your clinicians."
 bot_about_private: "🔒 You can also write to me privately. There I never share anyone else's weigh-ins, logs, goals or pills."
 bot_about_calendar: "Batch days move to free afternoons on your calendar."
-bot_about_voice: "Voice notes always reach me."
+bot_about_voice: "Voice notes reach me in a private chat; in the group, reply to me with them."
+
+# AI conversation and settings changes from the chat
+bot_new: "New conversation: I've forgotten what we talked about. Your plan and data are still here."
+bot_cmd_new: Start a new conversation with me
+bot_about_changes: "⚙️ Settings\nAsk me to change a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, or the shopping stores, or to add a recipe. I show you the change and apply it only when you say yes. Pills, calories and goals are never changed from the chat."
+change_confirm: "{name}, shall I change this?\n{lines}\nReply to this message with «yes» or «no»."
+change_yes_words: ["yes", "y", "ok", "okay", "sure", "go"]
+change_no_words: ["no", "n", "nope", "cancel"]
+change_cancelled: Okay, nothing changed.
+change_applied: "Done, it's saved (change {sha}). It can be undone from the data repo."
+change_failed: "I couldn't save the change, nothing was changed: {error}"
+change_invalid: "I can't make that change: {error}"
+change_manual: "I can't edit the settings myself here (no write access to the data repo). A person can make this change by hand:"
+change_members_only: Only the people of the household can change the settings.
+change_none: (none)
+change_yes: "yes"
+change_no: "no"
+change_lunch_time: Lunch time
+change_shopping_day: Shopping day
+change_guests: "Guests ({name})"
+change_batch_days: Batch days
+change_batch_sessions: Batch sessions a week
+change_rule: "Weekly rule {name}"
+change_avoid: "Foods {name} avoids"
+change_shopping_primary: Main store for the list
+change_shopping_alternatives: Other stores for the list
+change_section: "List section {name}"
+change_reminder: "Reminder «{name}»"
+change_recipe: "New recipe: {name} ({n} ingredients)"

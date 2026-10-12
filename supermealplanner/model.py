@@ -277,9 +277,9 @@ class Bot(Loose):
     people: dict[str, int] = {}  # person id -> Telegram user id
     handles: dict[str, str] = {}  # person id -> @handle; looked up from Telegram when left out
     history: int = 20  # recent messages kept as context for the AI
-    wake_words: list[str] = []  # the AI answers a group message that contains one of these words
-    respond: Literal["mentions", "all"] = "mentions"  # "all": every group message goes to the AI
-    voice: bool = True  # transcribe voice notes and always hand them to the AI
+    # in a group the AI answers only a message that mentions the bot's @handle or replies to it; a
+    # private chat always gets an answer
+    voice: bool = True  # transcribe voice notes; in a group only one that replies to the bot
     private_chats: bool = True  # people in bot.people may also talk to the bot privately
     group_open: bool = False  # True: anyone in the group may use the bot, not only bot.people
     sync_profile: bool = True  # at start, set the bot's command menu and descriptions in Telegram
@@ -454,4 +454,28 @@ def load(root: str | Path) -> Data:
         raise DataError("\n".join(errors))
     return Data(
         root=root, household=household, ingredients=ingredients, recipes=recipes, settings=settings
+    )
+
+
+def check(root: str | Path) -> str:
+    """Everything `smp check` validates: the data and every store catalogue. Returns a one-line
+    summary; raises DataError with what is wrong."""
+    from .stores import catalogs
+
+    data = load(root)
+    try:
+        cats = catalogs(data)
+    except Exception as e:  # noqa: BLE001  any broken catalogue is a data error
+        raise DataError(f"store catalogue: {e}") from None
+    unknown = [
+        f"{sid}:{iid}"
+        for sid, c in cats.items()
+        for iid in c.products
+        if iid not in data.ingredients
+    ]
+    if unknown:
+        raise DataError(f"catalogue entries for unknown ingredients: {unknown}")
+    return (
+        f"ok: {len(data.household.people)} people, {len(data.ingredients)} ingredients, "
+        f"{len(data.recipes)} recipes, {len(cats)} store catalogues"
     )
