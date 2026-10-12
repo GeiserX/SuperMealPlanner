@@ -1079,3 +1079,62 @@ def test_new_instructions_stay_a_readable_block_and_show_only_what_changes(data_
     assert (
         yaml.safe_load(changes.render(data_dir, p)["settings.yaml"])["llm"]["instructions"] == odd
     )
+
+
+def test_a_yes_replying_to_a_0_3_confirmation_settles_it(data_dir, tmp_path, monkeypatch):
+    data = plugin_data(data_dir)
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    old = {
+        "change": {"set": {"household.shopping_day": "friday"}},
+        "by": 7,
+        "asker": "luis",
+        "name": "Luis",
+        "ts": time.time(),
+    }
+    db.set_kv("bot.pending.-100", old)  # what 0.3.1 left behind: no id of its message
+    reply(data_dir, text="¿Qué?")
+    # a real reply always carries the id of the message it answers
+    run(b.handle(None, msg("yes", reply_to_message={"from": {"id": 99}, "message_id": 555})))
+    assert turns(data_dir) == []  # the yes never reached the AI
+    assert ChatBot.texts(b, -100)[-1].startswith(b.t("change_manual"))
+    assert db.get_kv("bot.waiting.-100") is None
+
+
+def test_plain_text_is_cut_without_adding_anything(data_dir, tmp_path):
+    from supermealplanner.bot import _chunks
+
+    # an admin's diff of a Markdown file: its context lines hold fences that are not ours
+    text = "Cambios:\n ```yaml\n" + "\n".join(f"+línea {i} " + "x" * 60 for i in range(120))
+    parts = list(_chunks(text, fences=False))
+    assert len(parts) > 1 and "\n".join(parts) == text
+    b = ChatBot(bot_data(data_dir), DB(tmp_path / "b.db"))
+    run(b.send(None, -100, text))
+    assert "\n".join(ChatBot.texts(b, -100)) == text
+
+
+def test_a_proposal_cut_off_by_a_restart_is_said_on_the_next_start(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text="On it.", proposals=[offer(confirm_by="none")])
+    settle(b, msg("@chefbot quiero un comando /sopa"))
+    assert db.get_kv("bot.running") is None  # a step that ended leaves nothing behind
+
+    seen = []
+
+    async def stopped(client, chat_id, reply_to, pending):
+        seen.append(db.get_kv("bot.running"))
+        raise asyncio.CancelledError  # the container stops mid-draft
+
+    b._act = stopped
+    with pytest.raises(asyncio.CancelledError):
+        run(b.act(None, -100, 1, {"proposal": offer(confirm_by="none"), "asker": "luis"}))
+    assert len(seen[0]) == 1 and seen[0][0]["chat"] == -100
+    after = ChatBot(data, db)  # the bot starts again
+    run(after.interrupted(None))
+    assert ChatBot.texts(after, -100) == [after.t("proposal_interrupted")]
+    assert db.get_kv("bot.running") is None
+    run(after.interrupted(None))  # said once
+    assert len(ChatBot.texts(after, -100)) == 1

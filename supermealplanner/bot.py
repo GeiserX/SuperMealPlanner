@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -92,6 +93,7 @@ PENDING_TTL = 3600  # a proposed change waits this long for its yes
 # nothing else, so the list lives under its own key: a rollback to 0.3.x finds nothing it cannot read.
 WAITING = "bot.waiting.{}"
 LEGACY_PENDING = "bot.pending.{}"
+RUNNING = "bot.running"  # proposals the plugin is carrying out now, across every chat
 ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft takes minutes)
 
 
@@ -107,6 +109,7 @@ class Bot:
         self.ai = asyncio.Semaphore(1)  # one AI answer at a time, in arrival order
         self.usernames: dict[str, str] = {}  # person id -> Telegram username, from getChatMember
         self.tasks: set[asyncio.Task] = set()
+        self.started = False
         self.bot_id = 0
         self.writing = asyncio.Lock()  # one settings change at a time
 
@@ -166,7 +169,7 @@ class Bot:
         to parse goes again as plain text. Returns the id of the last message sent; `ids` collects
         the id of every piece."""
         sent = None
-        for chunk in _chunks(text):
+        for chunk in _chunks(text, fences=markdown):
             params = {"chat_id": chat_id, "disable_web_page_preview": True}
             if reply_to:
                 params["reply_parameters"] = {
@@ -266,6 +269,9 @@ class Bot:
                         await self.sync_profile(client)
                     await self.learn_usernames(client)
                     await self.check_group(client, me)
+                    if not self.started:  # once per process: a loop restart cuts nothing off
+                        self.started = True
+                        await self.interrupted(client)
                     log.warning("bot @%s up", self.username)
                     backoff = 5
                     loops = [
@@ -590,6 +596,10 @@ class Bot:
         to = (msg.get("reply_to_message") or {}).get("message_id") if self.replied(msg) else None
         meant = [i for i in mine if to is not None and to in (i.get("msgs") or [i.get("msg")])]
         if to is not None and not meant:
+            # a change 0.3.x left waiting never kept the id of its message: any reply to the bot
+            # may be the yes to it
+            meant = [i for i in mine if i.get("msg") is None and not i.get("msgs")]
+        if to is not None and not meant:
             # a yes to another of the bot's messages (someone else's offer, an answer) is not a
             # yes to what waits for this person: it settles nothing
             return False
@@ -687,7 +697,43 @@ class Bot:
 
     async def act(self, client, chat_id: int, reply_to: int, pending: dict) -> None:
         """Have the plugin carry out a proposal and post what came of it. Follow-ups are offered on
-        behalf of the same asker."""
+        behalf of the same asker. While it runs it is written down, so a restart can say it was
+        cut off instead of leaving the asker waiting."""
+        mark = {"id": uuid.uuid4().hex, "chat": chat_id, "reply_to": reply_to, "ts": time.time()}
+        db = self.state.db
+        db.set_kv(RUNNING, [*(db.get_kv(RUNNING) or []), mark])
+        try:
+            await self._act(client, chat_id, reply_to, pending)
+        except asyncio.CancelledError:
+            raise  # the bot is stopping: the mark stays, and the next start says so
+        except BaseException:
+            self._unmark(mark)
+            raise
+        self._unmark(mark)
+
+    def _unmark(self, mark: dict) -> None:
+        db = self.state.db
+        left = [m for m in db.get_kv(RUNNING) or [] if m.get("id") != mark["id"]]
+        db.set_kv(RUNNING, left or None)
+
+    async def interrupted(self, client) -> None:
+        """Once at start: tell each chat whose proposal was running when the bot stopped that it
+        was cut off, so the asker knows to ask again."""
+        db = self.state.db
+        for m in db.get_kv(RUNNING) or []:
+            try:
+                await self.send(
+                    client,
+                    m["chat"],
+                    self.t("proposal_interrupted"),
+                    m.get("reply_to"),
+                    record=False,
+                )
+            except Exception as e:  # noqa: BLE001  best effort, like any other notice
+                log.warning("could not report an interrupted proposal: %s", safe(e))
+        db.set_kv(RUNNING, None)
+
+    async def _act(self, client, chat_id: int, reply_to: int, pending: dict) -> None:
         try:
             out = await asyncio.wait_for(
                 llm.act(self.data, pending["proposal"]), timeout=ACT_TIMEOUT
@@ -1132,17 +1178,18 @@ def _files(root: Path) -> dict[str, str]:
     return out
 
 
-def _chunks(text: str, size: int = 3500):
+def _chunks(text: str, size: int = 3500, fences: bool = True):
     """Pieces Telegram accepts, cut at a line break when there is one, so Markdown stays whole. A
-    code block cut in two is closed at the cut and opened again in the next piece."""
+    code block cut in two is closed at the cut and opened again in the next piece. Plain text
+    (fences=False) is only cut: nothing is added to what was written."""
     floor = 0  # the reopened fence at the start of the text: a cut must land past it
-    room = size - 4  # for the closing fence a cut may add
+    room = size - 4 if fences else size  # for the closing fence a cut may add
     while len(text) > size:
         cut = text.rfind("\n", floor + 1, room)
         if cut <= floor:
             cut = room
         head, text = text[:cut], text[cut:].lstrip("\n")
-        fence = _open_fence(head)
+        fence = _open_fence(head) if fences else None
         floor = 0
         if fence is not None:
             head += "\n```"
