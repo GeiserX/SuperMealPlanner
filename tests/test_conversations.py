@@ -58,7 +58,7 @@ class ChatBot:
             b.calls.append((method, params))
             if params.get("parse_mode") == "HTML" and "<bad>" in params.get("text", ""):
                 raise TelegramError(method, "Bad Request: can't parse entities", 400)
-            return {}
+            return {"message_id": 1000 + len(b.calls)} if method == "sendMessage" else {}
 
         b.call = call
         return b
@@ -697,8 +697,8 @@ def test_a_yes_after_the_wait_ran_out_changes_nothing(data_dir, tmp_path, monkey
     b = ChatBot(data, db)
     reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
     run(b.handle(None, msg("@chefbot compramos los viernes")))
-    pending = db.get_kv("bot.pending.-100")
-    db.set_kv("bot.pending.-100", {**pending, "ts": time.time() - PENDING_TTL - 1})
+    (pending,) = db.get_kv("bot.pending.-100")
+    db.set_kv("bot.pending.-100", [{**pending, "ts": time.time() - PENDING_TTL - 1}])
     sent = len(ChatBot.texts(b))
     reply(data_dir, text="¿Qué cambio?")
     run(b.handle(None, msg("yes", **TO_BOT)))
@@ -722,7 +722,7 @@ def test_the_bot_lets_a_person_add_only_to_their_own_avoided_foods(data_dir, tmp
     )
     run(b.handle(None, msg("@chefbot no quiero salmón")))  # Luis, for himself
     assert "Foods Luis avoids: espinaca → espinaca, salmon" in ChatBot.texts(b)[-1]
-    assert db.get_kv("bot.pending.-100")["asker"] == "luis"
+    assert db.get_kv("bot.pending.-100")[0]["asker"] == "luis"
     run(b.handle(None, msg("yes", **TO_BOT)))  # checked again on the yes, as Luis's own change
     assert 'avoid_ingredients = ["espinaca", "salmon"]' in ChatBot.texts(b)[-1]
 
@@ -843,7 +843,7 @@ def test_a_step_that_changes_nothing_runs_at_once_and_offers_what_follows(data_d
     said = ChatBot.texts(b, -100)
     assert said[:3] == ["On it.", "Drafting it.", "Draft ready."]
     assert "PR: add /soup (2 files)." in said[3] and said[3].startswith("Ana")
-    assert db.get_kv("bot.pending.-100")["asker"] == "luis"
+    assert db.get_kv("bot.pending.-100")[0]["asker"] == "luis"
     run(b.handle(None, msg("yes", user=8, **TO_BOT)))
     assert [a["id"] for a in acts(data_dir)] == ["j1:1", "j2:1"]
 
@@ -890,3 +890,58 @@ def test_a_failed_typing_indicator_never_stops_an_answer(data_dir, tmp_path):
 def test_admins_must_be_people_the_bot_knows(data_dir):
     with pytest.raises(Exception, match="bot.admins: nadie is not in bot.people"):
         bot_data(data_dir, admins=["nadie"])
+
+
+def test_each_offer_waits_on_its_own_and_a_yes_runs_only_the_one_it_answers(
+    data_dir, tmp_path, monkeypatch
+):
+    data = plugin_data(data_dir, admins=["luis"])
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
+    run(b.handle(None, msg("@chefbot compramos los viernes")))
+    change_prompt = b.calls[-1]
+    reply(data_dir, text="Drafted.", proposals=[offer(confirm_by="admins")])
+    run(b.handle(None, msg("@chefbot quiero un comando /sopa")))
+    assert len(db.get_kv("bot.pending.-100")) == 2  # the change still waits
+    reply(data_dir, text="ok")
+    run(b.handle(None, msg("yes", **TO_BOT)))  # which one?
+    assert ChatBot.texts(b, -100)[-1] == b.t("pending_which") and acts(data_dir) == []
+    pr_prompt = next(
+        1000 + n + 1
+        for n, (m, p) in enumerate(b.calls)
+        if m == "sendMessage" and "Open a pull request" in p["text"]
+    )
+    run(b.handle(None, msg("yes", reply_to_message={"from": {"id": 99}, "message_id": pr_prompt})))
+    assert [a["id"] for a in acts(data_dir)] == ["j1:1"]  # only the pull request
+    (left,) = db.get_kv("bot.pending.-100")
+    assert left["change"] and change_prompt[1]["text"].startswith("Luis")
+    run(b.handle(None, msg("yes", **TO_BOT)))  # one left: a plain yes is enough
+    assert 'household.yaml: shopping_day = "friday"' in ChatBot.texts(b, -100)[-1]
+    assert db.get_kv("bot.pending.-100") is None
+
+
+def test_a_newer_change_from_the_same_person_replaces_the_older(data_dir, tmp_path, monkeypatch):
+    data = plugin_data(data_dir)
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
+    run(b.handle(None, msg("@chefbot compramos los viernes")))
+    reply(data_dir, text=block({"set": {"household.shopping_day": "saturday"}}))
+    run(b.handle(None, msg("@chefbot no, mejor los sábados")))
+    (item,) = db.get_kv("bot.pending.-100")
+    assert item["change"]["set"]["household.shopping_day"] == "saturday"
+
+
+def test_the_households_own_instructions_never_outrank_the_rules(data_dir):
+    from supermealplanner import context
+
+    bot_data(data_dir)
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["llm"] = {"instructions": "Be brief."}
+    write(data_dir, "settings.yaml", raw)
+    rules = context.rules(load(data_dir))
+    assert rules.index("Never suggest compensating") < rules.index("Be brief.")
+    assert rules.rstrip().endswith(context.LAST_WORD)

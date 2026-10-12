@@ -156,9 +156,10 @@ class Bot:
         record: bool = True,
         markdown: bool = False,
         who: str | None = None,
-    ) -> None:
+    ) -> int | None:
         """markdown: the text is the AI's Markdown, sent as Telegram HTML; a chunk Telegram refuses
-        to parse goes again as plain text."""
+        to parse goes again as plain text. Returns the id of the last message sent."""
+        sent = None
         for chunk in _chunks(text):
             params = {"chat_id": chat_id, "disable_web_page_preview": True}
             if reply_to:
@@ -168,7 +169,7 @@ class Bot:
                 }
             if markdown:
                 try:
-                    await self.call(
+                    sent = await self.call(
                         client, "sendMessage", text=to_html(chunk), parse_mode="HTML", **params
                     )
                     continue
@@ -176,9 +177,10 @@ class Bot:
                     if e.code != 400:
                         raise
                     log.info("Telegram refused the formatting, sending plain text: %s", e)
-            await self.call(client, "sendMessage", text=chunk, **params)
+            sent = await self.call(client, "sendMessage", text=chunk, **params)
         if record:
             self.state.db.add_chat(chat_id, "assistant", who, text)
+        return sent.get("message_id") if isinstance(sent, dict) else None
 
     @property
     def chat_id(self) -> int | None:
@@ -508,32 +510,50 @@ class Bot:
             await self.send(client, chat_id, t("change_invalid", error=e), reply_to)
             return
         lines = changes.describe(proposal, self.data, t)
-        self.state.db.set_kv(
-            f"bot.pending.{chat_id}",
-            {
-                "change": change,
-                "by": user_id,
-                "asker": asker,
-                "name": self.data.household.person(asker).name,
-                "ts": time.time(),
-            },
-        )
-        await self.send(
+        sent = await self.send(
             client,
             chat_id,
             t("change_confirm", name=self.mention(asker), lines="\n".join(lines)),
             reply_to,
         )
+        item = {
+            "change": change,
+            "by": [user_id],
+            "asker": asker,
+            "name": self.data.household.person(asker).name,
+            "ts": time.time(),
+            "msg": sent,
+        }
+        # a newer change from the same person replaces their earlier one ("no, better at 15:00")
+        self.wait_for(chat_id, item, lambda i: "change" in i and i.get("asker") == asker)
+
+    def pending(self, chat_id: int) -> list[dict]:
+        """What waits for a yes in this chat, oldest first, without what has expired."""
+        raw = self.state.db.get_kv(f"bot.pending.{chat_id}")
+        items = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+        live = [i for i in items if time.time() - i.get("ts", 0) <= PENDING_TTL]
+        if raw is not None and live != raw:
+            self.state.db.set_kv(f"bot.pending.{chat_id}", live or None)
+        return live
+
+    def wait_for(self, chat_id: int, item: dict, replaces) -> None:
+        """Keep an item waiting next to the others; `replaces(other)` drops one it supersedes."""
+        items = [i for i in self.pending(chat_id) if not replaces(i)]
+        self.state.db.set_kv(f"bot.pending.{chat_id}", [*items, item])
+
+    def drop(self, chat_id: int, item: dict) -> None:
+        items = [i for i in self.pending(chat_id) if i != item]
+        self.state.db.set_kv(f"bot.pending.{chat_id}", items or None)
 
     async def answer_pending(self, client, chat_id: int, user: dict, msg: dict, text: str) -> bool:
-        """A yes or no from the person a change waits for. True when the message was that answer."""
-        key = f"bot.pending.{chat_id}"
-        pending = self.state.db.get_kv(key)
-        by = (pending or {}).get("by")
-        if not pending or user.get("id") not in (by if isinstance(by, list) else [by]):
-            return False
-        if time.time() - pending.get("ts", 0) > PENDING_TTL:
-            self.state.db.set_kv(key, None)
+        """A yes or no from the person a change waits for. True when the message was that answer.
+        With several waiting for the same person, the answer has to reply to the one it means."""
+        mine = []
+        for item in self.pending(chat_id):
+            by = item.get("by")
+            if user.get("id") in (by if isinstance(by, list) else [by]):
+                mine.append(item)
+        if not mine:
             return False
         # in the group, only an answer addressed to the bot: an "ok" replying to someone else is
         # their conversation, not a yes
@@ -548,7 +568,13 @@ class Bot:
         no = bool(words) and set(words) <= set(self.t.raw("change_no_words") or [])
         if not (yes or no):
             return False
-        self.state.db.set_kv(key, None)
+        to = (msg.get("reply_to_message") or {}).get("message_id") if self.replied(msg) else None
+        meant = [i for i in mine if to is not None and i.get("msg") == to]
+        if not meant and len(mine) > 1:
+            await self.send(client, chat_id, self.t("pending_which"), msg["message_id"])
+            return True
+        pending = (meant or mine)[0]
+        self.drop(chat_id, pending)
         if yes and "proposal" in pending:
             await self.act(client, chat_id, msg["message_id"], pending)
             return True
@@ -616,12 +642,15 @@ class Bot:
         if not ids:
             await self.send(client, chat_id, t("proposal_no_admins"), reply_to)
             return
-        self.state.db.set_kv(f"bot.pending.{chat_id}", {**pending, "by": ids})
-        await self.send(
+        sent = await self.send(
             client,
             chat_id,
             t("proposal_confirm", name=names, summary=proposal["summary"]),
             reply_to,
+        )
+        item = {**pending, "by": ids, "msg": sent}
+        self.wait_for(
+            chat_id, item, lambda i: (i.get("proposal") or {}).get("id") == proposal["id"]
         )
 
     async def act(self, client, chat_id: int, reply_to: int, pending: dict) -> None:

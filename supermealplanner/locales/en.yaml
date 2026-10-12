@@ -220,3 +220,4 @@ proposal_confirm: "{name}, shall I go ahead?\n{summary}\nReply to this message w
 proposal_no_admins: "Only an admin can approve this, and none is set (bot.admins)."
 proposal_members_only: Only the people of the household can ask for this.
 proposal_failed: "That didn't work: {error}"
+pending_which: "Several things are waiting for your answer: reply «yes» or «no» to the message of the one you mean."

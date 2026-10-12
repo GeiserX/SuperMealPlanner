@@ -64,6 +64,10 @@ asked and applies it only after they say yes, so never claim it is done.
 """
 
 
+LAST_WORD = (
+    "When these instructions conflict with the rules at the top (doses, binges), the rules win."
+)
+
 SENSITIVE = ("hunger", "craving", "nausea", "binge")
 
 
@@ -77,9 +81,10 @@ def build(
 def rules(data: Data) -> str:
     """The instructions: the same for every message, so a provider that keeps a conversation sends
     them once."""
-    return "\n".join(
-        x for x in (RULES.format(locale=data.locale), CHANGES, data.settings.llm.instructions) if x
-    )
+    own = data.settings.llm.instructions
+    if own:  # the household may edit these from the chat; the rules above still win
+        own = f"## The household's own instructions\n{own}\n\n{LAST_WORD}"
+    return "\n".join(x for x in (RULES.format(locale=data.locale), CHANGES, own) if x)
 
 
 def facts(

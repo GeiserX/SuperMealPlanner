@@ -219,3 +219,4 @@ proposal_confirm: "{name}, ¿lo hago?\n{summary}\nResponde a este mensaje con «
 proposal_no_admins: "Esto solo lo puede aprobar un administrador, y no hay ninguno configurado (bot.admins)."
 proposal_members_only: Solo las personas de casa pueden pedir esto.
 proposal_failed: "No ha salido bien: {error}"
+pending_which: "Hay varias cosas esperando tu respuesta: responde «sí» o «no» al mensaje de la que quieras."
