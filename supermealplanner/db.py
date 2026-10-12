@@ -179,6 +179,19 @@ class DB:
                 (chat, chat, keep),
             )
 
+    def chat_rows(self, chat: int, n: int) -> list[dict]:
+        """The last n messages of a chat, oldest first, with their row id."""
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT id, role, who, text FROM chat WHERE chat=? ORDER BY id DESC LIMIT ?",
+                (chat, n),
+            ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    def clear_chat(self, chat: int) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM chat WHERE chat=?", (chat,))
+
     def recent_chat(self, chat: int, n: int) -> list[dict]:
         with self.conn() as c:
             rows = c.execute(

@@ -1,4 +1,9 @@
-"""What the AI is told before it answers: the household, today's and tomorrow's plates, the week, recent logs."""
+"""What the AI is told before it answers.
+
+rules(): the instructions, which stay the same from one message to the next.
+facts(): the household, today's and tomorrow's plates, the week, recent logs and the settings it may
+propose to change, as of now.
+"""
 
 from __future__ import annotations
 
@@ -17,8 +22,41 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
 - Never change, start or stop a medication or supplement dose. Medical decisions belong to their
   clinicians; you can suggest what to ask.
 - Never suggest compensating for a binge by eating less afterwards.
-- When someone wants to change the plan, targets, recipes or settings, say exactly what would change
-  (which file and value in the data directory) so a person can apply it.
+- Write Markdown: **bold**, _italic_, [text](https://...) links and "- " lists. No tables.
+- When you can search the web and someone asks for a video or a recipe from elsewhere, give the link
+  and compare it with our recipe: say what differs (ingredients, amounts, steps, time).
+- The household's data below is as of now; it changes between messages, so trust it over anything
+  said earlier in the chat.
+"""
+
+CHANGES = """
+## Changing settings
+You may propose a change to these settings only: lunch time, shopping day, guests, batch days and
+sessions per week, the weekly rules, each person's avoided foods, your wake words, the shopping
+list's stores and section names, reminders, and a new recipe. Never pills, calories, protein or
+goals: for those, say that a person has to edit them. To propose a change, say it in your answer and
+end the answer with one block, sending only the keys that change:
+
+```change
+set:
+  household.lunch_time: "14:30"
+  household.shopping_day: monday
+  household.guests.<occasion>: 2
+  household.batch.preferred_days: [monday, thursday]
+  household.batch.sessions_per_week: 2
+  household.rules.fish_min: 3          # also legumes_min, oily_fish_min, salad_daily, max_repeats_per_4_weeks
+  household.people.<person id>.avoid_ingredients: [<ingredient id>]   # the whole new list
+  settings.bot.wake_words: [chef]
+  settings.shopping.primary: <store id>
+  settings.shopping.alternatives: [<store id>]
+  settings.sections.<section id>: <label>
+  settings.reminders.<reminder id>: {at: ["12:00"], days: daily, enabled: true}   # the fields that change; null removes it
+recipe: {id: <new-id>, name: ..., meals: [lunch], kind: batch, ingredients: [{id: <ingredient id>, qty: 80}], steps: [...], nutrition: {kcal: 550, protein_g: 35}}
+```
+
+A new reminder needs id, kind (message, meal, batch, shopping, defrost, pills_lunch), at, and text
+for kind message ({names} and {today} are filled in). The app shows the change to the person who
+asked and applies it only after they say yes, so never claim it is done.
 """
 
 
@@ -28,16 +66,27 @@ SENSITIVE = ("hunger", "craving", "nausea", "binge")
 def build(
     data: Data, db: DB, today: dt.date, viewer: str | None = None, group: bool = False
 ) -> str:
-    """The AI's context. viewer: in a private chat, the person asking; only their own pills, notes and
-    logs are included. group: in the household group, sensitive logs (binges, cravings, notes) stay
-    out unless bot.share_logs_in_group is set."""
+    """Rules and facts in one text, for a provider that gets a system prompt each time."""
+    return f"{rules(data)}\n\n{facts(data, db, today, viewer, group)}"
+
+
+def rules(data: Data) -> str:
+    """The instructions: the same for every message, so a provider that keeps a conversation sends
+    them once."""
+    return "\n".join(
+        x for x in (RULES.format(locale=data.locale), CHANGES, data.settings.llm.instructions) if x
+    )
+
+
+def facts(
+    data: Data, db: DB, today: dt.date, viewer: str | None = None, group: bool = False
+) -> str:
+    """The household's data as of now. viewer: in a private chat, the person asking; only their own
+    pills, notes and logs are included. group: in the household group, sensitive logs (binges,
+    cravings, notes) stay out unless bot.share_logs_in_group is set."""
     t = Translator(data.locale)
     hh = data.household
-    out = [
-        RULES.format(locale=data.locale),
-        data.settings.llm.instructions or "",
-        f"Today is {t.date(today)} ({today.isoformat()}).",
-    ]
+    out = [f"Today is {t.date(today)} ({today.isoformat()})."]
 
     out.append("\n## People")
     for p in hh.people:
@@ -114,4 +163,33 @@ def build(
                 out.append(
                     f"- {t.date(d.date)}: lunch {data.recipes[d.lunch].name if d.lunch in data.recipes else '?'}{side}; dinner {data.recipes[d.dinner].name if d.dinner in data.recipes else '?'}"
                 )
+    out.append(settings_now(data))
     return "\n".join(x for x in out if x is not None)
+
+
+def settings_now(data: Data) -> str:
+    """The values a change may touch, with the ids a change block names."""
+    hh, st = data.household, data.settings
+    stores = ", ".join(f"{sid} ({s.name})" for sid, s in st.stores.items()) or "none"
+    out = [
+        "\n## Settings now",
+        f"- household.lunch_time: {hh.lunch_time}; household.shopping_day: {hh.shopping_day}",
+        f"- household.guests: {hh.guests or '{}'}",
+        f"- household.batch: days {hh.batch.preferred_days}, {hh.batch.sessions_per_week} sessions a week",
+        f"- household.rules: {hh.rules.model_dump()}",
+        f"- settings.bot.wake_words: {st.bot.wake_words}",
+        f"- stores: {stores}; primary {st.shopping.primary}; alternatives {st.shopping.alternatives}",
+        f"- settings.sections: {st.sections or '{}'}",
+    ]
+    for p in hh.people:
+        out.append(f"- household.people.{p.id}.avoid_ingredients: {p.avoid_ingredients}")
+    out.append("- reminders:")
+    for r in st.reminders:
+        out.append(
+            f"  - {r.id}: kind {r.kind}, at {r.at}, days {r.days}"
+            + (f", meal {r.meal}" if r.kind == "meal" else "")
+            + (f", people {r.people}" if r.people else "")
+            + (f", text {r.text!r}" if r.text else "")
+            + ("" if r.enabled else ", disabled")
+        )
+    return "\n".join(out)

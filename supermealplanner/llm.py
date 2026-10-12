@@ -10,6 +10,19 @@ Providers (settings.yaml, `llm`):
       def complete(system: str, messages: list[dict], settings: dict) -> str
   (or an async def). Use it for anything else: a local CLI, an internal gateway, a mock.
 Messages are [{"role": "user"|"assistant", "content": str}, ...].
+
+A plugin that keeps a conversation on its side (one ongoing session per chat, so each message sends
+only what is new) defines instead, or as well:
+      def converse(turn: dict, settings: dict) -> str | dict
+      def forget(conversation: str, settings: dict) -> None      # optional, on /new
+turn is {"conversation": the id it returned last time in this chat, or None,
+         "rules": the stable instructions, "context": the household's data as of now,
+         "new": the messages it has not seen yet (every recent message when conversation is None),
+         "history": the earlier messages, a recap for when it has to start over,
+         "files": {"recipes/<id>.yaml": text, "ingredients.yaml": text}}.
+It returns the answer, or {"text": answer, "conversation": id or None, "kept": bool}. The app keeps
+the id per chat and sends it back with the next message; None starts over with the full history next
+time, and kept False (the provider did not store this turn) sends these messages again.
 """
 
 from __future__ import annotations
@@ -18,6 +31,7 @@ import asyncio
 import importlib.util
 import inspect
 import os
+from dataclasses import dataclass
 
 import httpx
 
@@ -26,6 +40,58 @@ from .model import Data
 
 class LLMError(Exception):
     pass
+
+
+@dataclass
+class Reply:
+    text: str
+    conversation: str | None = None
+    kept: bool = True
+
+
+async def converse(data: Data, turn: dict) -> Reply:
+    """One answer in a chat. A plugin with converse() keeps the conversation; every other provider
+    gets the rules, the context and the recent messages, as complete() always did."""
+    cfg = data.settings.llm
+    fn = _optional(data, "converse") if cfg.provider == "plugin" else None
+    if fn is None:
+        messages = _merge([*turn["history"], *turn["new"]])
+        if not messages or messages[0]["role"] != "user":
+            messages.insert(0, {"role": "user", "content": "(conversation start)"})
+        system = f"{turn['rules']}\n\n{turn['context']}"
+        return Reply(await complete(data, system, messages))
+    out = await _call(fn, turn, cfg.model_dump())
+    if isinstance(out, dict):
+        conv = out.get("conversation")
+        return Reply(
+            str(out.get("text", "")).strip(),
+            str(conv) if conv else None,
+            bool(out.get("kept", True)),
+        )
+    return Reply(str(out).strip())
+
+
+async def forget(data: Data, conversation: str) -> None:
+    """Tell a plugin that keeps conversations to drop one (best effort; /new already started over)."""
+    fn = _optional(data, "forget") if data.settings.llm.provider == "plugin" else None
+    if fn is not None:
+        await _call(fn, conversation, data.settings.llm.model_dump())
+
+
+async def _call(fn, *args):
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args)
+    return await asyncio.to_thread(fn, *args)  # a blocking plugin runs off the event loop
+
+
+def _merge(messages: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for m in messages:
+        if out and out[-1]["role"] == m["role"]:
+            out[-1] = {**out[-1], "content": out[-1]["content"] + "\n" + m["content"]}
+        else:
+            out.append(dict(m))
+    return out
 
 
 async def complete(data: Data, system: str, messages: list[dict]) -> str:
@@ -104,6 +170,15 @@ async def transcribe(data: Data, audio: bytes, filename: str) -> str:
 
 def _plugin(data: Data):
     return _load(data, data.settings.llm.plugin, "complete")
+
+
+def _optional(data: Data, name: str):
+    try:
+        return _load(data, data.settings.llm.plugin, name)
+    except LLMError as e:
+        if "defines no" in str(e):
+            return None
+        raise
 
 
 def _load(data: Data, rel: str | None, name: str):

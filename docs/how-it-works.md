@@ -31,17 +31,20 @@ The list adds up every plate of the week. Batch dishes are bought in the week th
 
 The bot answers private chats with the people in `bot.people`, and the configured group; in the group only those people unless `bot.group_open` is set.
 
-- Commands: `/today`, `/tomorrow`, `/week`, `/list`, `/weight 82.4`, `/waist 95`, `/craving 7`, `/water`, `/pills`, `/about`, `/chatid` (Spanish aliases: `/hoy`, `/manana`, `/semana`, `/lista`, `/peso`, `/cintura`, `/antojo`, `/agua`, `/pastillas`, `/presentacion`).
+- Commands: `/today`, `/tomorrow`, `/week`, `/list`, `/weight 82.4`, `/waist 95`, `/craving 7`, `/water`, `/pills`, `/about`, `/new`, `/chatid` (Spanish aliases: `/hoy`, `/manana`, `/semana`, `/lista`, `/peso`, `/cintura`, `/antojo`, `/agua`, `/pastillas`, `/presentacion`, `/nuevo`).
 - `/about` presents everything the bot does for this household, built from the settings: the reminders with their real times, the wake words, whether private chats are on.
 - It works in a group, in private chats, or both: set `bot.chat_id` for the group and `bot.private_chats` for private chats. At every start it sets its own command menu and descriptions in Telegram, in English and in the household's language (`bot.sync_profile`).
-- The AI answers a group message that mentions the bot, replies to it, or contains one of `bot.wake_words`; with `bot.respond: all`, every message. Private chats always go to the AI.
-- Voice notes are transcribed with the configured `transcription` provider and always go to the AI.
+- In a private chat the AI always answers. In the group it answers only a message that mentions the bot's @handle, replies to it, or says one of `bot.wake_words`. Telegram shows a bot with privacy mode on (the default) only commands and replies to it, so for mentions and wake words make the bot a group admin or turn privacy off in BotFather (`/setprivacy`). The bot logs a warning at start when it cannot see them.
+- Voice notes are transcribed with the configured `transcription` provider and follow the same rule: in the group they reach the AI when they reply to the bot or say a wake word.
+- The AI writes Markdown; the bot sends it as Telegram formatting (bold, italic, links, lists) and falls back to plain text when Telegram refuses the markup.
+- Each chat is one conversation. A provider that keeps it on its side gets only the new messages, with the household's data fresh every time; the others get the recent history, as before. `/new` starts the chat over.
+- The AI can propose a change to a short list of settings (reminders, batch days, lunch time, weekly rules, guests, foods to avoid, the shopping stores, wake words, a new recipe). The bot shows it and applies it only after the person who asked says yes, as one git commit in the data repo. Pills, calories, protein and goals are never on the list ([data format](data-format.md#changes-from-the-chat)).
 - When the bot addresses a person (a reminder for them, the lunch-pills check, the AI telling someone what to do), it uses their Telegram @handle so Telegram notifies them. It looks each username up at start; `bot.handles` overrides it, and someone without a username keeps their name.
 - Reminders fire once each, inside a 10-minute window after their time: plain messages, today's meal with its recipe link, batch days, shopping day, defrosting, and lunch pills not logged yet.
 
 The AI gets the household, today's and tomorrow's plates, the week and the last week of logs. In a private chat it sees only the asker's own pills, notes, weigh-ins and logs. In the group it leaves out weigh-ins, binges, cravings, nausea and notes unless `bot.share_logs_in_group` is set. Group messages are kept as context only when the AI is asked (`bot.history_scope: all` keeps them all). It is told never to change a dose and never to suggest eating less after a binge.
 
-Everything the AI sees goes to the provider you configure. With a local model nothing leaves your network.
+Everything the AI sees goes to the provider you configure. With a local model nothing leaves your network. A provider with web search can find a video or a recipe for a dish; it is told to compare it with your recipe and say what differs.
 
 ## Other chat apps
 

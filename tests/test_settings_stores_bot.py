@@ -128,9 +128,13 @@ def test_store_view_writes_whole_list_for_one_store(data_dir, tmp_path):
 class FakeState:
     def __init__(self, data, db, today):
         self.data, self.db, self._today = data, db, today
+        self.root = data.root
 
     def today(self):
         return self._today
+
+    def reload(self):
+        self.data = load(self.root)
 
 
 class FakeBot:
@@ -142,10 +146,10 @@ class FakeBot:
         b = Bot(FakeState(data, db, today))
         b.token, b.username, b.sent, b.asked = "x", "chefbot", [], []
 
-        async def send(client, chat_id, text, reply_to=None, record=True):
+        async def send(client, chat_id, text, reply_to=None, record=True, **kw):
             b.sent.append((chat_id, text))
 
-        async def ask(client, chat_id, reply_to, asker=None):
+        async def ask(client, chat_id, reply_to, asker=None, user_id=None):
             b.asked.append(chat_id)
 
         async def transcribe(client, voice):
@@ -232,20 +236,33 @@ def test_ai_wakes_on_mention_wake_word_or_reply_only(data_dir, tmp_path):
     assert len(b.asked) == 3
 
 
-def test_respond_all_sends_every_message_to_the_ai(data_dir, tmp_path):
-    data = bot_data(data_dir, respond="all")
+def test_a_group_never_sends_every_message_to_the_ai_but_a_private_chat_does(data_dir, tmp_path):
+    data = bot_data(data_dir, respond="all")  # the old setting no longer opens the group
     b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
     run(b.handle(None, msg("qué bien huele")))
-    assert b.asked == [-100]
+    assert b.asked == []
+    run(b.handle(None, msg("qué bien huele", chat=7, user=7)))
+    assert b.asked == [7]
 
 
-def test_voice_notes_are_transcribed_and_go_to_the_ai(data_dir, tmp_path):
+def test_voice_notes_follow_the_same_rule_as_text(data_dir, tmp_path):
     data = bot_data(data_dir)
     db = DB(tmp_path / "b.db")
     b = FakeBot(data, db, MONDAY)
+    run(b.handle(None, msg(voice={"file_id": "f"})))  # group, nobody called the bot
+    assert b.asked == [] and db.recent_chat(-100, 5) == []
+    run(b.handle(None, msg(voice={"file_id": "f"}, chat=7, user=7)))  # private: always
+    assert b.asked == [7]
+    assert "cenamos" in db.recent_chat(7, 5)[-1]["text"]
+    reply = {"from": {"username": "chefbot"}}
+    run(b.handle(None, msg(voice={"file_id": "f"}, reply_to_message=reply)))
+    assert b.asked == [7, -100]
+    data.settings.bot.wake_words = ["chef"]  # transcribed, but it does not call the bot
     run(b.handle(None, msg(voice={"file_id": "f"})))
-    assert b.asked == [-100]
-    assert "cenamos" in db.recent_chat(-100, 5)[-1]["text"]
+    assert b.asked == [7, -100]
+    data.settings.bot.wake_words = ["cenamos"]  # a wake word said in the note
+    run(b.handle(None, msg(voice={"file_id": "f"})))
+    assert b.asked == [7, -100, -100]
 
 
 def test_reminders_fire_once_in_their_window(data_dir, tmp_path):
