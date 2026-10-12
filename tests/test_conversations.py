@@ -699,3 +699,16 @@ def test_forbidden_changes_and_strangers_are_refused(data_dir, tmp_path):
     reply(data_dir, text=block({"set": {"household.lunch_time": "15:00"}}))
     run(b.handle(None, msg("@chefbot comemos a las 15", user=555)))  # in the group, not household
     assert ChatBot.texts(b)[-1] == b.t("change_members_only")
+
+
+def test_a_reminder_change_reads_in_the_household_language(data_dir):
+    data = bot_data(data_dir)
+    p = changes.parse(
+        {"set": {"settings.reminders.water": {"at": ["12:00", "17:00"], "days": ["monday"]}}},
+        data,
+        "luis",
+    )
+    line = changes.describe(p, data, Translator("es"))[0]
+    assert "a las 12:00, 17:00" in line
+    assert "días lun" in line
+    assert " at " not in line and "monday" not in line
