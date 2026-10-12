@@ -174,15 +174,14 @@ bot_about_log: "📝 Apuntar\n/peso 82,4 · /cintura 95 · /antojo 6 · /agua ·
 bot_about_reminder: "• {label}: {times} ({days})"
 bot_about_reminder_for: "• {label}: {times} ({days}) · {people}"
 bot_about_ask: "💬 Preguntarme\nPor privado os contesto siempre; en el grupo, mencionadme o respondedme. Contesto con vuestro plan y vuestros datos y recuerdo la conversación hasta /nuevo. Nunca cambio una dosis: eso es cosa de vuestros médicos."
-bot_about_names: "Me podéis llamar: {names}"
 bot_about_private: "🔒 También me podéis escribir por privado. Ahí nunca comparto los pesos, registros, objetivos ni pastillas de nadie más."
 bot_about_calendar: "Los días de batch se mueven a las tardes libres de vuestro calendario."
-bot_about_voice: "Las notas de voz me llegan por privado; en el grupo, decid mi nombre en ellas o respondedme."
+bot_about_voice: "Las notas de voz me llegan por privado; en el grupo, mandádmelas como respuesta a un mensaje mío."
 
 # conversación con la IA y cambios de ajustes desde el chat
 bot_new: "Conversación nueva: he olvidado lo que hablamos. Vuestro plan y vuestros datos siguen aquí."
 bot_cmd_new: Empezar una conversación nueva conmigo
-bot_about_changes: "⚙️ Ajustes\nPedidme cambiar un recordatorio, los días de batch, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, las tiendas de la compra o mis nombres, o añadir una receta. Os enseño el cambio y solo lo aplico cuando me decís que sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
+bot_about_changes: "⚙️ Ajustes\nPedidme cambiar un recordatorio, los días de batch, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, o las tiendas de la compra, o añadir una receta. Os enseño el cambio y solo lo aplico cuando me decís que sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
 change_confirm: "{name}, ¿hago este cambio?\n{lines}\nResponde a este mensaje con «sí» o «no»."
 change_yes_words: ["sí", "si", "vale", "ok", "okay", "claro", "dale", "adelante", "venga", "yes"]
 change_no_words: ["no", "nop", "cancela", "cancelar"]
@@ -202,7 +201,6 @@ change_batch_days: Días de batch
 change_batch_sessions: Sesiones de batch por semana
 change_rule: "Regla semanal {name}"
 change_avoid: "Alimentos que evita {name}"
-change_wake_words: Nombres a los que respondo
 change_shopping_primary: Tienda principal de la lista
 change_shopping_alternatives: Otras tiendas de la lista
 change_section: "Sección de la lista {name}"

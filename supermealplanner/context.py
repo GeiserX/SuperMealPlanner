@@ -32,10 +32,12 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
 CHANGES = """
 ## Changing settings
 You may propose a change to these settings only: lunch time, shopping day, guests, batch days and
-sessions per week, the weekly rules, each person's avoided foods, your wake words, the shopping
-list's stores and section names, reminders, and a new recipe. Never pills, calories, protein or
-goals: for those, say that a person has to edit them. To propose a change, say it in your answer and
-end the answer with one block, sending only the keys that change:
+sessions per week, the weekly rules, foods to add to the asker's own avoided foods, the shopping
+list's stores and section names, reminders other than the pills reminder, and a new recipe. Never
+pills, the pills reminder, calories, protein or goals, never someone else's avoided foods, and never
+a food taken off an avoided list (it may be there for a medical reason): for those, say that a
+person has to edit them by hand. To propose a change, say it in your answer and end the answer with
+one block, sending only the keys that change:
 
 ```change
 set:
@@ -45,8 +47,7 @@ set:
   household.batch.preferred_days: [monday, thursday]
   household.batch.sessions_per_week: 2
   household.rules.fish_min: 3          # also legumes_min, oily_fish_min, salad_daily, max_repeats_per_4_weeks
-  household.people.<person id>.avoid_ingredients: [<ingredient id>]   # the whole new list
-  settings.bot.wake_words: [chef]
+  household.people.<asker's id>.avoid_ingredients: [<ingredient id>]   # the whole new list: the current one plus the new foods
   settings.shopping.primary: <store id>
   settings.shopping.alternatives: [<store id>]
   settings.sections.<section id>: <label>
@@ -54,7 +55,7 @@ set:
 recipe: {id: <new-id>, name: ..., meals: [lunch], kind: batch, ingredients: [{id: <ingredient id>, qty: 80}], steps: [...], nutrition: {kcal: 550, protein_g: 35}}
 ```
 
-A new reminder needs id, kind (message, meal, batch, shopping, defrost, pills_lunch), at, and text
+A new reminder needs id, kind (message, meal, batch, shopping, defrost), at, and text
 for kind message ({names} and {today} are filled in). The app shows the change to the person who
 asked and applies it only after they say yes, so never claim it is done.
 """
@@ -177,7 +178,6 @@ def settings_now(data: Data) -> str:
         f"- household.guests: {hh.guests or '{}'}",
         f"- household.batch: days {hh.batch.preferred_days}, {hh.batch.sessions_per_week} sessions a week",
         f"- household.rules: {hh.rules.model_dump()}",
-        f"- settings.bot.wake_words: {st.bot.wake_words}",
         f"- stores: {stores}; primary {st.shopping.primary}; alternatives {st.shopping.alternatives}",
         f"- settings.sections: {st.sections or '{}'}",
     ]

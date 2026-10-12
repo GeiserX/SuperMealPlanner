@@ -9,7 +9,9 @@ The AI ends an answer with one fenced block:
     recipe: {id: lentil-stew, name: Lentil stew, ...}
     ```
 
-Only the paths in ALLOWED can change; pills, calorie and protein targets and goals never can. A yes
+Only the paths in ALLOWED can change; pills, calorie and protein targets and goals never can. Avoided
+foods are often medical (a drug interaction, a kidney diet): a person may only add to their own list,
+and only by hand can a food come off it. The pills reminder never changes from the chat. A yes
 edits the files in the data folder (keeping their comments), runs the same validation as
 `smp check` on a copy first, and makes one git commit that is pushed to the data repo, so every
 change can be reverted. Without a git checkout and SMP_GIT_WRITE_TOKEN nothing is written: the bot
@@ -52,7 +54,6 @@ ALLOWED = {
     "household.rules.salad_daily": "rule",
     "household.rules.max_repeats_per_4_weeks": "rule",
     "household.people.*.avoid_ingredients": "avoid",
-    "settings.bot.wake_words": "wake_words",
     "settings.shopping.primary": "shopping_primary",
     "settings.shopping.alternatives": "shopping_alternatives",
     "settings.sections.*": "section",
@@ -111,8 +112,12 @@ def _match(path: str) -> tuple[str, str] | None:
     return None
 
 
-def parse(raw: dict, data: Data) -> Proposal:
-    """Check a proposed change against the allow-list. Raises ChangeError with the reason."""
+PROTECTED_REMINDER_KINDS = {"pills_lunch"}  # never added, edited or removed from the chat
+
+
+def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
+    """Check a proposed change against the allow-list, for the household member who asked. Raises
+    ChangeError with the reason."""
     unknown = set(raw) - {"set", "recipe"}
     if unknown:
         raise ChangeError(f"unknown keys {sorted(unknown)}; use set and recipe")
@@ -130,10 +135,29 @@ def parse(raw: dict, data: Data) -> Proposal:
             raise ChangeError(f"{path} cannot be changed from the chat")
         label, arg = hit
         top, *keys = path.split(".")
-        if label == "avoid" and arg not in people:
-            raise ChangeError(f"no person {arg}")
-        if label == "avoid" and not isinstance(value, list):
-            raise ChangeError(f"{path} must be the whole new list")
+        if label == "avoid":
+            if arg not in people:
+                raise ChangeError(f"no person {arg}")
+            if arg != asker:
+                raise ChangeError("only the person themselves can add to the foods they avoid")
+            if not isinstance(value, list):
+                raise ChangeError(f"{path} must be the whole new list")
+            dropped = [
+                x for x in data.household.person(arg).avoid_ingredients if x not in map(str, value)
+            ]
+            if dropped:
+                raise ChangeError(
+                    f"{', '.join(dropped)} can only come off the avoided foods by hand; "
+                    "from the chat foods can only be added"
+                )
+        if label == "reminder":
+            now = next((r for r in data.settings.reminders if r.id == arg), None)
+            kinds = {
+                now.kind if now else None,
+                value.get("kind") if isinstance(value, dict) else None,
+            }
+            if kinds & PROTECTED_REMINDER_KINDS:
+                raise ChangeError("the pills reminder can only be changed by hand")
         if label == "reminder" and value is not None and not isinstance(value, dict):
             raise ChangeError(f"{path} must be the reminder's fields, or null to remove it")
         if label == "reminder" and isinstance(value, dict) and "id" in value and value["id"] != arg:

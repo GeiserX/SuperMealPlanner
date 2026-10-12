@@ -5,10 +5,9 @@ token_env, add the bot to the household group, send /chatid there and copy the i
 Map each person to their Telegram user id in bot.people.
 
 In a private chat the bot always answers. In the group it answers only a message that mentions its
-@handle, says one of bot.wake_words, or replies to it. Telegram shows a bot with privacy mode on (the
-default) only commands and replies to it, so for mentions and wake words make the bot a group admin
-or turn privacy off (BotFather, /setprivacy -> Disable). The bot logs a warning at start when it
-cannot see them.
+@handle or replies to it. Telegram shows a bot with privacy mode on (the default) only commands and
+replies to it, so for mentions make the bot a group admin or turn privacy off (BotFather,
+/setprivacy -> Disable). The bot logs a warning at start when it cannot see them.
 
 Only the configured group and private chats with the people in bot.people are answered.
 """
@@ -332,14 +331,10 @@ class Bot:
 
     # ------------------------------------------------------------- messages
     def mentioned(self, text: str) -> bool:
-        """The text names the bot: its @handle or one of the wake words."""
-        low = text.lower()
-        if self.username and f"@{self.username}".lower() in low:
-            return True
-        return any(
-            re.search(rf"\b{re.escape(w.lower())}\b", low)
-            for w in self.data.settings.bot.wake_words
-        )
+        """The text mentions the bot's @handle. Nothing else in a group message calls it."""
+        if not self.username:
+            return False
+        return bool(re.search(rf"@{re.escape(self.username)}\b", text, re.IGNORECASE))
 
     def replied(self, msg: dict) -> bool:
         """The message replies to one of the bot's own."""
@@ -358,8 +353,8 @@ class Bot:
                 return
             replied = self.replied(msg)
             keep_all = cfg.history_scope == "all"
-            if not (private or replied or cfg.wake_words or keep_all):
-                return  # nothing in it could call the bot, and nothing is kept
+            if not (private or replied or keep_all):
+                return  # a group voice note calls the bot only as a reply, and nothing is kept
             try:
                 text = await self.transcribe(client, voice)
             except Exception as e:  # noqa: BLE001
@@ -374,7 +369,7 @@ class Bot:
                     )
                 return
             who = self.person_of(user.get("id", 0))
-            asked = private or replied or self.mentioned(text)
+            asked = private or replied
             if asked or keep_all:
                 self.state.db.add_chat(
                     chat["id"], "user", who or user.get("first_name"), f"🎤 {text}"
@@ -446,17 +441,20 @@ class Bot:
         if data.settings.llm.provider == "none":
             await self.send(client, chat_id, self.t("bot_no_llm"), reply_to)
             return
+        key = f"bot.conversation.{chat_id}"
+        conv = db.get_kv(key) or {}
+        rows = db.chat_rows(chat_id, data.settings.bot.history)
+        seen = conv.get("seen", 0) if conv.get("id") else 0
+        fresh = [r for r in rows if r["id"] > seen and not (seen and r["who"] == AI)]
+        if conv.get("id") and not any(r["role"] == "user" for r in fresh):
+            # messages that came in together: an earlier turn already took this one with them
+            return
         await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
         private = chat_id > 0
         viewer = asker if private else None
         facts = await asyncio.to_thread(
             context.facts, data, db, self.state.today(), viewer, not private
         )
-        key = f"bot.conversation.{chat_id}"
-        conv = db.get_kv(key) or {}
-        rows = db.chat_rows(chat_id, data.settings.bot.history)
-        seen = conv.get("seen", 0) if conv.get("id") else 0
-        fresh = [r for r in rows if r["id"] > seen and not (seen and r["who"] == AI)]
         turn = {
             "conversation": conv.get("id"),
             "rules": self.rules(),
@@ -499,7 +497,7 @@ class Bot:
             await self.send(client, chat_id, t("change_members_only"), reply_to)
             return
         try:
-            proposal = changes.parse(change, self.data)
+            proposal = changes.parse(change, self.data, asker)
         except changes.ChangeError as e:
             await self.send(client, chat_id, t("change_invalid", error=e), reply_to)
             return
@@ -509,6 +507,7 @@ class Bot:
             {
                 "change": change,
                 "by": user_id,
+                "asker": asker,
                 "name": self.data.household.person(asker).name,
                 "ts": time.time(),
             },
@@ -544,7 +543,8 @@ class Bot:
     async def apply(self, pending: dict) -> str:
         t = self.t
         try:
-            proposal = changes.parse(pending["change"], self.data)  # the data may have moved on
+            # the data may have moved on since the proposal
+            proposal = changes.parse(pending["change"], self.data, pending.get("asker"))
         except changes.ChangeError as e:
             return t("change_invalid", error=e)
         token = os.environ.get("SMP_GIT_WRITE_TOKEN", "")
@@ -571,10 +571,12 @@ class Bot:
         return t("change_applied", sha=sha)
 
     async def check_group(self, client, me: dict) -> None:
-        """Say once at start when the group's mentions and wake words cannot reach the bot."""
-        if (self.data.settings.bot.model_extra or {}).get("respond") == "all":
+        """Say once at start when the group's mentions cannot reach the bot."""
+        extra = self.data.settings.bot.model_extra or {}
+        if extra.get("respond") == "all" or extra.get("wake_words"):
             log.warning(
-                "bot.respond is gone: in a group the bot answers only mentions, wake words and replies"
+                "bot.respond and bot.wake_words are gone: in a group the bot answers only its "
+                "@handle and replies to it"
             )
         if self.chat_id is None or me.get("can_read_all_group_messages"):
             return
@@ -586,7 +588,7 @@ class Bot:
         if m.get("status") not in ("administrator", "creator"):
             log.warning(
                 "privacy mode is on and the bot is not an admin of group %s: it sees only commands "
-                "and replies, not mentions or wake words (make it an admin, or BotFather /setprivacy)",
+                "and replies, not mentions (make it an admin, or BotFather /setprivacy)",
                 self.chat_id,
             )
 
@@ -681,10 +683,6 @@ class Bot:
         lines += ["", t("bot_about_log"), "", t("bot_about_ask")]
         if cfg.bot.voice and cfg.transcription.provider != "none":
             lines.append(t("bot_about_voice"))
-        if cfg.bot.wake_words:
-            lines.append(
-                t("bot_about_names", names=", ".join(f"«{w}»" for w in cfg.bot.wake_words))
-            )
         if cfg.llm.provider == "none":
             lines.append(t("bot_no_llm"))
         else:

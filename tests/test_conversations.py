@@ -1,14 +1,16 @@
 """The AI as one ongoing conversation per chat, Telegram formatting, and settings changes from the chat."""
 
+import asyncio
 import json
 import logging
 import subprocess
+import time
 
 import pytest
 import yaml
 
 from supermealplanner import changes
-from supermealplanner.bot import Bot, TelegramError, to_html
+from supermealplanner.bot import PENDING_TTL, Bot, TelegramError, to_html
 from supermealplanner.db import DB
 from supermealplanner.i18n import Translator
 from supermealplanner.model import load
@@ -209,14 +211,48 @@ def test_built_in_providers_still_get_rules_context_and_history(data_dir, tmp_pa
 
 
 def test_private_chats_always_get_an_answer_groups_only_when_called(data_dir, tmp_path):
-    data = plugin_data(data_dir, wake_words=["chef"])
+    data = plugin_data(data_dir, wake_words=["chef"])  # left over in older data: calls nothing
     b = ChatBot(data, DB(tmp_path / "b.db"))
     run(b.handle(None, msg("qué tal", chat=7, user=7)))
     run(b.handle(None, msg("qué tal")))
+    run(b.handle(None, msg("qué tal, chef")))  # a former wake word, no mention, no reply
+    assert len(turns(data_dir)) == 1 and ChatBot.texts(b, -100) == []
     run(b.handle(None, msg("qué tal", reply_to_message={"from": {"id": 99}})))
-    run(b.handle(None, msg("qué tal, chef")))
     run(b.handle(None, msg("qué tal @ChefBot")))
-    assert len(turns(data_dir)) == 4
+    assert len(turns(data_dir)) == 3
+
+
+def test_messages_that_arrive_together_get_one_answer(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+
+    async def burst():  # e.g. a backlog after a restart: each message is stored before its turn
+        await asyncio.gather(
+            *(b.handle(None, msg(t, chat=7, user=7)) for t in ("hola", "primera", "segunda"))
+        )
+
+    run(burst())
+    assert [[m["content"] for m in t["new"]] for t in turns(data_dir)] == [
+        ["luis: hola"],
+        ["luis: primera\nluis: segunda"],
+    ]
+    assert ChatBot.texts(b, 7) == ["ok", "ok"]
+
+
+def test_a_private_turn_never_carries_someone_elses_health_data(data_dir, tmp_path):
+    hh = yaml.safe_load((data_dir / "household.yaml").read_text())
+    hh["people"][1]["notes"] = ["nota-privada-de-luis"]
+    write(data_dir, "household.yaml", hh)
+    data = plugin_data(data_dir)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    run(b.handle(None, msg("hola", chat=8, user=8)))  # Ana, privately
+    ana = turns(data_dir)[-1]["context"]
+    assert "Hierro" in ana  # her own pills are there
+    for other in ("Vitamin D", "injects", "nota-privada-de-luis"):  # Luis's are not
+        assert other not in ana
+    run(b.handle(None, msg("hola", chat=7, user=7)))  # Luis, privately
+    luis = turns(data_dir)[-1]["context"]
+    assert "Vitamin D" in luis and "nota-privada-de-luis" in luis and "Hierro" not in luis
 
 
 def test_start_warns_when_the_group_cannot_see_mentions(data_dir, tmp_path, caplog):
@@ -292,17 +328,22 @@ def block(change: dict) -> str:
 def test_only_allowed_settings_can_change(data):
     for path in (
         "household.people.luis.pills",
+        "household.people.luis.pills.lunch",
         "household.people.luis.kcal.start",
+        "household.people.luis.kcal.floor",
         "household.people.luis.protein_g.target",
         "household.people.luis.goal.target_kg",
+        "household.people.luis.glp1",
+        "household.people.luis.notes",
         "settings.llm.plugin",
         "settings.bot.people",
+        "settings.bot.wake_words",
         "household.people.luis.avoid_ingredients.0",
     ):
         with pytest.raises(changes.ChangeError, match="cannot be changed from the chat"):
-            changes.parse({"set": {path: [1]}}, data)
+            changes.parse({"set": {path: [1]}}, data, "luis")
     with pytest.raises(changes.ChangeError, match="no person"):
-        changes.parse({"set": {"household.people.nadie.avoid_ingredients": []}}, data)
+        changes.parse({"set": {"household.people.nadie.avoid_ingredients": []}}, data, "luis")
     with pytest.raises(changes.ChangeError, match="already exists"):
         changes.parse({"recipe": {"id": "gazpacho"}}, data)
     p = changes.parse(
@@ -313,12 +354,51 @@ def test_only_allowed_settings_can_change(data):
             }
         },
         data,
+        "luis",
     )
     lines = changes.describe(p, data, Translator("en"))
     assert lines == [
         "• Lunch time: 14:00 → 14:30",
         "• Foods Luis avoids: espinaca → espinaca, salmon",
     ]
+
+
+def test_no_allowed_path_reaches_health_data():
+    for pattern in changes.ALLOWED:
+        for word in ("pills", "kcal", "protein_g", "goal", "glp1", "notes", "packs"):
+            assert word not in pattern.split("."), pattern
+
+
+def test_avoided_foods_only_grow_and_only_on_the_askers_own_list(data):
+    luis = "household.people.luis.avoid_ingredients"
+    with pytest.raises(changes.ChangeError, match="only the person themselves"):
+        changes.parse({"set": {luis: ["espinaca", "salmon"]}}, data, "ana")
+    with pytest.raises(changes.ChangeError, match="only the person themselves"):
+        changes.parse({"set": {luis: ["espinaca", "salmon"]}}, data)  # nobody asked
+    with pytest.raises(changes.ChangeError, match="espinaca can only come off .* by hand"):
+        changes.parse({"set": {luis: ["salmon"]}}, data, "luis")
+    with pytest.raises(changes.ChangeError, match="by hand"):
+        changes.parse({"set": {luis: []}}, data, "luis")
+    assert changes.parse({"set": {luis: ["espinaca", "salmon"]}}, data, "luis").edits
+    ana = "household.people.ana.avoid_ingredients"
+    assert changes.parse({"set": {ana: ["salmon"]}}, data, "ana").edits  # she had none
+
+
+def test_the_pills_reminder_never_changes_from_the_chat(data_dir):
+    data = bot_data(data_dir)  # reminder "pills" is kind pills_lunch
+    for value in (
+        None,
+        {"enabled": False},
+        {"at": ["23:00"]},
+    ):
+        with pytest.raises(changes.ChangeError, match="pills reminder"):
+            changes.parse({"set": {"settings.reminders.pills": value}}, data, "luis")
+    new = {"kind": "pills_lunch", "at": ["16:00"], "enabled": False}
+    with pytest.raises(changes.ChangeError, match="pills reminder"):
+        changes.parse({"set": {"settings.reminders.otra": new}}, data, "luis")
+    with pytest.raises(changes.ChangeError, match="pills reminder"):  # nor turn one into it
+        changes.parse({"set": {"settings.reminders.water": {"kind": "pills_lunch"}}}, data, "luis")
+    assert changes.parse({"set": {"settings.reminders.water": {"at": ["11:00"]}}}, data, "luis")
 
 
 def test_a_change_keeps_the_files_comments_and_style(data_dir):
@@ -459,14 +539,49 @@ def test_no_cancels_and_without_write_access_the_bot_shows_the_change(
     data = plugin_data(data_dir)
     monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
     b = ChatBot(data, DB(tmp_path / "b.db"))
-    reply(data_dir, text=block({"set": {"settings.bot.wake_words": ["chef"]}}))
-    run(b.handle(None, msg("@chefbot llámate chef")))
+    reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
+    run(b.handle(None, msg("@chefbot compramos los viernes")))
     run(b.handle(None, msg("no")))
     assert ChatBot.texts(b)[-1] == b.t("change_cancelled")
-    run(b.handle(None, msg("@chefbot llámate chef")))
+    run(b.handle(None, msg("@chefbot compramos los viernes")))
     run(b.handle(None, msg("ok")))
-    assert 'settings.yaml: bot.wake_words = ["chef"]' in ChatBot.texts(b)[-1]
-    assert b.state.data.settings.bot.wake_words == []
+    assert 'household.yaml: shopping_day = "friday"' in ChatBot.texts(b)[-1]
+    assert b.state.data.household.shopping_day != "friday"
+
+
+def test_a_yes_after_the_wait_ran_out_changes_nothing(data_dir, tmp_path, monkeypatch):
+    data = plugin_data(data_dir)
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text=block({"set": {"household.shopping_day": "friday"}}))
+    run(b.handle(None, msg("@chefbot compramos los viernes")))
+    pending = db.get_kv("bot.pending.-100")
+    db.set_kv("bot.pending.-100", {**pending, "ts": time.time() - PENDING_TTL - 1})
+    sent = len(ChatBot.texts(b))
+    run(b.handle(None, msg("yes")))
+    assert len(ChatBot.texts(b)) == sent  # neither applied nor shown for a person to make
+    assert db.get_kv("bot.pending.-100") is None
+
+
+def test_the_bot_lets_a_person_add_only_to_their_own_avoided_foods(data_dir, tmp_path, monkeypatch):
+    data = plugin_data(data_dir)
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    reply(data_dir, text=block({"set": {"household.people.luis.avoid_ingredients": ["salmon"]}}))
+    run(b.handle(None, msg("@chefbot Luis ya no evita espinacas", user=8)))  # Ana, for Luis
+    assert "only the person themselves" in ChatBot.texts(b)[-1]
+    assert db.get_kv("bot.pending.-100") is None
+    reply(
+        data_dir,
+        text=block({"set": {"household.people.luis.avoid_ingredients": ["espinaca", "salmon"]}}),
+    )
+    run(b.handle(None, msg("@chefbot no quiero salmón")))  # Luis, for himself
+    assert "Foods Luis avoids: espinaca → espinaca, salmon" in ChatBot.texts(b)[-1]
+    assert db.get_kv("bot.pending.-100")["asker"] == "luis"
+    run(b.handle(None, msg("yes")))  # checked again on the yes, still as Luis's own change
+    assert 'avoid_ingredients = ["espinaca", "salmon"]' in ChatBot.texts(b)[-1]
 
 
 def test_forbidden_changes_and_strangers_are_refused(data_dir, tmp_path):

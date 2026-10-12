@@ -96,8 +96,7 @@ bot:
   chat_id: -1001234567890     # the household group; send /chatid in the group to get it
   people: {alex: 111111111, sam: 222222222}   # person id -> Telegram user id
   handles: {sam: "@sam_cooks"}  # optional: how to @mention someone; looked up from Telegram when left out
-  wake_words: [chef]          # in the group the AI also answers a message that says one of these
-  voice: true                 # transcribe voice notes; they follow the same rule as text
+  voice: true                 # transcribe voice notes; in the group only one that replies to the bot
   private_chats: true         # people in bot.people may also write to the bot privately
   group_open: false           # true: anyone in the group may use the bot, not only bot.people
   sync_profile: true          # at start, set the bot's command menu and descriptions in Telegram
@@ -141,11 +140,11 @@ A plugin can also keep the conversation on its side, so each message sends only 
 | `history` | the earlier messages, a recap for when the plugin has to start over |
 | `files` | `ingredients.yaml` and every `recipes/*.yaml`, as text, for a model that can read files |
 
-It returns the answer, or `{"text": ..., "conversation": id, "kept": true}`. The app keeps the id per chat and sends it back with the next message. `conversation: None` makes the next message carry the whole history again; `kept: false` (the plugin's side did not store this turn) sends these messages again with the next one.
+It returns the answer, or `{"text": ..., "conversation": id, "kept": true}`. The app keeps the id per chat and sends it back with the next message. `conversation: None` makes the next message carry the whole history again; `kept: false` (the plugin's side did not store this turn) sends these messages again with the next one. The app stops waiting after `llm.timeout_s` (in `settings`), but it cannot stop a plugin's thread: a plugin that waits on a remote turn should give up, and cancel that turn, a little before then, so a turn the app has stopped waiting for is never stored on the plugin's side.
 
 ### Changes from the chat
 
-The AI may propose a change to a short list of settings: `household.lunch_time`, `shopping_day`, `guests`, `batch.preferred_days`, `batch.sessions_per_week`, the weekly `rules`, each person's `avoid_ingredients`, `bot.wake_words`, `shopping.primary` and `alternatives`, `sections`, `reminders`, and a new recipe. Pills, calorie and protein targets and goals are never on it. The bot shows the change in plain words and waits for the person who asked to answer yes or no. On yes it pulls the data repo, edits the file (comments and layout stay), runs the same validation as `smp check` on a copy, and pushes one git commit, so every change can be reverted. That needs the data folder to be a git checkout and `SMP_GIT_WRITE_TOKEN` (a token that may push to the data repo). Without them the bot shows the change for a person to make by hand.
+The AI may propose a change to a short list of settings: `household.lunch_time`, `shopping_day`, `guests`, `batch.preferred_days`, `batch.sessions_per_week`, the weekly `rules`, additions to the asker's own `avoid_ingredients`, `shopping.primary` and `alternatives`, `sections`, `reminders` other than the `pills_lunch` one, and a new recipe. Pills, the pills reminder, calorie and protein targets and goals are never on it. Avoided foods are often medical, so nobody can change another person's list from the chat, and a food comes off a list only by hand. The bot shows the change in plain words and waits for the person who asked to answer yes or no. On yes it pulls the data repo, edits the file (comments and layout stay), runs the same validation as `smp check` on a copy, and pushes one git commit, so every change can be reverted. That needs the data folder to be a git checkout and `SMP_GIT_WRITE_TOKEN` (a token that may push to the data repo). Without them the bot shows the change for a person to make by hand.
 
 ### Environment
 
