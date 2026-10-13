@@ -173,6 +173,7 @@ plan:
   - pause: {from: 2026-01-12, to: 2026-01-18}                   # both days included
   - resume: {from: 2026-01-15, to: 2026-01-18}
   - regenerate: {from: 2026-01-19}                              # a Monday
+  - shift: {from: 2026-01-13, weeks: 1}                         # 1 to 4 weeks; the gap is paused
   - undo: true                                                  # the last menu change, alone in the list
 ```
 

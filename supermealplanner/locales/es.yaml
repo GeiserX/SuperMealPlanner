@@ -241,6 +241,7 @@ change_plan_swap_meal: "{a} y {b} intercambian su {meal}"
 change_plan_pause: "Menú en pausa del {first} al {last}: esos días no hay platos ni recordatorios de comida, batch, descongelar o compra"
 change_plan_resume: "Menú otra vez en marcha del {first} al {last}"
 change_plan_regenerate: "Menú nuevo a partir del {day}; los días anteriores se quedan como están"
+change_plan_shift: "El menú a partir del {day} se retrasa y vuelve a empezar el {back}; los días de en medio quedan en pausa"
 change_plan_undo: Se deshace el último cambio del menú
 change_done: "Hecho:\n{lines}"
 menu_applied: "El menú ya está actualizado. Para volver atrás, pedidme que deshaga el último cambio del menú."

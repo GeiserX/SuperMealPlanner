@@ -242,6 +242,7 @@ change_plan_swap_meal: "{a} and {b} swap their {meal}"
 change_plan_pause: "Menu paused from {first} to {last}: no dishes those days, and no meal, batch, defrost or shopping reminders"
 change_plan_resume: "Menu back on from {first} to {last}"
 change_plan_regenerate: "New menu drawn from {day} on; the days before it stay"
+change_plan_shift: "The menu from {day} on moves later and starts again on {back}; the days in between are paused"
 change_plan_undo: The last menu change is taken back
 change_done: "Done:\n{lines}"
 menu_applied: "The menu is updated. To take it back, ask me to undo the last menu change."
