@@ -26,6 +26,7 @@ small, .sub { color: var(--mut); font-size: .85rem; }
 table { width: 100%; border-collapse: collapse; }
 .week td, .week th { border-bottom: 1px solid var(--line); padding: 8px 4px; vertical-align: top; text-align: left; font-size: .9rem; }
 .week th { white-space: nowrap; font-weight: 600; }
+.week tr:has(+ .extras) td { border-bottom: 0; padding-bottom: 2px; } .week .extras td { padding-top: 0; }
 .containers td, .containers th { font-size: .85rem; border-bottom: 1px solid var(--line); padding: 4px; text-align:left; }
 .check { list-style: none; padding: 0; margin: 0; }
 .check li { padding: 6px 0; border-bottom: 1px solid var(--line); }

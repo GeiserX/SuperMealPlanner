@@ -40,6 +40,10 @@ th_dinner: Dinner
 tag_batch: batch
 tag_busy: calendar
 no_plan_short: no plan
+paused_day: "The menu is paused this day: you eat what you have at home. Ask the assistant in the chat to bring it back."
+paused_short: paused
+nibble_title: To nibble
+nibble: "To nibble: {items}"
 
 shopping_title: "Shopping · week of {date}"
 shopping_note: Summed for everyone's plates. Batch dishes are bought in the week they are cooked.
@@ -182,12 +186,13 @@ bot_about_voice: "Voice notes reach me in a private chat; in the group, reply to
 # AI conversation and settings changes from the chat
 bot_new: "New conversation: I've forgotten what we talked about. Your plan and data are still here."
 bot_cmd_new: Start a new conversation with me
-bot_about_changes: "⚙️ Settings\nAsk me to change a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, the shopping stores or how I answer, or to add a recipe. I show you the change and apply it only when you say yes. Pills, calories and goals are never changed from the chat."
+bot_about_changes: "⚙️ Changes\nAsk me to change the menu: another dish for a day, two days swapped, a pause while you eat what you have at home, or a new draw from a Monday. Ask me too for a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, the shopping stores, how I answer, or a new recipe. What you ask for I do at once and tell you what changed; it can be undone. When the idea is mine, I show it and wait for your yes. Pills, calories and goals are never changed from the chat."
 change_confirm: "{name}, shall I change this?\n{lines}\nReply to this message with «yes» or «no»."
 change_yes_words: ["yes", "y", "ok", "okay", "sure", "go"]
 change_no_words: ["no", "n", "nope", "cancel"]
 change_cancelled: Okay, nothing changed.
 change_applied: "Done, it's saved (change {sha}). It can be undone from the data repo."
+change_saved: "Saved as change {sha}; it can be undone from the data repo."
 change_failed: "I couldn't save the change, nothing was changed: {error}"
 change_invalid: "I can't make that change: {error}"
 change_manual: "I can't edit the settings myself here (no write access to the data repo). A person can make this change by hand:"
@@ -216,6 +221,15 @@ change_section: "List section {name}"
 change_reminder: "Reminder «{name}»"
 change_recipe: "New recipe: {name} ({n} ingredients)"
 change_instructions: The assistant's instructions
+change_plan_set: "{day}, {meal}: {old} → {new}"
+change_plan_swap: "{a} and {b} swap all their meals"
+change_plan_swap_meal: "{a} and {b} swap their {meal}"
+change_plan_pause: "Menu paused from {first} to {last}: no dishes those days, and no meal, batch, defrost or shopping reminders"
+change_plan_resume: "Menu back on from {first} to {last}"
+change_plan_regenerate: "New menu drawn from {day} on; the days before it stay"
+change_plan_undo: The last menu change is taken back
+change_done: "Done:\n{lines}"
+menu_applied: "The menu is updated. To take it back, ask me to undo the last menu change."
 proposal_confirm: "{name}, shall I go ahead?\n{summary}\nReply to this message with «yes» or «no»."
 proposal_no_admins: "Only an admin can approve this, and none is set (bot.admins)."
 proposal_members_only: Only the people of the household can ask for this.

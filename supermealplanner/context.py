@@ -1,8 +1,8 @@
 """What the AI is told before it answers.
 
 rules(): the instructions, which stay the same from one message to the next.
-facts(): the household, today's and tomorrow's plates, the week, recent logs and the settings it may
-propose to change, as of now.
+facts(): the household, today's and tomorrow's plates, the menu of this week and the next, the
+recipes, recent logs and the settings it may change, as of now.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import datetime as dt
 from .db import DB
 from .i18n import Translator
 from .model import Data
-from .planner import plan_for
+from .planner import paused_days, plan_for
 from .portions import person_days
 from .targets import current_kcal
 
@@ -23,6 +23,11 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
   clinicians; you can suggest what to ask.
 - Never suggest compensating for a binge by eating less afterwards.
 - Write Markdown: **bold**, _italic_, [text](https://...) links and "- " lists. No tables.
+- When a question needs a fact the household's data does not hold (a nutrition or medical
+  guideline, what a food contains, a product), look it up with the web tools you have and answer
+  with the concrete figure and its source. Only after that, when it is a medical decision, say what
+  a clinician should confirm. Never answer "ask your doctor" for something a published guideline
+  answers. Without web tools, give the figure you know and say it is from memory.
 - When you can search the web and someone asks for a video or a recipe from elsewhere, give the link
   and compare it with our recipe: say what differs (ingredients, amounts, steps, time).
 - The household's data below is as of now; it changes between messages, so trust it over anything
@@ -30,17 +35,35 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
 """
 
 CHANGES = """
-## Changing settings
-You may propose a change to these settings only: lunch time, shopping day, guests, batch days and
-sessions per week, the weekly rules, foods to add to the asker's own avoided foods, the shopping
-list's stores and section names, reminders other than the pills reminder, a new recipe, and your own
-extra instructions (when someone asks you to answer differently from now on). Never
-pills, the pills reminder, calories, protein or goals, never someone else's avoided foods, and never
-a food taken off an avoided list (it may be there for a medical reason): for those, say that a
-person has to edit them by hand. To propose a change, say it in your answer and end the answer with
-one block, sending only the keys that change:
+## Changing settings and the menu
+You make changes yourself, with one block at the end of your answer. Never say you cannot change
+the menu or a setting below, and never tell the household to ignore the plan or a reminder: change
+it.
+
+Settings you may change: lunch time, shopping day, guests, batch days and sessions per week, the
+weekly rules, foods to add to the asker's own avoided foods, the shopping list's stores and section
+names, reminders other than the pills reminder, a new recipe, and your own extra instructions (when
+someone asks you to answer differently from now on). Never pills, the pills reminder, calories,
+protein or goals, never someone else's avoided foods, and never a food taken off an avoided list (it
+may be there for a medical reason): for those, say that a person has to edit them by hand.
+
+The menu you may change, any day and any meal (breakfast, lunch, side, snack, dinner):
+- set: one recipe in one day's meal.
+- swap: two days trade a meal, or everything when no meal is named.
+- pause: the household eats off the plan from one date to another (both included). Those days show
+  no dishes, the shopping list and the batch sheet leave them out, and the meal, batch, defrost and
+  shopping reminders stay silent. A pause ends by itself; resume ends it early.
+- regenerate: a new draw of the plan from a Monday on; the days before it stay.
+- undo: the last menu change is taken back.
+"We have food for this week, the plan starts next Monday" is a pause until Sunday and, when they
+want other dishes, a regenerate from that Monday. Dates are YYYY-MM-DD; the recipe ids, the menu and
+the paused days are in the data below. The app refuses a menu change that breaks a hard rule (an
+avoided ingredient, a weekly minimum, a lunch that would not keep) and says why: then offer another.
+
+Send only the keys that change:
 
 ```change
+asked: true
 set:
   household.lunch_time: "14:30"
   household.shopping_day: monday
@@ -56,11 +79,24 @@ set:
   settings.llm.instructions: |   # the whole new text: the current instructions with the change made
     ...
 recipe: {id: <new-id>, name: ..., meals: [lunch], kind: batch, ingredients: [{id: <ingredient id>, qty: 80}], steps: [...], nutrition: {kcal: 550, protein_g: 35}}
+plan:
+  - set: {date: 2026-01-14, meal: dinner, recipe: <recipe id>}
+  - swap: {a: 2026-01-14, b: 2026-01-16, meal: dinner}   # without meal: the whole day
+  - pause: {from: 2026-01-12, to: 2026-01-18}
+  - resume: {from: 2026-01-15, to: 2026-01-18}
+  - regenerate: {from: 2026-01-19}
+  - undo: true                                           # alone in the list
 ```
 
 A new reminder needs id, kind (message, meal, batch, shopping, defrost), at, and text
-for kind message ({names} and {today} are filled in). The app shows the change to the person who
-asked and applies it only after they say yes, so never claim it is done.
+for kind message ({names} and {today} are filled in).
+
+`asked: true` means the person you are answering asked for exactly this change in their message
+("lunch at 14:30", "this week we eat what we have"). The app then makes it at once, with no
+question back. Leave `asked` out when the change is your own idea or goes further than what they
+asked: the app then shows it and makes it only after their yes. Either way the app posts the result
+right after your answer (what changed, the change id, how to undo it), so say what you are changing
+in plain words and never claim it is done or ask them to confirm.
 """
 
 
@@ -150,6 +186,8 @@ def facts(
         if not plan:
             continue
         out.append(f"\n## {t.date(day)}")
+        if not plan.day(day) and day in paused_days(data):
+            out.append("- paused: the household eats off the plan this day")
         for pd in person_days(data, db, plan, day):
             out.append(
                 f"- {pd.name} (x{pd.factor:.2f}, {pd.kcal:.0f} kcal, {pd.protein:.0f} g protein):"
@@ -157,23 +195,44 @@ def facts(
             for meal, pl in pd.plates.items():
                 out.append(f"  - {meal}: {pl.recipe.name}: " + "; ".join(pl.lines))
 
-    plan = plan_for(data, today)
-    if plan:
-        monday = today - dt.timedelta(days=today.weekday())
-        out.append("\n## This week")
-        for i in range(7):
-            d = plan.day(monday + dt.timedelta(days=i))
-            if d:
-                side = (
-                    f" + {data.recipes[d.side].name if d.side in data.recipes else '?'}"
-                    if d.side
-                    else ""
-                )
-                out.append(
-                    f"- {t.date(d.date)}: lunch {data.recipes[d.lunch].name if d.lunch in data.recipes else '?'}{side}; dinner {data.recipes[d.dinner].name if d.dinner in data.recipes else '?'}"
-                )
+    out += menu_now(data, t, today)
     out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)
+
+
+def menu_now(data: Data, t: Translator, today: dt.date) -> list[str]:
+    """This week and the next, every meal with the recipe id a menu change names, the paused days,
+    and the recipes a `set` may use."""
+    paused = paused_days(data)
+    monday = today - dt.timedelta(days=today.weekday())
+
+    def dish(rid: str | None) -> str:
+        return f"{data.recipes[rid].name if rid in data.recipes else '?'} [{rid}]"
+
+    out, plan = [], None
+    for week, title in ((0, "This week"), (1, "Next week")):
+        lines = []
+        for i in range(7):
+            day = monday + dt.timedelta(days=7 * week + i)
+            if plan is None or not plan.start <= day < plan.end:
+                plan = plan_for(data, day)
+            d = plan.day(day) if plan else None
+            head = f"- {t.date(day)} ({day.isoformat()})"
+            if day in paused:
+                lines.append(f"{head}: paused, the household eats off the plan")
+            elif d:
+                side = f" + {dish(d.side)}" if d.side else ""
+                lines.append(
+                    f"{head}: breakfast {dish(d.breakfast)}; lunch {dish(d.lunch)}{side}; "
+                    f"snack {dish(d.snack)}; dinner {dish(d.dinner)}"
+                )
+        if lines:
+            out += [f"\n## {title}", *lines]
+    out.append("\n## Recipes (id: name; meals; kind)")
+    for r in sorted(data.recipes.values(), key=lambda r: r.id):
+        side = ", side salad" if r.has("side") else ""
+        out.append(f"- {r.id}: {r.name}; {', '.join(r.meals)}; {r.kind}{side}")
+    return out
 
 
 def settings_now(data: Data, viewer: str | None = None) -> str:

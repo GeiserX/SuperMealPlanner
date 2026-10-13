@@ -8,7 +8,7 @@ settings.yaml         how the app behaves: language, stores, bot, AI provider, r
 ingredients.yaml      ingredient catalogue
 recipes/*.yaml        one recipe per file
 stores/*.yaml         store catalogues: the real product to buy per ingredient (optional)
-state/                written by the app: plans/<monday>.yaml and supermealplanner.db
+state/                written by the app: plans/<monday>.yaml, paused.yaml and supermealplanner.db
 ```
 
 Keep the data directory in its own private repository: it holds health details. Ids are lowercase kebab-case ASCII. Food names, steps and units are in whatever language you cook in.
@@ -147,7 +147,20 @@ A plugin can also offer to do something outside the chat, such as opening a pull
 
 ### Changes from the chat
 
-The AI may propose a change to a short list of settings: `household.lunch_time`, `shopping_day`, `guests`, `batch.preferred_days`, `batch.sessions_per_week`, the weekly `rules`, additions to the asker's own `avoid_ingredients`, `shopping.primary` and `alternatives`, `sections`, `reminders` other than the `pills_lunch` one, `llm.instructions` (how the assistant answers: the whole new text, at most 4000 characters; the confirmation shows only the lines that change), and a new recipe. Pills, the pills reminder, calorie and protein targets and goals are never on it. Avoided foods are often medical, so nobody can change another person's list from the chat, and a food comes off a list only by hand. The bot shows the change in plain words and waits for the person who asked to answer yes or no; in the group the answer has to reply to the bot or mention it, so an "ok" said to someone else is not a yes. On yes it pulls the data repo, edits the file (comments and layout stay), runs the same validation as `smp check` on a copy, and pushes one git commit, so every change can be reverted. That needs the data folder to be a git checkout and `SMP_GIT_WRITE_TOKEN` (a token that may push to the data repo). Without them the bot shows the change for a person to make by hand.
+The AI ends its answer with a `change` block, and the app makes the change for the person who was talking. The block may change a short list of settings: `household.lunch_time`, `shopping_day`, `guests`, `batch.preferred_days`, `batch.sessions_per_week`, the weekly `rules`, additions to the asker's own `avoid_ingredients`, `shopping.primary` and `alternatives`, `sections`, `reminders` other than the `pills_lunch` one, `llm.instructions` (how the assistant answers: the whole new text, at most 4000 characters; the confirmation shows only the lines that change), and a new recipe. Pills, the pills reminder, calorie and protein targets and goals are never on it. Avoided foods are often medical, so nobody can change another person's list from the chat, and a food comes off a list only by hand. When the block says `asked: true` (the person asked for exactly this change), the bot makes it at once and answers with what changed, the commit id and how to undo it. Without it (the change is the AI's own idea) the bot shows the change in plain words and waits for that person to answer yes or no; in the group the answer has to reply to the bot or mention it, so an "ok" said to someone else is not a yes. Either way the limits above hold. To save settings it pulls the data repo, edits the file (comments and layout stay), runs the same validation as `smp check` on a copy, and pushes one git commit, so every change can be reverted. That needs the data folder to be a git checkout and `SMP_GIT_WRITE_TOKEN` (a token that may push to the data repo). Without them the bot shows the change for a person to make by hand.
+
+The same block changes the menu with a `plan` list. Menu changes are written under `state/`, not to git, so they need no token ([how it works](how-it-works.md#changing-the-menu)):
+
+```yaml
+asked: true
+plan:
+  - set: {date: 2026-01-14, meal: dinner, recipe: tuna-salad}   # breakfast, lunch, side, snack, dinner
+  - swap: {a: 2026-01-14, b: 2026-01-16, meal: dinner}          # without meal: the whole day
+  - pause: {from: 2026-01-12, to: 2026-01-18}                   # both days included
+  - resume: {from: 2026-01-15, to: 2026-01-18}
+  - regenerate: {from: 2026-01-19}                              # a Monday
+  - undo: true                                                  # the last menu change, alone in the list
+```
 
 ### Environment
 

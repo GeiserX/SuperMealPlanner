@@ -5,8 +5,8 @@
   <h1>{{ t.date(day) | capitalize }}</h1>
   <a href="/?d={{ next }}" aria-label="next day">›</a>
 </header>
-{% if not plan %}
-  <p class="empty">{{ t('no_plan_day') }}</p>
+{% if not plan or not pday %}
+  <p class="empty">{{ t('paused_day') if paused else t('no_plan_day') }}</p>
 {% else %}
   {% if pday.busy %}<p class="note">{{ t('calendar_busy', events=pday.busy | join(', ')) }}</p>{% endif %}
   {% if session %}<p class="note batch">{{ t('batch_today') }} <a href="/batch?d={{ day }}">{{ t('see_sheet') }}</a></p>{% endif %}
@@ -34,6 +34,9 @@
       {% endfor %}
       </div>
     </section>
+    {% endif %}
+    {% if meal == 'snack' and nibbles %}
+    <p class="note nibble">{{ t('nibble_title') }}: {% for r in nibbles %}<a href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
     {% endif %}
   {% endfor %}
 

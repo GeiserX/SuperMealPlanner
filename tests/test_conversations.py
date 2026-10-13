@@ -290,7 +290,9 @@ def test_a_private_turn_lists_only_the_askers_own_avoided_foods(data_dir, tmp_pa
     run(b.handle(None, msg("hola", chat=8, user=8)))  # Ana, privately
     ana = turns(data_dir)[-1]["context"]
     assert "household.people.ana.avoid_ingredients" in ana
-    assert "household.people.luis" not in ana and "espinaca" not in ana
+    # the recipe list names a spinach dish; who avoids spinach is what must stay out
+    private = ana.split("## Recipes")[0] + ana.split("## Settings now")[1]
+    assert "household.people.luis" not in ana and "espinaca" not in private
     run(b.handle(None, msg("hola", chat=7, user=7)))  # Luis, privately
     assert "household.people.luis.avoid_ingredients: ['espinaca']" in turns(data_dir)[-1]["context"]
     run(b.handle(None, msg("@chefbot hola")))  # the group sees the household's settings

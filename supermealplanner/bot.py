@@ -27,10 +27,10 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import changes, context, llm
+from . import changes, context, llm, menu
 from .i18n import Translator
 from .model import WEEKDAYS
-from .planner import plan_for
+from .planner import nibbles, paused_days, plan_for
 from .portions import MEAL_ORDER, person_days, shopping_list
 
 log = logging.getLogger("supermealplanner.bot")
@@ -512,7 +512,8 @@ class Bot:
 
     # ------------------------------------------------------------- settings changes
     async def propose(self, client, chat_id, reply_to, asker, user_id, change) -> None:
-        """Show a change the AI proposed and wait for a yes from the person who asked."""
+        """Make a change the person asked for at once; show one the AI came up with on its own and
+        wait for a yes from the person it answered."""
         t = self.t
         if isinstance(change, str):
             await self.send(client, chat_id, t("change_invalid", error=change), reply_to)
@@ -524,6 +525,11 @@ class Bot:
             proposal = changes.parse(change, self.data, asker)
         except changes.ChangeError as e:
             await self.send(client, chat_id, t("change_invalid", error=e), reply_to)
+            return
+        name = self.data.household.person(asker).name
+        if proposal.asked:
+            item = {"change": change, "asker": asker, "name": name}
+            await self.send(client, chat_id, await self.apply(item, asked=True), reply_to)
             return
         lines = changes.describe(proposal, self.data, t)
         msgs: list[int] = []
@@ -538,7 +544,7 @@ class Bot:
             "change": change,
             "by": [user_id],
             "asker": asker,
-            "name": self.data.household.person(asker).name,
+            "name": name,
             "ts": time.time(),
             "msg": sent,
             "msgs": msgs,
@@ -615,35 +621,61 @@ class Bot:
         await self.send(client, chat_id, reply, msg["message_id"])
         return True
 
-    async def apply(self, pending: dict) -> str:
+    async def apply(self, pending: dict, asked: bool = False) -> str:
+        """Make a change and say what came of it. Settings and recipes are one git commit in the
+        data repo; menu changes are written under state/. asked: nobody saw the change yet, so the
+        answer lists it."""
         t = self.t
         try:
             # the data may have moved on since the proposal
             proposal = changes.parse(pending["change"], self.data, pending.get("asker"))
         except changes.ChangeError as e:
             return t("change_invalid", error=e)
-        token = os.environ.get("SMP_GIT_WRITE_TOKEN", "")
-        if not token:
-            return t("change_manual") + "\n\n" + "\n".join(changes.manual(proposal))
         lines = changes.describe(proposal, self.data, t)
-        subject = "; ".join(x.removeprefix("• ") for x in lines)
-        message = (
-            f"chat: {subject[:120]}\n\nAsked by {pending.get('name', '?')} in the chat and "
-            "confirmed there.\n\n" + "\n".join(lines) + "\n"
-        )
-        try:
-            async with self.writing:
-                sha = await asyncio.to_thread(
-                    changes.apply, self.data.root, proposal, message, token
+        out = []
+        if proposal.edits or proposal.recipe is not None:
+            token = os.environ.get("SMP_GIT_WRITE_TOKEN", "")
+            if not token:
+                by_hand = t("change_manual") + "\n\n" + "\n".join(changes.manual(proposal))
+                if not proposal.plan:
+                    return by_hand
+                out.append(by_hand)
+            else:
+                saved = lines[: len(lines) - len(proposal.plan)]
+                subject = "; ".join(x.removeprefix("• ") for x in saved)
+                how = "" if asked else " and confirmed there"
+                message = (
+                    f"chat: {subject[:120]}\n\nAsked by {pending.get('name', '?')} in the chat"
+                    f"{how}.\n\n" + "\n".join(saved) + "\n"
                 )
-                await asyncio.to_thread(self.state.reload)
-        except changes.ChangeError as e:
-            log.warning("settings change failed: %s", e)
-            return t("change_failed", error=e)
-        except Exception as e:  # noqa: BLE001
-            log.warning("settings change failed: %s", safe(e))
-            return t("change_failed", error=type(e).__name__)
-        return t("change_applied", sha=sha)
+                try:
+                    async with self.writing:
+                        sha = await asyncio.to_thread(
+                            changes.apply, self.data.root, proposal, message, token
+                        )
+                        await asyncio.to_thread(self.state.reload)
+                except changes.ChangeError as e:
+                    log.warning("settings change failed: %s", e)
+                    return t("change_failed", error=e)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("settings change failed: %s", safe(e))
+                    return t("change_failed", error=type(e).__name__)
+                out.append(t("change_saved" if asked else "change_applied", sha=sha))
+        if proposal.plan:
+            try:
+                async with self.writing:
+                    await asyncio.to_thread(
+                        menu.apply, self.data, proposal.plan, self.state.today()
+                    )
+            except menu.MenuError as e:
+                return "\n".join([*out, t("change_invalid", error=e)])
+            except Exception as e:  # noqa: BLE001
+                log.warning("menu change failed: %s", safe(e))
+                return "\n".join([*out, t("change_failed", error=type(e).__name__)])
+            out.append(t("menu_applied"))
+        if asked:
+            out.insert(0, t("change_done", lines="\n".join(lines)))
+        return "\n".join(out)
 
     # ------------------------------------------------------------- proposals
     async def offer(self, client, chat_id, reply_to, asker, user_id, proposal: dict) -> None:
@@ -921,7 +953,7 @@ class Bot:
         t = self.t
         plan = plan_for(self.data, day)
         if not plan or not plan.day(day):
-            return t("no_plan_day")
+            return t("paused_day" if day in paused_days(self.data) else "no_plan_day")
         pds = person_days(self.data, self.state.db, plan, day)
         # pills are household data: never for people outside it (bot.group_open)
         show_pills = not self.data.settings.bot.group_open
@@ -947,6 +979,9 @@ class Bot:
                     if pd.pills.get(slot):
                         names = " · ".join(f"{x.name} {x.dose}".strip() for x in pd.pills[slot])
                         lines.append(f"💊 {pd.name}, {t('pills_' + slot).lower()}: {names}")
+        picks = nibbles(self.data, plan.day(day))
+        if picks:
+            lines.append("\n" + t("nibble", items=", ".join(r.name for r in picks)))
         lines.append("")
         for pd in pds:
             lines.append(
@@ -970,8 +1005,11 @@ class Bot:
         if not plan:
             return t("no_plan_week")
         lines = [t("week_of", date=t.date(monday, False))]
+        paused = paused_days(self.data)
         for i in range(7):
             d = plan.day(monday + dt.timedelta(days=i))
+            if not d and monday + dt.timedelta(days=i) in paused:
+                lines.append(f"{t.raw('days_short')[i]}: {t('paused_short')}")
             if d:
                 lines.append(
                     f"{t.raw('days_short')[i]}: {self.data.recipes[d.lunch].name if d.lunch in self.data.recipes else '?'} / {self.data.recipes[d.dinner].name if d.dinner in self.data.recipes else '?'}"
@@ -1078,6 +1116,9 @@ class Bot:
             return r.text.format(names=names, today=t.date(day))
         plan = plan_for(data, day)
         if r.kind == "shopping":
+            rest = {day + dt.timedelta(days=i) for i in range(7 - day.weekday())}
+            if rest <= paused_days(data):  # the rest of the week is paused: nothing to buy for
+                return None
             return t("reminder_shopping", url=self.url(f"/list?d={day.isoformat()}"))
         if not plan:
             return None

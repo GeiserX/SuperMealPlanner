@@ -17,7 +17,7 @@ import subprocess
 from .calendar import busy_afternoons
 from .changes import GIT_LOCK, git_env
 from .model import DataError
-from .planner import PlanError, generate, load_plan, plans_dir, repair
+from .planner import PLAN_LOCK, PlanError, generate, load_plan, plans_dir, repair
 from .targets import evaluate, sync_start
 
 log = logging.getLogger("supermealplanner")
@@ -56,6 +56,11 @@ def pull(state) -> None:
 
 
 def ensure_plan(state, today: dt.date | None = None):
+    with PLAN_LOCK:  # never in the middle of a menu change from the chat
+        return _ensure_plan(state, today)
+
+
+def _ensure_plan(state, today: dt.date | None = None):
     data = state.data
     today = today or state.today()
     horizon = today + dt.timedelta(days=7)

@@ -1,17 +1,20 @@
-"""Settings the AI may propose to change, applied only after the person who asked says yes.
+"""Settings and menu changes the AI may make from the chat, for the person who asked.
 
 The AI ends an answer with one fenced block:
 
     ```change
+    asked: true     # the person asked for exactly this: applied at once. Without it, after a yes
     set:
       household.lunch_time: "14:30"
       settings.reminders.water: {at: ["11:00", "17:00"]}
     recipe: {id: lentil-stew, name: Lentil stew, ...}
+    plan:           # the menu itself, see menu.py
+      - set: {date: 2026-01-14, meal: dinner, recipe: tuna-salad}
     ```
 
 Only the paths in ALLOWED can change; pills, calorie and protein targets and goals never can. Avoided
 foods are often medical (a drug interaction, a kidney diet): a person may only add to their own list,
-and only by hand can a food come off it. The pills reminder never changes from the chat. A yes
+and only by hand can a food come off it. The pills reminder never changes from the chat. Applying
 edits the files in the data folder (keeping their comments), runs the same validation as
 `smp check` on a copy first, and makes one git commit that is pushed to the data repo, so every
 change can be reverted. Without a git checkout and SMP_GIT_WRITE_TOKEN nothing is written: the bot
@@ -39,6 +42,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 from ruamel.yaml.util import load_yaml_guess_indent
 
+from . import menu
 from .model import Data, DataError, check
 
 log = logging.getLogger("supermealplanner")
@@ -87,6 +91,8 @@ class Edit:
 class Proposal:
     edits: list[Edit] = field(default_factory=list)
     recipe: dict | None = None
+    plan: list[menu.Op] = field(default_factory=list)  # menu changes, written under state/
+    asked: bool = False  # the person asked for exactly this: no yes/no round
     raw: dict = field(default_factory=dict)  # JSON-safe, kept while the bot waits for a yes
 
 
@@ -122,10 +128,10 @@ PROTECTED_REMINDER_KINDS = {"pills_lunch"}  # never added, edited or removed fro
 def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
     """Check a proposed change against the allow-list, for the household member who asked. Raises
     ChangeError with the reason."""
-    unknown = set(raw) - {"set", "recipe"}
+    unknown = set(raw) - {"set", "recipe", "plan", "asked"}
     if unknown:
-        raise ChangeError(f"unknown keys {sorted(unknown)}; use set and recipe")
-    out = Proposal(raw=raw)
+        raise ChangeError(f"unknown keys {sorted(unknown)}; use set, recipe, plan and asked")
+    out = Proposal(raw=raw, asked=raw.get("asked") is True)
     sets = raw.get("set") or {}
     if not isinstance(sets, dict):
         raise ChangeError("set must map a path to its new value")
@@ -183,7 +189,12 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
         if rid in data.recipes or (data.root / "recipes" / f"{rid}.yaml").exists():
             raise ChangeError(f"a recipe {rid} already exists; only new recipes can be added")
         out.recipe = recipe
-    if not out.edits and out.recipe is None:
+    if raw.get("plan") is not None:
+        try:
+            out.plan = menu.parse(raw["plan"], data, (out.recipe or {}).get("id"))
+        except menu.MenuError as e:
+            raise ChangeError(str(e)) from None
+    if not out.edits and out.recipe is None and not out.plan:
         raise ChangeError("the change is empty")
     return out
 
@@ -260,7 +271,8 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
                 n=len(p.recipe.get("ingredients") or []),
             )
         )
-    return lines
+    new = {p.recipe["id"]: p.recipe.get("name")} if p.recipe else None
+    return lines + menu.describe(p.plan, data, t, new)
 
 
 def _text_diff(old: str, new: str) -> list[str]:
