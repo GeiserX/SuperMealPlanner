@@ -181,6 +181,7 @@ bot_about_ask: "💬 Preguntarme\nPor privado os contesto siempre; en el grupo, 
 bot_about_private: "🔒 También me podéis escribir por privado. Ahí nunca comparto los pesos, registros, objetivos ni pastillas de nadie más."
 bot_about_calendar: "Los días de batch se mueven a las tardes libres de vuestro calendario."
 bot_about_voice: "Las notas de voz me llegan por privado; en el grupo, mandádmelas como respuesta a un mensaje mío."
+bot_about_voice_any: "Las notas de voz me llegan por privado y en el grupo: escribo lo que he oído y contesto."
 
 # conversación con la IA y cambios de ajustes desde el chat
 bot_new: "Conversación nueva: he olvidado lo que hablamos. Vuestro plan y vuestros datos siguen aquí."

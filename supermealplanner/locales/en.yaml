@@ -182,6 +182,7 @@ bot_about_ask: "💬 Ask me\nIn a private chat I always answer; in the group, me
 bot_about_private: "🔒 You can also write to me privately. There I never share anyone else's weigh-ins, logs, goals or pills."
 bot_about_calendar: "Batch days move to free afternoons on your calendar."
 bot_about_voice: "Voice notes reach me in a private chat; in the group, reply to me with them."
+bot_about_voice_any: "Voice notes reach me in a private chat and in the group: I write down what I heard and answer."
 
 # AI conversation and settings changes from the chat
 bot_new: "New conversation: I've forgotten what we talked about. Your plan and data are still here."

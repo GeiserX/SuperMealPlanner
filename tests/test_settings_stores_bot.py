@@ -269,6 +269,18 @@ def test_voice_notes_reach_the_ai_privately_or_as_a_reply(data_dir, tmp_path):
     assert b.asked == [7, -100] and len(heard) == 2
 
 
+def test_every_group_voice_note_is_answered_when_the_household_says_so(data_dir, tmp_path):
+    data = bot_data(data_dir, voice_in_group="any")
+    db = DB(tmp_path / "b.db")
+    b = FakeBot(data, db, MONDAY)
+    run(b.handle(None, msg(voice={"file_id": "f"})))  # a plain voice note in the group
+    assert b.asked == [-100]
+    assert "cenamos" in db.recent_chat(-100, 5)[-1]["text"]
+    assert b.sent[-1][1].startswith("🎤")  # it writes down what it heard first
+    run(b.handle(None, msg(voice={"file_id": "f"}, user=999)))  # a stranger still gets nothing
+    assert b.asked == [-100]
+
+
 def test_reminders_fire_once_in_their_window(data_dir, tmp_path):
     data = bot_data(data_dir)
     db = DB(tmp_path / "b.db")

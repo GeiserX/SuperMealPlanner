@@ -370,15 +370,16 @@ class Bot:
         if voice and not msg.get("text"):
             if not self.allowed(chat, user.get("id", 0)) or not cfg.voice:
                 return
-            replied = self.replied(msg)
+            # a group voice note calls the bot as a reply, or always when voice_in_group is any
+            asked = private or self.replied(msg) or cfg.voice_in_group == "any"
             keep_all = cfg.history_scope == "all"
-            if not (private or replied or keep_all):
-                return  # a group voice note calls the bot only as a reply, and nothing is kept
+            if not (asked or keep_all):
+                return  # nobody called the bot, and nothing is kept
             try:
                 text = await self.transcribe(client, voice)
             except Exception as e:  # noqa: BLE001
                 log.warning("transcription failed: %s", safe(e))
-                if private or replied:
+                if asked:
                     await self.send(
                         client,
                         chat["id"],
@@ -388,7 +389,6 @@ class Bot:
                     )
                 return
             who = self.person_of(user.get("id", 0))
-            asked = private or replied
             if asked or keep_all:
                 self.state.db.add_chat(
                     chat["id"], "user", who or user.get("first_name"), f"🎤 {text}"
@@ -919,7 +919,8 @@ class Bot:
                 )
         lines += ["", t("bot_about_log"), "", t("bot_about_ask")]
         if cfg.bot.voice and cfg.transcription.provider != "none":
-            lines.append(t("bot_about_voice"))
+            any_note = cfg.bot.voice_in_group == "any"
+            lines.append(t("bot_about_voice_any" if any_note else "bot_about_voice"))
         if cfg.llm.provider == "none":
             lines.append(t("bot_no_llm"))
         else:
