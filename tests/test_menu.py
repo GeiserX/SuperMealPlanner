@@ -495,6 +495,12 @@ def test_a_recipe_taken_out_of_a_meal_leaves_the_days_planned_from_tomorrow(
     reply(data_dir, text=block({"asked": True, "plan": [{"undo": True}]}))
     run(b.handle(None, msg("@chefbot deshaz el menú")))
     assert plan_for(b.state.data, MONDAY).days == before.days
+    # when the planned days cannot be changed, the answer says they keep the recipe
+    monkeypatch.setattr(menu, "retire", lambda *a: 1 / 0)
+    reply(data_dir, text=block({"asked": True, "recipes": {"merienda-a": {"meals": []}}}))
+    run(b.handle(None, msg("@chefbot fuera esa merienda")))
+    said = ChatBot.texts(b, -100)[-1]
+    assert said.startswith("Done:") and b.t("recipe_replan_failed") in said
 
 
 def test_only_some_fields_of_an_existing_recipe_change_and_the_data_must_still_check(
@@ -531,6 +537,7 @@ def test_only_some_fields_of_an_existing_recipe_change_and_the_data_must_still_c
     lines = "\n".join(changes.describe(p, data, Translator("en")))
     assert "Recipe Fritura, name: Fritura → Fritura ligera" in lines
     assert "steps: 1 steps → 2 steps" in lines and "merluza 120" in lines
+    assert "nutrition: kcal 600.0, protein_g 35.0 → kcal 380, protein_g 30" in lines
     changes.apply(data_dir, p, "chat: ok", "token")
     r = load(data_dir).recipes["fritura"]
     assert (r.name, r.nutrition.kcal, len(r.steps)) == ("Fritura ligera", 380, 2)

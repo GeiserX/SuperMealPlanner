@@ -402,7 +402,7 @@ def _recipe_value(key: str, value, t) -> str:
             if isinstance(i, dict)
         )
     if key == "nutrition" and isinstance(value, dict):
-        return f"{value.get('kcal', '?')} kcal, {value.get('protein_g', '?')} g"
+        return ", ".join(f"{k} {v}" for k, v in value.items() if v not in (None, "", 0))
     return _show(value, t)
 
 

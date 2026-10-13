@@ -233,6 +233,7 @@ change_recipe_field_nutrition: valores nutricionales
 change_recipe_steps: "{n} pasos"
 change_note_add: "Nota sobre {name}: {text}"
 change_note_remove: "Nota sobre {name} eliminada: {text}"
+recipe_replan_failed: "La receta está guardada, pero no he podido quitarla de los días ya planificados: la mantienen hasta que me pidáis cambiarlos."
 recipe_replanned: "{n} días ya planificados, de mañana en adelante, pasan a tener otro plato en su lugar."
 change_plan_set: "{day}, {meal}: {old} → {new}"
 change_plan_swap: "{a} y {b} intercambian todas sus comidas"

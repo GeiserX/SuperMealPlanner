@@ -669,8 +669,10 @@ class Bot:
                 n = await asyncio.to_thread(menu.retire, self.data, retired, start)
             except Exception as e:  # noqa: BLE001  the recipe is saved; the plan keeps it for now
                 log.warning("replacing a retired recipe failed: %s", safe(e))
-                n = 0
-            if n:
+                n = None
+            if n is None:
+                out.append(t("recipe_replan_failed"))
+            elif n:
                 out.append(t("recipe_replanned", n=n))
         if proposal.plan:
             try:

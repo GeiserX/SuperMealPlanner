@@ -234,6 +234,7 @@ change_recipe_field_nutrition: nutrition
 change_recipe_steps: "{n} steps"
 change_note_add: "Note about {name}: {text}"
 change_note_remove: "Note about {name} removed: {text}"
+recipe_replan_failed: "The recipe is saved, but I could not take it out of the days already planned: they keep it until you ask me to change them."
 recipe_replanned: "{n} planned days from tomorrow on get another dish in its place."
 change_plan_set: "{day}, {meal}: {old} → {new}"
 change_plan_swap: "{a} and {b} swap all their meals"
