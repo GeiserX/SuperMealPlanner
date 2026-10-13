@@ -6,6 +6,7 @@
       - pause: {from: 2026-01-12, to: 2026-01-18}            # eat off the plan; ends by itself
       - resume: {from: 2026-01-15, to: 2026-01-18}
       - regenerate: {from: 2026-01-19}                       # a new draw from that Monday
+      - shift: {from: 2026-01-12, weeks: 1}                  # the menu from that day on, later
       - undo: true                                           # the last menu change
 
 Plans are generated files under state/, outside the data repo's git, so a menu change needs no
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -48,7 +50,9 @@ FIELDS = {
     "pause": {"from", "to"},
     "resume": {"from", "to"},
     "regenerate": {"from"},
+    "shift": {"from", "weeks"},
 }
+SHIFT_MAX = 4  # weeks one shift may move the menu
 PAUSE_MAX = 92  # days in one pause: a mistyped year must not silence the plan for good
 
 
@@ -116,6 +120,11 @@ def parse(raw, data: Data, new_recipe: str | None = None) -> list[Op]:
                     "change single dishes with set, or pause the days before it"
                 )
             out.append(Op(kind, {"from": start}))
+        elif kind == "shift":
+            weeks = args.get("weeks")
+            if not isinstance(weeks, int) or isinstance(weeks, bool) or not 1 <= weeks <= SHIFT_MAX:
+                raise MenuError(f"shift moves the menu 1 to {SHIFT_MAX} whole weeks")
+            out.append(Op(kind, {"from": _date(args.get("from"), "from"), "weeks": weeks}))
         else:
             first, last = _date(args.get("from"), "from"), _date(args.get("to"), "to")
             if not first <= last or (last - first).days >= PAUSE_MAX:
@@ -153,6 +162,9 @@ def describe(ops: list[Op], data: Data, t, names: dict[str, str] | None = None) 
             lines.append(t(key, a=t.date(a["a"]), b=t.date(a["b"]), meal=meal))
         elif op.kind == "regenerate":
             lines.append(t("change_plan_regenerate", day=t.date(a["from"])))
+        elif op.kind == "shift":
+            back = a["from"] + dt.timedelta(weeks=a["weeks"])
+            lines.append(t("change_plan_shift", day=t.date(a["from"]), back=t.date(back)))
         elif op.kind == "undo":
             lines.append(t("change_plan_undo"))
         else:
@@ -290,6 +302,57 @@ def _regenerate(data: Data, plans, op: Op) -> set[Path]:
     return touched
 
 
+def _shift(data: Data, plans, op: Op) -> set[Path]:
+    """Move every planned day from `from` on later by whole weeks, so weekdays (batch days, the
+    injection day) still line up. The plan that holds `from` keeps its start and grows by those
+    weeks, so the paused gap stays covered and the hourly check draws nothing for it; a plan that
+    starts later moves whole. A lunch cooked before `from` for a day that moves is cooked again
+    on `from` at the earliest (a paused day, so the first day back cooks it). Calendar marks stay
+    with their dates, not with the dishes."""
+    first, delta = op.args["from"], dt.timedelta(weeks=op.args["weeks"])
+
+    def cook(c: dt.date) -> dt.date:
+        return max(c + delta, first)
+
+    touched = set()
+    for path, plan in list(plans.items()):
+        if plan.end <= first:
+            continue
+        touched.add(path)
+        for d in plan.days:
+            if d.date >= first:
+                d.date, d.lunch_cook, d.busy = d.date + delta, cook(d.lunch_cook), []
+        sessions: dict[tuple[dt.date, bool], Session] = {}
+        for s in plan.sessions:
+            for x in s.dishes:
+                stay = [e for e in x.eat if e < first]
+                move = [e + delta for e in x.eat if e >= first]
+                if stay:
+                    key = (s.date, s.morning)
+                    sessions.setdefault(key, Session(s.date, s.morning, list(s.busy)))
+                    sessions[key].dishes.append(Dish(x.recipe, x.cook, stay))
+                if move:
+                    c = cook(x.cook)
+                    key = (c, c == move[0])
+                    sessions.setdefault(key, Session(c, c == move[0]))
+                    sessions[key].dishes.append(Dish(x.recipe, c, move))
+        plan.sessions = sorted(sessions.values(), key=lambda s: (s.date, not s.morning))
+        if plan.start > first:  # starts later: the whole plan moves, and so does its file
+            plan.start += delta
+            del plans[path]
+            new = plans_dir(data) / f"{plan.start.isoformat()}.yaml"
+            plans[new] = plan
+            touched.add(new)
+        else:
+            plan.weeks += op.args["weeks"]
+    return touched
+
+
+def _undated(errors) -> set[str]:
+    """Validator errors without their dates: a shift moves an old error, it does not add one."""
+    return {re.sub(r"\d{4}-\d{2}-\d{2}", "", e) for e in errors}
+
+
 def _undo_dir(data: Data) -> Path:
     return data.state / "menu-undo"
 
@@ -361,13 +424,25 @@ def apply(data: Data, ops: list[Op], today: dt.date) -> None:
                 touched |= _swap(data, plans, op)
             elif op.kind == "regenerate":
                 touched |= _regenerate(data, plans, op)
+            elif op.kind == "shift":
+                touched |= _shift(data, plans, op)
+                # the days the menu left are paused, so nothing new is drawn for them; paused
+                # days after `from` move with the dishes
+                first, delta = op.args["from"], dt.timedelta(weeks=op.args["weeks"])
+                gap = {first + dt.timedelta(days=i) for i in range(delta.days)}
+                paused = {d if d < first else d + delta for d in paused} | gap
             else:
                 span = (op.args["to"] - op.args["from"]).days + 1
                 days = {op.args["from"] + dt.timedelta(days=i) for i in range(span)}
                 paused = paused | days if op.kind == "pause" else paused - days
+        shifted = any(op.kind == "shift" for op in ops)
+        before = _undated(e for errs in known.values() for e in errs)
         for p in sorted(touched & set(plans)):
             errs = validate(data, plans[p], repeats=False)
-            new = [e for e in errs if e not in known.get(p, ())]
+            if shifted:
+                new = [e for e in errs if _undated([e]) - before]
+            else:
+                new = [e for e in errs if e not in known.get(p, ())]
             if new:
                 raise MenuError("; ".join(new[:3]))
         if not touched and paused == was:

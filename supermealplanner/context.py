@@ -54,6 +54,8 @@ The menu you may change, any day and any meal (breakfast, lunch, side, snack, di
   no dishes, the shopping list and the batch sheet leave them out, and the meal, batch, defrost and
   shopping reminders stay silent. A pause ends by itself; resume ends it early.
 - regenerate: a new draw of the plan from a Monday on; the days before it stay.
+- shift: the menu from a day on moves 1 to 4 whole weeks later, dishes and batch days with it; the
+  days it leaves are paused.
 - undo: the last menu change is taken back.
 Recipes that exist you may change too: name, meals, tags, season, serves_note, video, steps,
 ingredients and nutrition (not id, kind or how long it keeps). "No porridge at breakfast" is taking
@@ -68,7 +70,8 @@ by hand, often medical: you cannot change or remove them, say so when asked. At 
 per person, 300 characters each. Never put a dose, a diagnosis or a target in a chat note.
 
 "We have food for this week, the plan starts next Monday" is a pause until Sunday and, when they
-want other dishes, a regenerate from that Monday. Dates are YYYY-MM-DD; the recipe ids, the menu and
+want other dishes, a regenerate from that Monday. "Start this week's menu next week, everything a
+week later" is a shift of 1 week from the first day they will not eat as planned. Dates are YYYY-MM-DD; the recipe ids, the menu and
 the paused days are in the data below. The app refuses a menu change that breaks a hard rule (an
 avoided ingredient, a weekly minimum, a lunch that would not keep) and says why: then offer another.
 
@@ -102,6 +105,7 @@ plan:
   - pause: {from: 2026-01-12, to: 2026-01-18}
   - resume: {from: 2026-01-15, to: 2026-01-18}
   - regenerate: {from: 2026-01-19}
+  - shift: {from: 2026-01-13, weeks: 1}
   - undo: true                                           # alone in the list
 ```
 

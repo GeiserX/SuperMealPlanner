@@ -605,3 +605,88 @@ def test_the_week_message_lists_breakfast_and_snack_too(data_dir, tmp_path):
         f"{i} {n}" for i, n in zip("☕🍲🍎🌙", names, strict=True)
     )
     assert len(week) == 9  # title, seven days, the link
+
+
+# ---------------------------------------------------------------- shift
+
+
+def consistent(plan):
+    """Every planned lunch is in exactly one container, cooked on its day or before."""
+    for d in plan.days:
+        boxes = [x for s in plan.sessions for x in s.dishes if d.date in x.eat]
+        assert [(x.recipe, x.cook) for x in boxes] == [(d.lunch, d.lunch_cook)], d.date
+        assert d.lunch_cook <= d.date
+    for s in plan.sessions:
+        assert all(x.cook == s.date for x in s.dishes)
+
+
+def test_a_shift_moves_the_menu_a_week_later_and_pauses_the_gap(data_dir):
+    data = planned(data_dir)
+    old = plan_for(data, MONDAY, raw=True)
+    change(data, {"shift": {"from": str(D(0)), "weeks": 1}})
+    raw = plan_for(data, D(7), raw=True)
+    assert raw.start == MONDAY and raw.weeks == 5 and raw.end == D(35)
+    for was, now in zip(old.days, raw.days, strict=True):
+        assert now.date == was.date + dt.timedelta(days=7)
+        assert now.lunch_cook == was.lunch_cook + dt.timedelta(days=7)  # cooked a week later too
+        assert (now.breakfast, now.lunch, now.snack, now.dinner, now.side) == (
+            was.breakfast,
+            was.lunch,
+            was.snack,
+            was.dinner,
+            was.side,
+        )
+    consistent(raw)
+    assert paused_days(data) == {D(i) for i in range(7)}
+    assert all(plan_for(data, D(i)).day(D(i)) is None for i in range(7))
+    assert validate(data, raw) == []
+    # the hourly check finds the gap and the next week covered: it draws nothing on top
+    from supermealplanner.scheduler import ensure_plan
+
+    state = type("S", (), {"data": data, "today": lambda self: MONDAY})()
+    assert ensure_plan(state, MONDAY) is None
+    assert [p.name for p in plans_dir(data).glob("*.yaml")] == [f"{MONDAY}.yaml"]
+    change(data, {"undo": True})
+    assert plan_for(data, MONDAY, raw=True) == old and not paused_days(data)
+
+
+def test_a_shift_from_midweek_moves_later_plans_and_paused_days_too(data_dir):
+    data = planned(data_dir)
+    generate(data, D(28), 4, previous=plan_for(data, MONDAY, raw=True)).save(
+        plans_dir(data) / f"{D(28)}.yaml"
+    )
+    first, second = plan_for(data, D(3), raw=True), plan_for(data, D(28), raw=True)
+    change(data, {"pause": {"from": str(D(20)), "to": str(D(20))}})
+    change(data, {"shift": {"from": str(D(3)), "weeks": 1}})
+    names = sorted(p.name for p in plans_dir(data).glob("*.yaml"))
+    assert names == [f"{MONDAY}.yaml", f"{D(35)}.yaml"]  # the later plan moved whole
+    assert plan_for(data, D(35), raw=True).days[0].lunch == second.days[0].lunch
+    moved = plan_for(data, D(10), raw=True)
+    assert moved.day(D(2)) == first.day(D(2))  # before the cut nothing moves
+    assert moved.day(D(10)).dinner == first.day(D(3)).dinner
+    consistent(moved)
+    # nothing that moves is cooked before the cut: an early batch lunch is cooked on the first day back
+    assert all(d.lunch_cook >= D(3) for d in moved.days if d.date >= D(10))
+    consistent(plan_for(data, D(35), raw=True))
+    assert paused_days(data) == {D(i) for i in range(3, 10)} | {D(27)}
+
+
+def test_a_shift_asked_in_the_chat_is_done_and_said(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    reply(
+        data_dir, text=block({"asked": True, "plan": [{"shift": {"from": str(D(0)), "weeks": 1}}]})
+    )
+    run(b.handle(None, msg("@chefbot empezamos el menú la semana que viene")))
+    said = ChatBot.texts(b, -100)[-1]
+    assert said.startswith("Done:") and "starts again on Monday 19 Oct" in said
+    assert "El menú a partir del" in Translator("es")("change_plan_shift", day="x", back="y")
+    for bad in (
+        {"from": str(D(0)), "weeks": 0},
+        {"from": str(D(0)), "weeks": 5},
+        {"from": str(D(0)), "weeks": "1"},
+        {"weeks": 1},
+    ):
+        with pytest.raises(menu.MenuError):
+            menu.parse([{"shift": bad}], data)
+    assert "shift: {from:" in context.rules(data)
