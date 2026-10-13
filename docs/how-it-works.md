@@ -13,6 +13,18 @@ The planner is plain code: the same data and the same start date always give the
 
 The app keeps a plan ready on its own: once an hour it checks that a plan covers the next seven days and makes the next four weeks when it does not.
 
+The week page and the day page show the whole day: breakfast, lunch with its side salad, the afternoon snack and dinner. Each day also lists up to three other snacks to nibble on. They are the snack recipes that are not a `treat`, use no avoided ingredient and are not that day's own snack, in a fixed rotation by date, so a day always shows the same ones.
+
+## Changing the menu
+
+The menu can be changed from the chat (see the bot below). Plans are generated files under `state/plans/`, outside the data repo's git, so a menu change needs no token and is written there directly; keep `state/` on storage that survives a restart, as the database already needs.
+
+- A dish can be put in any meal of any day, and two days can swap one meal or all of them. A lunch that changes leaves the container it shared and is cooked in the same batch session when that is still to come and the dish keeps until its day; otherwise it is cooked that morning. When neither main dish of a changed day is a salad, a side salad is added.
+- A pause covers a range of dates in which the household eats off the plan. The paused days are kept in `state/paused.yaml` and the plan on disk is not touched: those days show no dishes on any page or in the bot, the shopping list and the batch sheet leave them out, and the meal, batch, defrost and shopping reminders stay silent (the shopping reminder only when the rest of its week is paused). A lunch for a later day that a paused day would have cooked is cooked on the first day back. The pause ends by itself after its last day, and it can be ended early.
+- A new draw starts on a Monday. The days before it stay as they are, the earlier plan stops cooking for the days it lost, and asking again gives another draw.
+- Every change runs through the validator first. One that would newly break a hard rule (an avoided ingredient, a dinner rule, a weekly minimum, a lunch that would not keep) is refused with the reason and nothing is written. The limit on how often a dish repeats only shapes a draw: a dish someone asked for may go over it.
+- The plans and paused days as they were before the last change are kept in `state/menu-undo/`, so the last menu change can be undone once.
+
 ## Portions
 
 A recipe is written for one reference serving, what a person eating 2,000 kcal a day eats. A person's factor for a day is their current calorie target divided by 2,000, times the GLP-1 factor for that day of the week if they have one. Plates show grams and kitchen units ("2 thighs", "½ onion"). When a day falls short of a person's protein target, the app suggests quick extras from `settings.toppers`.
@@ -38,14 +50,14 @@ The bot answers private chats with the people in `bot.people`, and the configure
 - Voice notes are transcribed with the configured `transcription` provider and follow the same rule: in the group a voice note reaches the AI, and is transcribed at all, only when it replies to the bot.
 - The AI writes Markdown; the bot sends it as Telegram formatting (bold, italic, links, lists) and falls back to plain text when Telegram refuses the markup.
 - Each chat is one conversation. A provider that keeps it on its side gets only the new messages, with the household's data fresh every time; the others get the recent history, as before. `/new` starts the chat over.
-- The AI can propose a change to a short list of settings (reminders, batch days, lunch time, weekly rules, guests, foods the asker adds to their own avoided list, the shopping stores, its own instructions, a new recipe). The bot shows it and applies it only after the person who asked says yes, as one git commit in the data repo. Pills, the pills reminder, calories, protein, goals and taking a food off an avoided list are never on it ([data format](data-format.md#changes-from-the-chat)).
+- The AI can change the menu (a dish, a swap, a pause, a new draw, an undo) and a short list of settings (reminders, batch days, lunch time, weekly rules, guests, foods the asker adds to their own avoided list, the shopping stores, its own instructions, a new recipe). A change the person asked for is made at once, and the bot answers with what changed and how to undo it. A change the AI comes up with on its own is shown first and made only after that person says yes. Settings are saved as one git commit in the data repo. Pills, the pills reminder, calories, protein, goals and taking a food off an avoided list are never on the list ([data format](data-format.md#changes-from-the-chat)).
 - A plugin provider can also offer to do something outside the chat, such as a pull request with a change to the app that a person reviews and merges. The bot shows it and carries it out only after a yes from the person who asked, or from one of `bot.admins` when the plugin says an admin must approve ([data format](data-format.md#settingsyaml)).
 - When the bot addresses a person (a reminder for them, the lunch-pills check, the AI telling someone what to do), it uses their Telegram @handle so Telegram notifies them. It looks each username up at start; `bot.handles` overrides it, and someone without a username keeps their name.
 - Reminders fire once each, inside a 10-minute window after their time: plain messages, today's meal with its recipe link, batch days, shopping day, defrosting, and lunch pills not logged yet.
 
-The AI gets the household, today's and tomorrow's plates, the week and the last week of logs. In a private chat it sees only the asker's own pills, notes, weigh-ins and logs. In the group it leaves out weigh-ins, binges, cravings, nausea and notes unless `bot.share_logs_in_group` is set. Group messages are kept as context only when the AI is asked (`bot.history_scope: all` keeps them all). It is told never to change a dose and never to suggest eating less after a binge.
+The AI gets the household, today's and tomorrow's plates, the menu of this week and the next with the paused days, the recipe list and the last week of logs. In a private chat it sees only the asker's own pills, notes, weigh-ins and logs. In the group it leaves out weigh-ins, binges, cravings, nausea and notes unless `bot.share_logs_in_group` is set. Group messages are kept as context only when the AI is asked (`bot.history_scope: all` keeps them all). It is told never to change a dose and never to suggest eating less after a binge.
 
-Everything the AI sees goes to the provider you configure. With a local model nothing leaves your network. A provider with web search can find a video or a recipe for a dish; it is told to compare it with your recipe and say what differs.
+Everything the AI sees goes to the provider you configure. With a local model nothing leaves your network. A provider with web search can find a video or a recipe for a dish; it is told to compare it with your recipe and say what differs. It is also told to look up a fact the household's data does not hold (a nutrition guideline, what a food contains), answer with the figure and its source, and only then say what a clinician should confirm, instead of sending the person to ask their doctor.
 
 ## Other chat apps
 

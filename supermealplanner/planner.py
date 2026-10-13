@@ -16,7 +16,8 @@ from __future__ import annotations
 import datetime as dt
 import os
 import random
-from dataclasses import asdict, dataclass, field
+import threading
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -25,6 +26,7 @@ from .model import WEEKDAYS, Data, Recipe
 
 ATTEMPTS = 400
 VARIETY_DAYS = 6  # the same recipe is not cooked again within this many days
+PLAN_LOCK = threading.Lock()  # one writer at a time for the plan files and the paused days
 
 
 @dataclass
@@ -154,14 +156,93 @@ def plans_dir(data: Data) -> Path:
     return data.state / "plans"
 
 
-def plan_for(data: Data, day: dt.date) -> Plan | None:
-    """The newest plan that covers `day`."""
+def plan_for(data: Data, day: dt.date, raw: bool = False) -> Plan | None:
+    """The newest plan that covers `day`, without the days the household paused. raw: the plan as
+    it is on disk, for code that changes it."""
     best = None
     for p in sorted(plans_dir(data).glob("*.yaml")):
         plan = load_plan(p)
         if plan.start <= day < plan.end:
             best = plan
-    return best
+    return best if raw or best is None else without(best, paused_days(data))
+
+
+# ---------------------------------------------------------------- paused days
+
+
+def paused_days(data: Data) -> set[dt.date]:
+    """The days the household said it eats off the plan (state/paused.yaml, one date per line).
+    A pause ends by itself: the days after it are planned as before."""
+    try:
+        raw = yaml.safe_load((data.state / "paused.yaml").read_text(encoding="utf-8")) or []
+    except (OSError, yaml.YAMLError):
+        return set()
+    out = set()
+    for x in raw if isinstance(raw, list) else []:
+        try:
+            out.add(x if isinstance(x, dt.date) else dt.date.fromisoformat(str(x)))
+        except ValueError:
+            continue
+    return out
+
+
+def save_paused(data: Data, days: set[dt.date]) -> None:
+    path = data.state / "paused.yaml"
+    tmp = path.with_suffix(".yaml.tmp")
+    tmp.write_text(yaml.safe_dump(sorted(d.isoformat() for d in days)), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def without(plan: Plan, hidden: set[dt.date]) -> Plan:
+    """The plan as the household sees it while `hidden` days are paused: those days have no dishes,
+    and nothing is cooked on them. A lunch for a later day that a paused day would have cooked is
+    cooked on the first day back instead (that morning when it is eaten the same day). The plan on
+    disk is untouched, so taking the pause away brings everything back."""
+    if not hidden:
+        return plan
+    one = dt.timedelta(days=1)
+
+    def moved(cook: dt.date, eat: dt.date) -> dt.date:
+        while cook in hidden and cook < eat:
+            cook += one
+        return cook
+
+    days = [
+        replace(d, lunch_cook=moved(d.lunch_cook, d.date))
+        for d in plan.days
+        if d.date not in hidden
+    ]
+    sessions: dict[tuple[dt.date, bool], Session] = {}
+    for s in plan.sessions:
+        for x in s.dishes:
+            eat = [e for e in x.eat if e not in hidden]
+            if not eat:
+                continue
+            cook = moved(x.cook, eat[0])
+            key = (s.date, s.morning) if cook == x.cook else (cook, cook == eat[0])
+            if key not in sessions:
+                busy = list(s.busy) if cook == x.cook else []
+                sessions[key] = Session(date=key[0], morning=key[1], busy=busy)
+            sessions[key].dishes.append(Dish(recipe=x.recipe, cook=cook, eat=eat))
+    ordered = sorted(sessions.values(), key=lambda s: (s.date, not s.morning))
+    return Plan(start=plan.start, weeks=plan.weeks, seed=plan.seed, days=days, sessions=ordered)
+
+
+def nibbles(data: Data, day: Day, n: int = 3) -> list[Recipe]:
+    """Up to `n` other snacks to pick at between meals that day: never a treat, never with an
+    avoided ingredient, never the day's own snack. The same day always gets the same list."""
+    ids = sorted(
+        r.id
+        for r in data.recipes.values()
+        if "snack" in r.meals
+        and not r.has("treat")
+        and r.id != day.snack
+        and _eligible(data, r, "snack", day.date.month)
+    )
+    if not ids:
+        return []
+    k = day.date.toordinal() % len(ids)
+    return [data.recipes[i] for i in (ids[k:] + ids[:k])[:n]]
 
 
 # ---------------------------------------------------------------- selection helpers
@@ -530,8 +611,9 @@ def repair(data: Data, plan: Plan, today: dt.date) -> int:
 # ---------------------------------------------------------------- validation
 
 
-def validate(data: Data, plan: Plan) -> list[str]:
-    """Every hard rule a plan must meet. Empty list = valid."""
+def validate(data: Data, plan: Plan, repeats: bool = True) -> list[str]:
+    """Every hard rule a plan must meet. Empty list = valid. repeats: also the limit on how often
+    a dish is cooked, which is for a draw; a dish someone asked for by name may go over it."""
     errs: list[str] = []
     hh = data.household
     rules = hh.rules
@@ -586,6 +668,8 @@ def validate(data: Data, plan: Plan) -> list[str]:
         ):
             if n(tag) < minimum:
                 errs.append(f"week {w + 1}: {label} {n(tag)} < {minimum}")
+    if not repeats:
+        return errs
     fresh: dict[str, int] = {}
     for s in plan.sessions:
         for x in s.dishes:
