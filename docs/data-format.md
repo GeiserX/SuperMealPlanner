@@ -55,7 +55,8 @@ people:
       lunch: [{name: Omega-3, dose: 1 softgel}]
       dinner: []
       bedtime: []
-    notes: ["Drinks more water on hot days"]
+    notes: ["Drinks more water on hot days"]   # yours, by hand; the chat never changes them
+    chat_notes: []              # what the household told the assistant; it adds and removes these
   - id: sam
     name: Sam
     sex: female
@@ -147,7 +148,20 @@ A plugin can also offer to do something outside the chat, such as opening a pull
 
 ### Changes from the chat
 
-The AI ends its answer with a `change` block, and the app makes the change for the person who was talking. The block may change a short list of settings: `household.lunch_time`, `shopping_day`, `guests`, `batch.preferred_days`, `batch.sessions_per_week`, the weekly `rules`, additions to the asker's own `avoid_ingredients`, `shopping.primary` and `alternatives`, `sections`, `reminders` other than the `pills_lunch` one, `llm.instructions` (how the assistant answers: the whole new text, at most 4000 characters; the confirmation shows only the lines that change), and a new recipe. Pills, the pills reminder, calorie and protein targets and goals are never on it. Avoided foods are often medical, so nobody can change another person's list from the chat, and a food comes off a list only by hand. When the block says `asked: true` (the person asked for exactly this change), the bot makes it at once and answers with what changed, the commit id and how to undo it. Without it (the change is the AI's own idea) the bot shows the change in plain words and waits for that person to answer yes or no; in the group the answer has to reply to the bot or mention it, so an "ok" said to someone else is not a yes. Either way the limits above hold. To save settings it pulls the data repo, edits the file (comments and layout stay), runs the same validation as `smp check` on a copy, and pushes one git commit, so every change can be reverted. That needs the data folder to be a git checkout and `SMP_GIT_WRITE_TOKEN` (a token that may push to the data repo). Without them the bot shows the change for a person to make by hand.
+The AI ends its answer with a `change` block, and the app makes the change for the person who was talking. The block may change a short list of settings: `household.lunch_time`, `shopping_day`, `guests`, `batch.preferred_days`, `batch.sessions_per_week`, the weekly `rules`, additions to the asker's own `avoid_ingredients`, `shopping.primary` and `alternatives`, `sections`, `reminders` other than the `pills_lunch` one, `llm.instructions` (how the assistant answers: the whole new text, at most 4000 characters; the confirmation shows only the lines that change), a new recipe, and some fields of a recipe that exists (`name`, `meals`, `tags`, `season`, `serves_note`, `video`, `steps`, `ingredients`, `nutrition`; never `id`, `kind` or how long it keeps). It may also add to and remove from a person's `chat_notes`, the facts the household told the assistant (at most 20 per person, 300 characters each). A person's `notes` are written by hand and the chat never changes them. Pills, the pills reminder, calorie and protein targets and goals are never on it. Avoided foods are often medical, so nobody can change another person's list from the chat, and a food comes off a list only by hand. When the block says `asked: true` (the person asked for exactly this change), the bot makes it at once and answers with what changed, the commit id and how to undo it. Without it (the change is the AI's own idea) the bot shows the change in plain words and waits for that person to answer yes or no; in the group the answer has to reply to the bot or mention it, so an "ok" said to someone else is not a yes. Either way the limits above hold. To save settings it pulls the data repo, edits the file (comments and layout stay), runs the same validation as `smp check` on a copy, and pushes one git commit, so every change can be reverted. That needs the data folder to be a git checkout and `SMP_GIT_WRITE_TOKEN` (a token that may push to the data repo). Without them the bot shows the change for a person to make by hand.
+
+Recipe edits and notes go in the same block and are saved in the same commit:
+
+```yaml
+asked: true
+recipes:
+  porridge: {meals: []}            # only the fields that change; an empty meals list retires it from the plan
+notes:
+  - add: {person: ana, text: Works 9 to 14 on Tuesdays}
+  - remove: {person: ana, text: Works 9 to 14 on Tuesdays}   # the exact text of a chat note
+```
+
+When a recipe loses a meal, the days already planned from tomorrow on get another dish for that meal, and the bot says how many.
 
 The same block changes the menu with a `plan` list. Menu changes are written under `state/`, not to git, so they need no token ([how it works](how-it-works.md#changing-the-menu)):
 

@@ -174,6 +174,7 @@ class Person(Loose):
     avoid_tags_at_dinner: list[str] = []
     pills: dict[str, list[Pill]] = {}
     notes: list[str] = []
+    chat_notes: list[str] = []  # facts the household told the assistant; the chat may edit these
 
     @model_validator(mode="after")
     def _pill_slots(self) -> Person:
