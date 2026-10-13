@@ -350,6 +350,8 @@ def apply(data: Data, ops: list[Op], today: dt.date) -> None:
             new = [e for e in errs if e not in known.get(p, ())]
             if new:
                 raise MenuError("; ".join(new[:3]))
+        if not touched and paused == was:
+            return  # nothing changes: the copy for undo stays the one of the last real change
         _snapshot(data)
         for p in touched:
             if p in plans:

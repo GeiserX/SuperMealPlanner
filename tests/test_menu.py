@@ -274,6 +274,7 @@ def test_the_last_menu_change_can_be_undone_once(data_dir):
         data, {"pause": {"from": str(D(1)), "to": str(D(6))}}, {"regenerate": {"from": str(D(7))}}
     )
     assert plan_for(data, D(7)).start == D(7) and paused_days(data)
+    change(data, {"pause": {"from": str(D(1)), "to": str(D(6))}})  # already paused: no change
     change(data, {"undo": True})
     after = plan_for(data, MONDAY)
     assert not paused_days(data) and after.days == before.days and after.start == MONDAY

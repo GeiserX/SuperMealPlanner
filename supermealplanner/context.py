@@ -186,7 +186,7 @@ def facts(
         if not plan:
             continue
         out.append(f"\n## {t.date(day)}")
-        if not plan.day(day):
+        if not plan.day(day) and day in paused_days(data):
             out.append("- paused: the household eats off the plan this day")
         for pd in person_days(data, db, plan, day):
             out.append(
