@@ -570,7 +570,7 @@ def repair(
     recipe was deleted or renamed (any date, so old weeks still display), or, from today on, when it
     now breaks the household's avoided ingredients or dinner rules. A lunch cooked before today stays
     as it is (it is in the fridge); the caller is told about it. retired: (recipe, meal) pairs
-    the household just took away ("no toast at breakfast"), replaced from today on as well.
+    the household just took away ("no porridge at breakfast"), replaced from today on as well.
     Returns (slots changed, cooked lunches that now break a rule).
     """
     retired = retired or set()

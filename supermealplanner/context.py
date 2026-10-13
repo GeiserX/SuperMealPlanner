@@ -56,8 +56,8 @@ The menu you may change, any day and any meal (breakfast, lunch, side, snack, di
 - regenerate: a new draw of the plan from a Monday on; the days before it stay.
 - undo: the last menu change is taken back.
 Recipes that exist you may change too: name, meals, tags, season, serves_note, video, steps,
-ingredients and nutrition (not id, kind or how long it keeps). "No bread at breakfast" is taking
-breakfast out of the meals of the bread recipes: the app then gives the days planned from tomorrow
+ingredients and nutrition (not id, kind or how long it keeps). "No porridge at breakfast" is taking
+breakfast out of the meals of the porridge recipes: the app then gives the days planned from tomorrow
 on another dish for that meal. `meals: []` retires a recipe from the plan without deleting it.
 
 Facts the household tells you about a person that matter later (a work schedule, a like or

@@ -155,7 +155,7 @@ Recipe edits and notes go in the same block and are saved in the same commit:
 ```yaml
 asked: true
 recipes:
-  toast: {meals: []}            # only the fields that change; an empty meals list retires it from the plan
+  porridge: {meals: []}            # only the fields that change; an empty meals list retires it from the plan
 notes:
   - add: {person: ana, text: Works 9 to 14 on Tuesdays}
   - remove: {person: ana, text: Works 9 to 14 on Tuesdays}   # the exact text of a chat note

@@ -9,7 +9,7 @@ The AI ends an answer with one fenced block:
       settings.reminders.water: {at: ["11:00", "17:00"]}
     recipe: {id: lentil-stew, name: Lentil stew, ...}
     recipes:        # fields of recipes that exist; a meal taken away also leaves the planned days
-      toast: {meals: []}
+      porridge: {meals: []}
     notes:          # facts about a person, kept in their chat_notes
       - add: {person: ana, text: Works 9 to 14 on Tuesdays}
       - remove: {person: ana, text: Works 9 to 14 on Tuesdays}
