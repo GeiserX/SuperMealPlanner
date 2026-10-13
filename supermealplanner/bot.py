@@ -4,7 +4,8 @@ Setup (settings.yaml, `bot`): create a bot with @BotFather, put its token in the
 token_env, add the bot to the household group, send /chatid there and copy the id into bot.chat_id.
 Map each person to their Telegram user id in bot.people.
 
-In a private chat the bot always answers. In the group it answers only a message that mentions its
+In a private chat the bot always answers. A voice note is always answered, in the group too, because
+it cannot mention the bot. In the group it answers only a text message that mentions its
 @handle or replies to it. Telegram shows a bot with privacy mode on (the default) only commands and
 replies to it, so for mentions make the bot a group admin or turn privacy off (BotFather,
 /setprivacy -> Disable). The bot logs a warning at start when it cannot see them.
@@ -370,15 +371,13 @@ class Bot:
         if voice and not msg.get("text"):
             if not self.allowed(chat, user.get("id", 0)) or not cfg.voice:
                 return
-            replied = self.replied(msg)
-            keep_all = cfg.history_scope == "all"
-            if not (private or replied or keep_all):
-                return  # a group voice note calls the bot only as a reply, and nothing is kept
+            # a voice note always calls the bot, in the group too: it cannot mention or reply by itself
+            asked, keep_all = True, cfg.history_scope == "all"
             try:
                 text = await self.transcribe(client, voice)
             except Exception as e:  # noqa: BLE001
                 log.warning("transcription failed: %s", safe(e))
-                if private or replied:
+                if asked:
                     await self.send(
                         client,
                         chat["id"],
@@ -388,7 +387,6 @@ class Bot:
                     )
                 return
             who = self.person_of(user.get("id", 0))
-            asked = private or replied
             if asked or keep_all:
                 self.state.db.add_chat(
                     chat["id"], "user", who or user.get("first_name"), f"🎤 {text}"

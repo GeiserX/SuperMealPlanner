@@ -281,7 +281,8 @@ class Bot(Loose):
     history: int = 20  # recent messages kept as context for the AI
     # in a group the AI answers only a message that mentions the bot's @handle or replies to it; a
     # private chat always gets an answer
-    voice: bool = True  # transcribe voice notes; in a group only one that replies to the bot
+    # a voice note is always transcribed and answered, in the group too: it cannot mention the bot
+    voice: bool = True
     private_chats: bool = True  # people in bot.people may also talk to the bot privately
     group_open: bool = False  # True: anyone in the group may use the bot, not only bot.people
     sync_profile: bool = True  # at start, set the bot's command menu and descriptions in Telegram
