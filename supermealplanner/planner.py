@@ -14,6 +14,7 @@ with another seed. Same inputs, same plan.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 import random
 import threading
@@ -27,6 +28,8 @@ from .model import WEEKDAYS, Data, Recipe
 ATTEMPTS = 400
 VARIETY_DAYS = 6  # the same recipe is not cooked again within this many days
 PLAN_LOCK = threading.Lock()  # one writer at a time for the plan files and the paused days
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -264,6 +267,29 @@ def _eligible(data: Data, r: Recipe, meal: str, month: int) -> bool:
     return True
 
 
+def _avoided_in(data: Data, r: Recipe) -> list[str]:
+    avoided = data.household.avoided()
+    return sorted({i.id for i in r.ingredients if i.id in avoided})
+
+
+def fixed_conflicts(data: Data) -> list[str]:
+    """One line per fixed breakfast or snack (treats included) that uses an avoided ingredient.
+    The planner leaves those out of the rotation instead of failing the plan."""
+    out = []
+    for r in sorted(data.recipes.values(), key=lambda r: r.id):
+        for meal in ("breakfast", "snack"):
+            if meal not in r.meals or not (
+                r.kind == "fixed" or (meal == "snack" and r.has("treat"))
+            ):
+                continue
+            bad = _avoided_in(data, r)
+            if bad:
+                out.append(
+                    f"fixed {meal} {r.id} uses avoided {', '.join(bad)}: left out of the plan"
+                )
+    return out
+
+
 def _glp1_phase(data: Data, d: dt.date) -> str:
     """early (1-3 days after an injection), late (4-6), injection day, or none."""
     for p in data.household.people:
@@ -320,6 +346,8 @@ def generate(
         raise ValueError(f"{start} is not a Monday")
     busy = busy or {}
     base_seed = seed if seed is not None else int(start.strftime("%Y%m%d"))
+    for warning in fixed_conflicts(data):
+        log.warning(warning)
     last_err: list[str] = []
     for attempt in range(ATTEMPTS):
         plan = _draft(data, start, weeks, busy, previous, base_seed + attempt)
@@ -445,14 +473,21 @@ def _draft(data, start, weeks, busy, previous, seed) -> Plan:
         ids = [
             r.id
             for r in data.recipes.values()
-            if meal in r.meals and r.kind == "fixed" and not (exclude_tag and r.has(exclude_tag))
+            if meal in r.meals
+            and r.kind == "fixed"
+            and not (exclude_tag and r.has(exclude_tag))
+            and not _avoided_in(data, r)
         ]
         rng.shuffle(ids)
         return ids or [""]
 
     breakfasts = rotation("breakfast")
     snacks = rotation("snack", "treat")
-    treats = [r.id for r in data.recipes.values() if "snack" in r.meals and r.has("treat")]
+    treats = [
+        r.id
+        for r in data.recipes.values()
+        if "snack" in r.meals and r.has("treat") and not _avoided_in(data, r)
+    ]
     sides = [
         r.id
         for r in data.recipes.values()

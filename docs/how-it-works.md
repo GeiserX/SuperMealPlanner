@@ -7,7 +7,7 @@ The planner is plain code: the same data and the same start date always give the
 1. It picks two batch afternoons a week from `batch.preferred_days`, skipping afternoons with a calendar event between `calendar.busy_afternoon` times.
 2. Each batch dish covers up to two lunches. A lunch eaten more than `fridge_days` after cooking comes from the freezer, so only dishes that freeze can go there. The batch sheet says which container goes where and when to move it to the fridge.
 3. Dinners are quick or need no cooking. They are scored toward the week's missing legumes and fish, toward light dishes after a GLP-1 injection, and toward guest dishes on Sunday.
-4. Breakfasts and snacks rotate through fixed staples. A `treat` snack lands on Saturday.
+4. Breakfasts and snacks rotate through fixed staples. A `treat` snack lands on Saturday. A staple that uses an avoided ingredient is left out of the rotation, and the plan logs a warning naming the staple and the ingredient instead of failing.
 5. A side salad is added whenever neither lunch nor dinner is a salad.
 6. The validator checks every hard rule. A failing draft is redrawn with the next seed, up to 400 times.
 

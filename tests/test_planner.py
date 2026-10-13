@@ -48,6 +48,41 @@ def test_avoided_ingredients_and_dinner_tags(data):
     assert not {d.dinner for d in plan.days} & {"gazpacho", "fritura"}
 
 
+def _add_recipe(data_dir, r):
+    import yaml
+
+    (data_dir / "recipes" / f"{r['id']}.yaml").write_text(yaml.safe_dump(r, allow_unicode=True))
+
+
+def test_breakfast_and_snack_rotation_skips_avoided_ingredients(data_dir, caplog):
+    from .conftest import recipe
+
+    spinach = [{"id": "espinaca", "qty": 50}, {"id": "egg", "qty": 2}]
+    _add_recipe(data_dir, recipe("desayuno-verde", ["breakfast"], "fixed", "egg", [], spinach))
+    _add_recipe(data_dir, recipe("merienda-verde", ["snack"], "fixed", "egg", [], spinach))
+    data = load(data_dir)
+    with caplog.at_level("WARNING", logger="supermealplanner.planner"):
+        plan = generate(data, MONDAY, 4)
+    assert validate(data, plan) == []
+    assert "desayuno-verde" not in {d.breakfast for d in plan.days}
+    assert "merienda-verde" not in {d.snack for d in plan.days}
+    assert all(d.breakfast and d.snack for d in plan.days)
+    assert "fixed breakfast desayuno-verde uses avoided espinaca" in caplog.text
+    assert "fixed snack merienda-verde uses avoided espinaca" in caplog.text
+
+
+def test_only_fixed_snack_with_avoided_ingredient_still_plans(data_dir, caplog):
+    p = data_dir / "recipes" / "merienda-a.yaml"
+    p.write_text(p.read_text().replace("id: yogur", "id: espinaca"))
+    data = load(data_dir)
+    with caplog.at_level("WARNING", logger="supermealplanner.planner"):
+        plan = generate(data, MONDAY, 4)
+    assert validate(data, plan) == []
+    assert "merienda-a" not in {d.snack for d in plan.days}
+    assert {d.snack for d in plan.days if d.date.weekday() == 5} == {"treat"}
+    assert "fixed snack merienda-a uses avoided espinaca" in caplog.text
+
+
 def test_weekly_minimums(data):
     plan = generate(data, MONDAY, 4)
     for w in range(4):
