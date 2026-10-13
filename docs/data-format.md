@@ -98,8 +98,7 @@ bot:
   people: {alex: 111111111, sam: 222222222}   # person id -> Telegram user id
   handles: {sam: "@sam_cooks"}  # optional: how to @mention someone; looked up from Telegram when left out
   admins: [alex]              # optional: whose yes approves what only an admin may (a plugin's pull request)
-  voice: true                 # transcribe voice notes; in the group only one that replies to the bot
-  voice_in_group: reply       # reply | any: any answers every voice note in the group (a voice note cannot @mention)
+  voice: true                 # transcribe voice notes; every one is answered, in the group too
   private_chats: true         # people in bot.people may also write to the bot privately
   group_open: false           # true: anyone in the group may use the bot, not only bot.people
   sync_profile: true          # at start, set the bot's command menu and descriptions in Telegram

@@ -4,7 +4,8 @@ Setup (settings.yaml, `bot`): create a bot with @BotFather, put its token in the
 token_env, add the bot to the household group, send /chatid there and copy the id into bot.chat_id.
 Map each person to their Telegram user id in bot.people.
 
-In a private chat the bot always answers. In the group it answers only a message that mentions its
+In a private chat the bot always answers. A voice note is always answered, in the group too, because
+it cannot mention the bot. In the group it answers only a text message that mentions its
 @handle or replies to it. Telegram shows a bot with privacy mode on (the default) only commands and
 replies to it, so for mentions make the bot a group admin or turn privacy off (BotFather,
 /setprivacy -> Disable). The bot logs a warning at start when it cannot see them.
@@ -370,11 +371,8 @@ class Bot:
         if voice and not msg.get("text"):
             if not self.allowed(chat, user.get("id", 0)) or not cfg.voice:
                 return
-            # a group voice note calls the bot as a reply, or always when voice_in_group is any
-            asked = private or self.replied(msg) or cfg.voice_in_group == "any"
-            keep_all = cfg.history_scope == "all"
-            if not (asked or keep_all):
-                return  # nobody called the bot, and nothing is kept
+            # a voice note always calls the bot, in the group too: it cannot mention or reply by itself
+            asked, keep_all = True, cfg.history_scope == "all"
             try:
                 text = await self.transcribe(client, voice)
             except Exception as e:  # noqa: BLE001
@@ -919,8 +917,7 @@ class Bot:
                 )
         lines += ["", t("bot_about_log"), "", t("bot_about_ask")]
         if cfg.bot.voice and cfg.transcription.provider != "none":
-            any_note = cfg.bot.voice_in_group == "any"
-            lines.append(t("bot_about_voice_any" if any_note else "bot_about_voice"))
+            lines.append(t("bot_about_voice"))
         if cfg.llm.provider == "none":
             lines.append(t("bot_no_llm"))
         else:

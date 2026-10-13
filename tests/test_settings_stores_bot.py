@@ -246,8 +246,8 @@ def test_a_group_never_sends_every_message_to_the_ai_but_a_private_chat_does(dat
     assert b.asked == [7]
 
 
-def test_voice_notes_reach_the_ai_privately_or_as_a_reply(data_dir, tmp_path):
-    data = bot_data(data_dir, wake_words=["cenamos"])  # a word said in the note calls nothing
+def test_voice_notes_always_reach_the_ai_even_in_the_group(data_dir, tmp_path):
+    data = bot_data(data_dir)
     db = DB(tmp_path / "b.db")
     b = FakeBot(data, db, MONDAY)
     heard = []
@@ -258,27 +258,18 @@ def test_voice_notes_reach_the_ai_privately_or_as_a_reply(data_dir, tmp_path):
         return await transcribe(client, voice)
 
     b.transcribe = counting
-    run(b.handle(None, msg(voice={"file_id": "f"})))  # group, nobody called the bot
-    assert b.asked == [] and db.recent_chat(-100, 5) == []
-    assert heard == []  # not even transcribed
-    run(b.handle(None, msg(voice={"file_id": "f"}, chat=7, user=7)))  # private: always
-    assert b.asked == [7]
-    assert "cenamos" in db.recent_chat(7, 5)[-1]["text"]
-    reply = {"from": {"username": "chefbot"}}
-    run(b.handle(None, msg(voice={"file_id": "f"}, reply_to_message=reply)))
-    assert b.asked == [7, -100] and len(heard) == 2
-
-
-def test_every_group_voice_note_is_answered_when_the_household_says_so(data_dir, tmp_path):
-    data = bot_data(data_dir, voice_in_group="any")
-    db = DB(tmp_path / "b.db")
-    b = FakeBot(data, db, MONDAY)
-    run(b.handle(None, msg(voice={"file_id": "f"})))  # a plain voice note in the group
-    assert b.asked == [-100]
+    run(b.handle(None, msg(voice={"file_id": "f"})))  # a plain group note: nobody called the bot
+    assert b.asked == [-100] and len(heard) == 1
     assert "cenamos" in db.recent_chat(-100, 5)[-1]["text"]
     assert b.sent[-1][1].startswith("🎤")  # it writes down what it heard first
+    run(b.handle(None, msg(voice={"file_id": "f"}, chat=7, user=7)))  # private: always
+    assert b.asked == [-100, 7]
     run(b.handle(None, msg(voice={"file_id": "f"}, user=999)))  # a stranger still gets nothing
-    assert b.asked == [-100]
+    run(b.handle(None, msg(voice={"file_id": "f"}, chat=-999)))  # another chat too
+    assert b.asked == [-100, 7] and len(heard) == 2
+    data.settings.bot.voice = False  # the switch still turns transcription off
+    run(b.handle(None, msg(voice={"file_id": "f"})))
+    assert len(heard) == 2
 
 
 def test_reminders_fire_once_in_their_window(data_dir, tmp_path):
