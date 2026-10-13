@@ -18,7 +18,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .model import Data
@@ -34,6 +34,7 @@ from .planner import (
     load_plan,
     paused_days,
     plans_dir,
+    repair,
     save_paused,
     validate,
 )
@@ -319,6 +320,25 @@ def _undo(data: Data) -> None:
     if (keep / "paused.yaml").exists():
         shutil.copy2(keep / "paused.yaml", paused)
     shutil.rmtree(keep, ignore_errors=True)
+
+
+def retire(data: Data, pairs: set[tuple[str, str]], start: dt.date) -> int:
+    """A recipe was taken out of a meal: give the days planned from `start` on another dish for it.
+    Returns how many days changed. The plans as they were are kept for undo."""
+    with PLAN_LOCK:
+        changed, days = {}, 0
+        for path, plan in _load(data).items():
+            before = [asdict(d) for d in plan.days]
+            repair(data, plan, start, retired=pairs)
+            moved = sum(1 for old, d in zip(before, plan.days, strict=True) if old != asdict(d))
+            if moved:
+                changed[path] = plan
+                days += moved
+        if changed:
+            _snapshot(data)
+            for path, plan in changed.items():
+                plan.save(path)
+        return days
 
 
 def apply(data: Data, ops: list[Op], today: dt.date) -> None:

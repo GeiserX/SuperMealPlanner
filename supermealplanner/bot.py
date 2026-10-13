@@ -632,8 +632,9 @@ class Bot:
         except changes.ChangeError as e:
             return t("change_invalid", error=e)
         lines = changes.describe(proposal, self.data, t)
-        out = []
-        if proposal.edits or proposal.recipe is not None:
+        out, sha = [], None
+        retired = changes.retired(proposal, self.data)
+        if proposal.edits or proposal.recipe is not None or proposal.recipes or proposal.notes:
             token = os.environ.get("SMP_GIT_WRITE_TOKEN", "")
             if not token:
                 by_hand = t("change_manual") + "\n\n" + "\n".join(changes.manual(proposal))
@@ -661,6 +662,16 @@ class Bot:
                     log.warning("settings change failed: %s", safe(e))
                     return t("change_failed", error=type(e).__name__)
                 out.append(t("change_saved" if asked else "change_applied", sha=sha))
+        if retired and sha:
+            # the recipe left a meal: the days already planned from tomorrow on lose it too
+            try:
+                start = self.state.today() + dt.timedelta(days=1)
+                n = await asyncio.to_thread(menu.retire, self.data, retired, start)
+            except Exception as e:  # noqa: BLE001  the recipe is saved; the plan keeps it for now
+                log.warning("replacing a retired recipe failed: %s", safe(e))
+                n = 0
+            if n:
+                out.append(t("recipe_replanned", n=n))
         if proposal.plan:
             try:
                 async with self.writing:
@@ -1011,9 +1022,14 @@ class Bot:
             if not d and monday + dt.timedelta(days=i) in paused:
                 lines.append(f"{t.raw('days_short')[i]}: {t('paused_short')}")
             if d:
-                lines.append(
-                    f"{t.raw('days_short')[i]}: {self.data.recipes[d.lunch].name if d.lunch in self.data.recipes else '?'} / {self.data.recipes[d.dinner].name if d.dinner in self.data.recipes else '?'}"
+                dishes = " · ".join(
+                    f"{icon} {self.data.recipes[rid].name if rid in self.data.recipes else '?'}"
+                    for icon, rid in zip(
+                        "☕🍲🍎🌙", (d.breakfast, d.lunch, d.snack, d.dinner), strict=True
+                    )
+                    if rid
                 )
+                lines.append(f"{t.raw('days_short')[i]}: {dishes}")
         lines.append(self.url(f"/week?d={monday.isoformat()}"))
         return "\n".join(lines)
 

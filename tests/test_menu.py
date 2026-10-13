@@ -443,3 +443,158 @@ def test_the_week_and_the_day_show_breakfast_snack_and_nibbles(data_dir, monkeyp
     b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
     assert "To nibble: " + ", ".join(picks) in b.day_text(D(2))
     assert "Para picar" == Translator("es")("nibble_title")
+
+
+# ---------------------------------------------------------------- recipes and notes
+
+
+def committed(data_dir, tmp_path, monkeypatch):
+    """The data folder as a clone the bot may push from, with a plan."""
+    from .test_conversations import git
+
+    remote = tmp_path / "data.git"
+    git(tmp_path, "init", "--bare", "-q", "-b", "main", str(remote))
+    data = plugin_data(data_dir)
+    (data_dir / ".gitignore").write_text("state/\n*.db\nplugins/*.json*\n")
+    git(data_dir, "init", "-q", "-b", "main")
+    git(data_dir, "add", ".")
+    git(data_dir, "commit", "-q", "-m", "data")
+    git(data_dir, "remote", "add", "origin", str(remote))
+    git(data_dir, "push", "-q", "-u", "origin", "main")
+    monkeypatch.setenv("SMP_GIT_WRITE_TOKEN", "token")
+    return data, remote
+
+
+def test_a_recipe_taken_out_of_a_meal_leaves_the_days_planned_from_tomorrow(
+    data_dir, tmp_path, monkeypatch
+):
+    path = data_dir / "recipes" / "desayuno-a.yaml"
+    path.write_text("# the house yoghurt\n" + path.read_text())
+    data, remote = committed(data_dir, tmp_path, monkeypatch)
+    before = plan_for(data, MONDAY)
+    assert sum(d.breakfast == "desayuno-a" for d in before.days) > 5
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    reply(
+        data_dir,
+        text=block({"asked": True, "recipes": {"desayuno-a": {"meals": [], "tags": ["dairy"]}}}),
+    )
+    run(b.handle(None, msg("@chefbot nada de yogur en el desayuno")))
+    said = ChatBot.texts(b, -100)[-1]
+    assert said.startswith("Done:") and "Recipe Desayuno a, meals: breakfast → (none)" in said
+    assert "planned days from tomorrow on get another dish" in said
+    new = b.state.data.recipes["desayuno-a"]
+    assert new.meals == [] and new.tags == ["dairy"] and new.kind == "fixed"
+    assert path.read_text().startswith("# the house yoghurt\n")  # the file keeps its comments
+    after = plan_for(b.state.data, MONDAY)
+    assert after.day(D(0)).breakfast == before.day(D(0)).breakfast  # today stays as planned
+    assert all(d.breakfast == "desayuno-b" for d in after.days[1:])
+    assert [d.lunch for d in after.days] == [d.lunch for d in before.days]
+    from .test_conversations import git
+
+    assert "Recipe Desayuno a" in git(remote, "log", "-1", "--format=%s")
+    reply(data_dir, text=block({"asked": True, "plan": [{"undo": True}]}))
+    run(b.handle(None, msg("@chefbot deshaz el menú")))
+    assert plan_for(b.state.data, MONDAY).days == before.days
+
+
+def test_only_some_fields_of_an_existing_recipe_change_and_the_data_must_still_check(
+    data_dir, tmp_path, monkeypatch
+):
+    data, _ = committed(data_dir, tmp_path, monkeypatch)
+    for raw, why in (
+        ({"recipes": {"nope": {"meals": []}}}, "no recipe nope"),
+        ({"recipes": {"fritura": {"kind": "batch"}}}, "kind cannot be changed"),
+        ({"recipes": {"fritura": {"id": "otra"}}}, "id cannot be changed"),
+        ({"recipes": {"fritura": {"fridge_days": 9}}}, "cannot be changed"),
+        ({"recipes": {"fritura": {}}}, "fields that change"),
+        ({"recipes": []}, "must map"),
+    ):
+        with pytest.raises(changes.ChangeError, match=why):
+            changes.parse(raw, data, "luis")
+    text = (data_dir / "recipes" / "fritura.yaml").read_text()
+    for fields, why in (
+        ({"ingredients": [{"id": "no-existe", "qty": 10}]}, "unknown ingredient"),
+        ({"meals": ["supper"]}, "would not validate"),
+        ({"nutrition": {"kcal": -5, "protein_g": 1}}, "would not validate"),
+    ):
+        p = changes.parse({"recipes": {"fritura": fields}}, data, "luis")
+        with pytest.raises(changes.ChangeError, match=why):
+            changes.apply(data_dir, p, "chat: bad", "token")
+        assert (data_dir / "recipes" / "fritura.yaml").read_text() == text
+    good = {
+        "name": "Fritura ligera",
+        "ingredients": [{"id": "merluza", "qty": 120}],
+        "nutrition": {"kcal": 380, "protein_g": 30},
+        "steps": ["Enharinar.", "Freír."],
+    }
+    p = changes.parse({"recipes": {"fritura": good}}, data, "luis")
+    lines = "\n".join(changes.describe(p, data, Translator("en")))
+    assert "Recipe Fritura, name: Fritura → Fritura ligera" in lines
+    assert "steps: 1 steps → 2 steps" in lines and "merluza 120" in lines
+    changes.apply(data_dir, p, "chat: ok", "token")
+    r = load(data_dir).recipes["fritura"]
+    assert (r.name, r.nutrition.kcal, len(r.steps)) == ("Fritura ligera", 380, 2)
+    assert r.kind == "quick" and r.meals == ["dinner"]  # what was not sent stays
+
+
+def test_the_chat_keeps_its_own_notes_and_never_touches_the_ones_written_by_hand(
+    data_dir, tmp_path, monkeypatch
+):
+    raw = yaml.safe_load((data_dir / "household.yaml").read_text())
+    raw["people"][0]["notes"] = ["Follow-up with the clinic in spring"]
+    (data_dir / "household.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    data, _ = committed(data_dir, tmp_path, monkeypatch)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    note = "Works 9 to 14 on Tuesdays"
+    reply(
+        data_dir, text=block({"asked": True, "notes": [{"add": {"person": "ana", "text": note}}]})
+    )
+    run(b.handle(None, msg("@chefbot los martes Ana trabaja de 9 a 14")))
+    assert f"Note about Ana: {note}" in ChatBot.texts(b, -100)[-1]
+    ana = b.state.data.household.person("ana")
+    assert ana.chat_notes == [note] and ana.notes == ["Follow-up with the clinic in spring"]
+    group = context.facts(b.state.data, b.state.db, MONDAY, None, True)
+    assert f"chat note: {note}" in group and "note: Follow-up with the clinic" in group
+    # privately, someone else never sees them
+    assert note not in context.facts(b.state.data, b.state.db, MONDAY, "luis", False)
+    for bad, why in (
+        ([{"remove": {"person": "ana", "text": "Follow-up with the clinic in spring"}}], "by hand"),
+        ([{"remove": {"person": "ana", "text": "something else"}}], "exact text"),
+        ([{"add": {"person": "ana", "text": note}}], "already there"),
+        ([{"add": {"person": "ana", "text": "x" * 301}}], "300 characters"),
+        ([{"add": {"person": "nadie", "text": "x"}}], "no person"),
+        ([{"edit": {"person": "ana", "text": "x"}}], "add or remove"),
+        ([{"add": {"person": "ana", "text": f"n{i}"}} for i in range(20)], "at most 20"),
+    ):
+        with pytest.raises(changes.ChangeError, match=why):
+            changes.parse({"notes": bad}, b.state.data, "luis")
+    for path in ("household.people.ana.notes", "household.people.ana.chat_notes"):
+        with pytest.raises(changes.ChangeError, match="cannot be changed"):
+            changes.parse({"set": {path: []}}, b.state.data, "ana")
+    edit = [
+        {"remove": {"person": "ana", "text": note}},
+        {"add": {"person": "ana", "text": "Works 9 to 15 on Tuesdays"}},
+    ]
+    reply(data_dir, text=block({"asked": True, "notes": edit}))
+    run(b.handle(None, msg("@chefbot es hasta las 15")))
+    ana = b.state.data.household.person("ana")
+    assert ana.chat_notes == ["Works 9 to 15 on Tuesdays"]
+    assert ana.notes == ["Follow-up with the clinic in spring"]
+
+
+def test_the_rules_teach_recipe_edits_and_notes(data):
+    rules = context.rules(data)
+    for needle in ("recipes:\n", "notes:\n", "- add: {person:", "meals: []", "chat note"):
+        assert needle in rules, needle
+
+
+def test_the_week_message_lists_breakfast_and_snack_too(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    week = run(b.cmd_week("luis", "", {})).splitlines()
+    day = plan_for(data, MONDAY).day(D(2))
+    names = [data.recipes[x].name for x in (day.breakfast, day.lunch, day.snack, day.dinner)]
+    assert week[3] == "Wed: " + " · ".join(
+        f"{i} {n}" for i, n in zip("☕🍲🍎🌙", names, strict=True)
+    )
+    assert len(week) == 9  # title, seven days, the link

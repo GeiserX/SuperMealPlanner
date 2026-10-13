@@ -185,7 +185,7 @@ bot_about_voice: "Las notas de voz me llegan por privado; en el grupo, mandádme
 # conversación con la IA y cambios de ajustes desde el chat
 bot_new: "Conversación nueva: he olvidado lo que hablamos. Vuestro plan y vuestros datos siguen aquí."
 bot_cmd_new: Empezar una conversación nueva conmigo
-bot_about_changes: "⚙️ Cambios\nPedidme cambiar el menú: otro plato para un día, intercambiar dos días, una pausa mientras coméis lo que tenéis en casa, o un menú nuevo a partir de un lunes. Pedidme también un recordatorio, los días de batch, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, las tiendas de la compra, cómo os respondo o una receta nueva. Lo que me pedís lo hago al momento y os digo qué ha cambiado; se puede deshacer. Cuando la idea es mía, os la enseño y espero vuestro sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
+bot_about_changes: "⚙️ Cambios\nPedidme cambiar el menú: otro plato para un día, intercambiar dos días, una pausa mientras coméis lo que tenéis en casa, o un menú nuevo a partir de un lunes. Pedidme también un recordatorio, los días de batch, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, las tiendas de la compra, cómo os respondo, una receta nueva o un cambio en una que ya tenéis (por ejemplo, quitarla del desayuno). Contadme cosas de cada uno que deba tener en cuenta y las apunto. Lo que me pedís lo hago al momento y os digo qué ha cambiado; se puede deshacer. Cuando la idea es mía, os la enseño y espero vuestro sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
 change_confirm: "{name}, ¿hago este cambio?\n{lines}\nResponde a este mensaje con «sí» o «no»."
 change_yes_words: ["sí", "si", "vale", "ok", "okay", "claro", "dale", "adelante", "venga", "yes"]
 change_no_words: ["no", "nop", "cancela", "cancelar"]
@@ -220,6 +220,20 @@ change_section: "Sección de la lista {name}"
 change_reminder: "Recordatorio «{name}»"
 change_recipe: "Receta nueva: {name} ({n} ingredientes)"
 change_instructions: Instrucciones del asistente
+change_recipe_edit: "Receta {name}, {field}"
+change_recipe_field_name: nombre
+change_recipe_field_meals: comidas
+change_recipe_field_tags: etiquetas
+change_recipe_field_season: temporada (meses)
+change_recipe_field_serves_note: nota de ración
+change_recipe_field_video: vídeo
+change_recipe_field_steps: pasos
+change_recipe_field_ingredients: ingredientes
+change_recipe_field_nutrition: valores nutricionales
+change_recipe_steps: "{n} pasos"
+change_note_add: "Nota sobre {name}: {text}"
+change_note_remove: "Nota sobre {name} eliminada: {text}"
+recipe_replanned: "{n} días ya planificados, de mañana en adelante, pasan a tener otro plato en su lugar."
 change_plan_set: "{day}, {meal}: {old} → {new}"
 change_plan_swap: "{a} y {b} intercambian todas sus comidas"
 change_plan_swap_meal: "{a} y {b} intercambian su {meal}"

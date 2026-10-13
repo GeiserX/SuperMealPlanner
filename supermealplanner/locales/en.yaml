@@ -186,7 +186,7 @@ bot_about_voice: "Voice notes reach me in a private chat; in the group, reply to
 # AI conversation and settings changes from the chat
 bot_new: "New conversation: I've forgotten what we talked about. Your plan and data are still here."
 bot_cmd_new: Start a new conversation with me
-bot_about_changes: "⚙️ Changes\nAsk me to change the menu: another dish for a day, two days swapped, a pause while you eat what you have at home, or a new draw from a Monday. Ask me too for a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, the shopping stores, how I answer, or a new recipe. What you ask for I do at once and tell you what changed; it can be undone. When the idea is mine, I show it and wait for your yes. Pills, calories and goals are never changed from the chat."
+bot_about_changes: "⚙️ Changes\nAsk me to change the menu: another dish for a day, two days swapped, a pause while you eat what you have at home, or a new draw from a Monday. Ask me too for a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, the shopping stores, how I answer, a new recipe or a change to one you have (for example taking it out of breakfast). Tell me things about each of you that I should keep in mind and I note them. What you ask for I do at once and tell you what changed; it can be undone. When the idea is mine, I show it and wait for your yes. Pills, calories and goals are never changed from the chat."
 change_confirm: "{name}, shall I change this?\n{lines}\nReply to this message with «yes» or «no»."
 change_yes_words: ["yes", "y", "ok", "okay", "sure", "go"]
 change_no_words: ["no", "n", "nope", "cancel"]
@@ -221,6 +221,20 @@ change_section: "List section {name}"
 change_reminder: "Reminder «{name}»"
 change_recipe: "New recipe: {name} ({n} ingredients)"
 change_instructions: The assistant's instructions
+change_recipe_edit: "Recipe {name}, {field}"
+change_recipe_field_name: name
+change_recipe_field_meals: meals
+change_recipe_field_tags: tags
+change_recipe_field_season: season (months)
+change_recipe_field_serves_note: serving note
+change_recipe_field_video: video
+change_recipe_field_steps: steps
+change_recipe_field_ingredients: ingredients
+change_recipe_field_nutrition: nutrition
+change_recipe_steps: "{n} steps"
+change_note_add: "Note about {name}: {text}"
+change_note_remove: "Note about {name} removed: {text}"
+recipe_replanned: "{n} planned days from tomorrow on get another dish in its place."
 change_plan_set: "{day}, {meal}: {old} → {new}"
 change_plan_swap: "{a} and {b} swap all their meals"
 change_plan_swap_meal: "{a} and {b} swap their {meal}"

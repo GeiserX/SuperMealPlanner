@@ -8,13 +8,20 @@ The AI ends an answer with one fenced block:
       household.lunch_time: "14:30"
       settings.reminders.water: {at: ["11:00", "17:00"]}
     recipe: {id: lentil-stew, name: Lentil stew, ...}
+    recipes:        # fields of recipes that exist; a meal taken away also leaves the planned days
+      toast: {meals: []}
+    notes:          # facts about a person, kept in their chat_notes
+      - add: {person: ana, text: Works 9 to 14 on Tuesdays}
+      - remove: {person: ana, text: Works 9 to 14 on Tuesdays}
     plan:           # the menu itself, see menu.py
       - set: {date: 2026-01-14, meal: dinner, recipe: tuna-salad}
     ```
 
 Only the paths in ALLOWED can change; pills, calorie and protein targets and goals never can. Avoided
 foods are often medical (a drug interaction, a kidney diet): a person may only add to their own list,
-and only by hand can a food come off it. The pills reminder never changes from the chat. Applying
+and only by hand can a food come off it. The pills reminder never changes from the chat. A person's
+`notes` are written by hand and are often medical: the chat only adds to and removes from the
+separate `chat_notes` list. Applying
 edits the files in the data folder (keeping their comments), runs the same validation as
 `smp check` on a copy first, and makes one git commit that is pushed to the data repo, so every
 change can be reverted. Without a git checkout and SMP_GIT_WRITE_TOKEN nothing is written: the bot
@@ -66,6 +73,20 @@ ALLOWED = {
     "settings.reminders.*": "reminder",
     "settings.llm.instructions": "instructions",
 }
+# what a change may set on a recipe that exists; id and kind, and how it keeps, stay by hand
+RECIPE_FIELDS = (
+    "name",
+    "meals",
+    "tags",
+    "season",
+    "serves_note",
+    "video",
+    "steps",
+    "ingredients",
+    "nutrition",
+)
+NOTES_MAX = 20  # chat notes per person
+NOTE_MAX = 300  # characters in one
 INSTRUCTIONS_MAX = 4000  # characters of the assistant's own instructions a chat change may set
 LISTS_BY_ID = {"people", "reminders"}  # lists whose items are addressed by their id
 BLOCK = re.compile(r"```change[ \t]*\n(.*?)```", re.DOTALL)
@@ -91,6 +112,8 @@ class Edit:
 class Proposal:
     edits: list[Edit] = field(default_factory=list)
     recipe: dict | None = None
+    recipes: dict[str, dict] = field(default_factory=dict)  # recipe id -> the fields that change
+    notes: list[tuple[str, str, str]] = field(default_factory=list)  # (add|remove, person, text)
     plan: list[menu.Op] = field(default_factory=list)  # menu changes, written under state/
     asked: bool = False  # the person asked for exactly this: no yes/no round
     raw: dict = field(default_factory=dict)  # JSON-safe, kept while the bot waits for a yes
@@ -128,9 +151,11 @@ PROTECTED_REMINDER_KINDS = {"pills_lunch"}  # never added, edited or removed fro
 def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
     """Check a proposed change against the allow-list, for the household member who asked. Raises
     ChangeError with the reason."""
-    unknown = set(raw) - {"set", "recipe", "plan", "asked"}
-    if unknown:
-        raise ChangeError(f"unknown keys {sorted(unknown)}; use set, recipe, plan and asked")
+    known = {"set", "recipe", "recipes", "notes", "plan", "asked"}
+    if set(raw) - known:
+        raise ChangeError(
+            f"unknown keys {sorted(set(raw) - known)}; use {', '.join(sorted(known))}"
+        )
     out = Proposal(raw=raw, asked=raw.get("asked") is True)
     sets = raw.get("set") or {}
     if not isinstance(sets, dict):
@@ -189,13 +214,82 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
         if rid in data.recipes or (data.root / "recipes" / f"{rid}.yaml").exists():
             raise ChangeError(f"a recipe {rid} already exists; only new recipes can be added")
         out.recipe = recipe
+    out.recipes = _recipe_edits(raw.get("recipes"), data)
+    out.notes = _notes(raw.get("notes"), data)
     if raw.get("plan") is not None:
         try:
             out.plan = menu.parse(raw["plan"], data, (out.recipe or {}).get("id"))
         except menu.MenuError as e:
             raise ChangeError(str(e)) from None
-    if not out.edits and out.recipe is None and not out.plan:
+    if not (out.edits or out.recipe is not None or out.recipes or out.notes or out.plan):
         raise ChangeError("the change is empty")
+    return out
+
+
+def _recipe_edits(raw, data: Data) -> dict[str, dict]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        raise ChangeError("recipes must map a recipe id to the fields that change")
+    for rid, fields in raw.items():
+        if rid not in data.recipes:
+            raise ChangeError(f"no recipe {rid}; a new one goes under recipe")
+        if not isinstance(fields, dict) or not fields:
+            raise ChangeError(f"recipes.{rid} must be the fields that change")
+        bad = set(fields) - set(RECIPE_FIELDS)
+        if bad:
+            raise ChangeError(
+                f"recipes.{rid}: {', '.join(sorted(map(str, bad)))} cannot be changed from the "
+                f"chat; only {', '.join(RECIPE_FIELDS)}"
+            )
+    return raw
+
+
+def _notes(raw, data: Data) -> list[tuple[str, str, str]]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not raw:
+        raise ChangeError("notes must be a list of add and remove")
+    out = []
+    have = {p.id: list(p.chat_notes) for p in data.household.people}
+    for item in raw:
+        if (
+            not isinstance(item, dict)
+            or len(item) != 1
+            or next(iter(item)) not in ("add", "remove")
+        ):
+            raise ChangeError("each note change is add or remove, with person and text")
+        op, args = next(iter(item.items()))
+        if not isinstance(args, dict) or set(args) != {"person", "text"}:
+            raise ChangeError(f"{op} needs person and text")
+        pid, text = str(args["person"]), " ".join(str(args["text"]).split())
+        if pid not in have:
+            raise ChangeError(f"no person {pid}")
+        if op == "remove":
+            if text not in have[pid]:
+                raise ChangeError(
+                    "only a note the chat added can be removed, by its exact text; "
+                    "notes written by hand are changed by hand"
+                )
+            have[pid].remove(text)
+        else:
+            if not text or len(text) > NOTE_MAX:
+                raise ChangeError(f"a note is 1 to {NOTE_MAX} characters")
+            if text in have[pid]:
+                raise ChangeError("that note is already there")
+            if len(have[pid]) >= NOTES_MAX:
+                raise ChangeError(f"at most {NOTES_MAX} chat notes per person; remove one first")
+            have[pid].append(text)
+        out.append((op, pid, text))
+    return out
+
+
+def retired(p: Proposal, data: Data) -> set[tuple[str, str]]:
+    """(recipe id, meal) pairs a recipe edit takes away: the planned days must lose them too."""
+    out = set()
+    for rid, fields in p.recipes.items():
+        if isinstance(fields.get("meals"), list) and rid in data.recipes:
+            out |= {(rid, m) for m in data.recipes[rid].meals if m not in fields["meals"]}
     return out
 
 
@@ -271,8 +365,48 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
                 n=len(p.recipe.get("ingredients") or []),
             )
         )
+    for rid, fields in p.recipes.items():
+        r = data.recipes[rid]
+        for key, value in fields.items():
+            old = getattr(r, key, None)
+            lines.append(
+                "• "
+                + t("change_recipe_edit", name=r.name, field=t(f"change_recipe_field_{key}"))
+                + f": {_recipe_value(key, _plain(old), t)} → {_recipe_value(key, value, t)}"
+            )
+    for op, pid, text in p.notes:
+        name = data.household.person(pid).name
+        lines.append("• " + t(f"change_note_{op}", name=name, text=text))
     new = {p.recipe["id"]: p.recipe.get("name")} if p.recipe else None
     return lines + menu.describe(p.plan, data, t, new)
+
+
+def _plain(value):
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value.model_dump() if hasattr(value, "model_dump") else value
+
+
+def _recipe_value(key: str, value, t) -> str:
+    """A recipe field in a line of chat: the long ones as a count, the rest in full."""
+    if value is None or value in ("", []):
+        return t("change_none")
+    if key == "meals" and isinstance(value, list):
+        return ", ".join(t(f"meal_{m}").lower() if m in MEALS else str(m) for m in value)
+    if key == "steps" and isinstance(value, list):
+        return t("change_recipe_steps", n=len(value))
+    if key == "ingredients" and isinstance(value, list):
+        return ", ".join(
+            f"{i.get('id')} {i.get('qty'):g}" if isinstance(i.get("qty"), int | float) else str(i)
+            for i in value
+            if isinstance(i, dict)
+        )
+    if key == "nutrition" and isinstance(value, dict):
+        return f"{value.get('kcal', '?')} kcal, {value.get('protein_g', '?')} g"
+    return _show(value, t)
+
+
+MEALS = ("breakfast", "lunch", "dinner", "snack")
 
 
 def _text_diff(old: str, new: str) -> list[str]:
@@ -293,6 +427,13 @@ def manual(p: Proposal) -> list[str]:
     if p.recipe is not None:
         lines.append(f"recipes/{p.recipe['id']}.yaml:")
         lines.append(yaml.safe_dump(p.recipe, allow_unicode=True, sort_keys=False).strip())
+    for rid, fields in p.recipes.items():
+        for key, value in fields.items():
+            lines.append(f"recipe {rid}: {key} = {json.dumps(value, ensure_ascii=False)}")
+    for op, pid, text in p.notes:
+        lines.append(
+            f"household.yaml: people.{pid}.chat_notes {op} {json.dumps(text, ensure_ascii=False)}"
+        )
     return lines
 
 
@@ -386,12 +527,21 @@ def _assign(node, key, value) -> None:
 def render(root: Path, p: Proposal) -> dict[str, str]:
     """The new text of every file the change touches, comments kept."""
     out: dict[str, str] = {}
-    for name in dict.fromkeys(e.file for e in p.edits):
+    names = [e.file for e in p.edits] + (["household.yaml"] if p.notes else [])
+    for name in dict.fromkeys(names):
         path = root / name
         y, doc = _yaml(path.read_text(encoding="utf-8") if path.exists() else "")
         for e in p.edits:
             if e.file == name:
                 _set(doc, e.keys, e.value)
+        for op, pid, text in p.notes if name == "household.yaml" else ():
+            person = _child(_child(doc, "people", True), pid, False)
+            if person.get("chat_notes") is None:
+                person["chat_notes"] = CommentedSeq()
+            if op == "add":
+                person["chat_notes"].append(_quote(text))
+            else:
+                person["chat_notes"].remove(text)
         buf = io.StringIO()
         y.dump(doc, buf)
         out[name] = buf.getvalue()
@@ -399,7 +549,31 @@ def render(root: Path, p: Proposal) -> dict[str, str]:
         out[f"recipes/{p.recipe['id']}.yaml"] = yaml.safe_dump(
             p.recipe, allow_unicode=True, sort_keys=False
         )
+    for rid, fields in p.recipes.items():
+        path = _recipe_file(root, rid)
+        y, doc = _yaml(path.read_text(encoding="utf-8"))
+        for key, value in fields.items():
+            if value is None:
+                doc.pop(key, None)
+            else:
+                _assign(doc, key, value)
+        buf = io.StringIO()
+        y.dump(doc, buf)
+        out[str(path.relative_to(root))] = buf.getvalue()
     return out
+
+
+def _recipe_file(root: Path, rid: str) -> Path:
+    """The file that holds a recipe: named after its id, or whichever says `id: <rid>`."""
+    named = root / "recipes" / f"{rid}.yaml"
+    for path in [named, *sorted((root / "recipes").glob("*.yaml"))]:
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(raw, dict) and raw.get("id") == rid:
+            return path
+    raise ChangeError(f"no file for recipe {rid}")
 
 
 def validate(root: Path, texts: dict[str, str]) -> None:

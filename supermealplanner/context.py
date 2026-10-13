@@ -55,6 +55,18 @@ The menu you may change, any day and any meal (breakfast, lunch, side, snack, di
   shopping reminders stay silent. A pause ends by itself; resume ends it early.
 - regenerate: a new draw of the plan from a Monday on; the days before it stay.
 - undo: the last menu change is taken back.
+Recipes that exist you may change too: name, meals, tags, season, serves_note, video, steps,
+ingredients and nutrition (not id, kind or how long it keeps). "No bread at breakfast" is taking
+breakfast out of the meals of the bread recipes: the app then gives the days planned from tomorrow
+on another dish for that meal. `meals: []` retires a recipe from the plan without deleting it.
+
+Facts the household tells you about a person that matter later (a work schedule, a like or
+dislike, how they eat on certain days) you keep as chat notes on that person; they come back in the
+data below as "chat note". Add one when you are told such a fact, without being asked to remember.
+To change one, remove it by its exact text and add the new one. The plain "note" lines are written
+by hand, often medical: you cannot change or remove them, say so when asked. At most 20 chat notes
+per person, 300 characters each. Never put a dose, a diagnosis or a target in a chat note.
+
 "We have food for this week, the plan starts next Monday" is a pause until Sunday and, when they
 want other dishes, a regenerate from that Monday. Dates are YYYY-MM-DD; the recipe ids, the menu and
 the paused days are in the data below. The app refuses a menu change that breaks a hard rule (an
@@ -79,6 +91,11 @@ set:
   settings.llm.instructions: |   # the whole new text: the current instructions with the change made
     ...
 recipe: {id: <new-id>, name: ..., meals: [lunch], kind: batch, ingredients: [{id: <ingredient id>, qty: 80}], steps: [...], nutrition: {kcal: 550, protein_g: 35}}
+recipes:
+  <existing recipe id>: {meals: [snack], tags: [light]}   # only the fields that change, each one whole
+notes:
+  - add: {person: <person id>, text: Works 9 to 14 on Tuesdays}
+  - remove: {person: <person id>, text: <the exact text of a chat note>}
 plan:
   - set: {date: 2026-01-14, meal: dinner, recipe: <recipe id>}
   - swap: {a: 2026-01-14, b: 2026-01-16, meal: dinner}   # without meal: the whole day
@@ -163,6 +180,8 @@ def facts(
                 )
         for note in p.notes:
             out.append(f"  - note: {note}")
+        for note in p.chat_notes:
+            out.append(f"  - chat note: {note}")
         share = not group or data.settings.bot.share_logs_in_group
         w = db.weights(p.id)[-4:] if share else []
         if w:

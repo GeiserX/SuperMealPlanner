@@ -561,15 +561,19 @@ def _breaks_household(data: Data, rid: str, meal: str) -> bool:
     return False
 
 
-def repair(data: Data, plan: Plan, today: dt.date) -> int:
+def repair(
+    data: Data, plan: Plan, today: dt.date, retired: set[tuple[str, str]] | None = None
+) -> int:
     """Fix a plan in place after the data changed, touching only the slots that must change.
 
     A plan is never redone, because lunches may already be cooked. A slot gets a substitute when its
     recipe was deleted or renamed (any date, so old weeks still display), or, from today on, when it
     now breaks the household's avoided ingredients or dinner rules. A lunch cooked before today stays
-    as it is (it is in the fridge); the caller is told about it. Returns (slots changed, cooked
-    lunches that now break a rule).
+    as it is (it is in the fridge); the caller is told about it. retired: (recipe, meal) pairs
+    the household just took away ("no toast at breakfast"), replaced from today on as well.
+    Returns (slots changed, cooked lunches that now break a rule).
     """
+    retired = retired or set()
     uses: dict[str, int] = {}
     last: dict[str, dt.date] = {}
     for d in plan.days:
@@ -590,6 +594,10 @@ def repair(data: Data, plan: Plan, today: dt.date) -> int:
                 continue
             if meal == "lunch" and gap > r.fridge_days and not r.freezes:
                 continue
+            if meal == "snack" and r.has("treat") != (
+                old in data.recipes and data.recipes[old].has("treat")
+            ):
+                continue  # a treat replaces a treat only
             if meal in ("lunch", "dinner") and _breaks_household(data, r.id, meal):
                 continue
             recent = r.id in last and abs((when - last[r.id]).days) < VARIETY_DAYS
@@ -608,7 +616,9 @@ def repair(data: Data, plan: Plan, today: dt.date) -> int:
         groups.setdefault((d.lunch, d.lunch_cook), []).append(d)
     for (rid, cook), days in groups.items():
         gone = rid not in data.recipes
-        bad = gone or (cook >= today and _breaks_household(data, rid, "lunch"))
+        bad = gone or (
+            cook >= today and (_breaks_household(data, rid, "lunch") or (rid, "lunch") in retired)
+        )
         if not bad:
             if cook < today and _breaks_household(data, rid, "lunch") and days[-1].date >= today:
                 cooked_bad += 1
@@ -635,7 +645,9 @@ def repair(data: Data, plan: Plan, today: dt.date) -> int:
             if not rid:
                 continue
             gone = rid not in data.recipes
-            if gone or (d.date >= today and _breaks_household(data, rid, meal)):
+            if gone or (
+                d.date >= today and (_breaks_household(data, rid, meal) or (rid, meal) in retired)
+            ):
                 new = pick("lunch" if meal == "side" else meal, kinds, d.date, rid, tag=tag)
                 if new:
                     setattr(d, meal, new)
