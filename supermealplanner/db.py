@@ -1,4 +1,5 @@
-"""SQLite store for what people log: weight, waist, the daily line, and calorie target changes."""
+"""SQLite store for what people log: weight, waist, the daily line, calorie target changes, and the
+one-off reminders the chat sets."""
 
 from __future__ import annotations
 
@@ -38,6 +39,10 @@ CREATE TABLE IF NOT EXISTS baseline (
 CREATE TABLE IF NOT EXISTS target (
   person TEXT NOT NULL, day TEXT NOT NULL, kcal REAL NOT NULL, reason TEXT NOT NULL,
   PRIMARY KEY (person, day)
+);
+CREATE TABLE IF NOT EXISTS reminder (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL, person TEXT, at REAL NOT NULL,
+  text TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', by INTEGER, created TEXT NOT NULL
 );
 """
 
@@ -287,6 +292,54 @@ class DB:
                 "ON CONFLICT(person) DO UPDATE SET kcal=excluded.kcal, day=excluded.day",
                 (person, kcal, day.isoformat()),
             )
+
+    # one-off reminders: posted in their chat at `at` (epoch seconds), then marked sent
+    def add_reminder(
+        self, chat: int, person: str | None, at: float, text: str, by: int | None = None
+    ) -> int:
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT INTO reminder(chat, person, at, text, by, created) VALUES (?,?,?,?,?,?)",
+                (
+                    chat,
+                    person,
+                    at,
+                    text[:500],
+                    by,
+                    dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+                ),
+            )
+            return cur.lastrowid
+
+    def reminders(self, chat: int | None = None, state: str = "pending") -> list[dict]:
+        """A chat's reminders in that state (every chat's without one), soonest first."""
+        q, args = "SELECT * FROM reminder WHERE state=?", [state]
+        if chat is not None:
+            q += " AND chat=?"
+            args.append(chat)
+        with self.conn() as c:
+            return [dict(r) for r in c.execute(q + " ORDER BY at, id", args).fetchall()]
+
+    def reminder(self, rid: int) -> dict | None:
+        with self.conn() as c:
+            r = c.execute("SELECT * FROM reminder WHERE id=?", (rid,)).fetchone()
+        return dict(r) if r else None
+
+    def due_reminders(self, now: float) -> list[dict]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT * FROM reminder WHERE state='pending' AND at<=? ORDER BY at, id", (now,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def settle_reminder(self, rid: int, state: str) -> bool:
+        """Move a pending reminder to `sent` or `cancelled`; False when it was no longer pending,
+        so two taps or a tap and the clock settle it once."""
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE reminder SET state=? WHERE id=? AND state='pending'", (state, rid)
+            )
+            return cur.rowcount == 1
 
     # small values the app learns at run time (e.g. a group's new id after an upgrade)
     def get_kv(self, key: str):

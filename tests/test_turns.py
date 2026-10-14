@@ -471,7 +471,9 @@ def test_a_mention_added_to_a_message_an_earlier_turn_saw_is_still_answered(data
     b, db = setup(data_dir, tmp_path, history_scope="all")
     run(b.handle(None, msg("qué cenamos", message_id=1)))  # context only
     run(b.handle(None, msg("@chefbot hola", message_id=2)))  # its turn takes the line above
-    assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["luis: qué cenamos\nluis: @chefbot hola"]
+    assert lines(data_dir, "turns.jsonl")[-1]["new"] == [
+        "[not to you] luis: qué cenamos\nluis: @chefbot hola"
+    ]
     run(b.edited(None, msg("@chefbot qué cenamos", message_id=1)))
     assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["luis: @chefbot qué cenamos"]
     assert db.find_chat(-100, 1)["text"] == "@chefbot qué cenamos"

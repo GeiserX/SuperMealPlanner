@@ -291,6 +291,9 @@ class Bot(Loose):
         False  # True: the AI may discuss binge, craving and note logs in the group
     )
     history_scope: Literal["asked", "all"] = "asked"  # which group messages are kept as AI context
+    # the AI's offer of a reminder also shows "In the calendar": a tap starts a turn in which the
+    # provider adds the event with its own calendar tools (a plugin that has them)
+    reminder_calendar: bool = False
 
 
 class LLM(Loose):
