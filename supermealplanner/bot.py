@@ -2073,7 +2073,14 @@ class Bot:
         db, t = self.state.db, self.t
         r = db.reminder(int(rid)) if rid.isdigit() else None
         message = query.get("message") or {}
-        if r is None or r["chat"] != chat_id or not db.settle_reminder(r["id"], "cancelled"):
+        if r is None or r["chat"] != chat_id:
+            await self.toast(client, query, t("tap_gone"))
+            return
+        uid = (query.get("from") or {}).get("id")
+        if self.person_of(uid or 0) is None and uid != r["by"]:  # a stranger under group_open
+            await self.toast(client, query, t("reminder_not_yours"))
+            return
+        if not db.settle_reminder(r["id"], "cancelled"):
             await self.toast(client, query, t("tap_gone"))
             return
         await self.toast(client, query, t("reminder_cancelled"))

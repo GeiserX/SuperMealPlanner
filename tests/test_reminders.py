@@ -264,6 +264,18 @@ def test_reminders_lists_them_and_a_cancel_button_cancels_one(data_dir, tmp_path
     assert not [p for p in sends(b, -100) if p["text"].startswith("⏰ Luis: Cook")]
 
 
+def test_a_stranger_let_in_by_group_open_cannot_cancel_a_reminder(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path, group_open=True)
+    _, soon = ahead(1, 9)
+    rid = db.add_reminder(-100, "luis", soon, "Cook", 7)
+    own = db.add_reminder(-100, None, soon, "Theirs", 50)
+    run(tap(b, f"k:{rid}:1", 50, 1))
+    assert toasts(b)[-1] == "Only the household or whoever set it can cancel a reminder."
+    assert {r["id"] for r in db.reminders(-100)} == {rid, own}
+    run(tap(b, f"k:{own}:2", 50, 1))  # the one they set themselves
+    assert [r["id"] for r in db.reminders(-100)] == [rid]
+
+
 def test_reminders_with_none_says_so(data_dir, tmp_path):
     b, _ = setup(data_dir, tmp_path)
     run(b.handle(None, msg("/reminders", message_id=1)))
