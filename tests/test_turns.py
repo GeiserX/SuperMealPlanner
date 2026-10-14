@@ -312,6 +312,31 @@ def test_an_ask_is_approved_by_the_asker_only_and_the_result_is_said(data_dir, t
     assert lines(data_dir, "turns.jsonl")[0]["ask"] is True
 
 
+def test_a_strangers_ask_goes_to_the_admins_under_group_open(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path, group_open=True, admins=["luis"])
+    cfg(data_dir, ask=True)
+
+    def posted():
+        return [p for p in sends(b, -100) if "do you approve" in p["text"]]
+
+    async def go():
+        turn = asyncio.create_task(
+            b.handle(None, msg("@chefbot comida con Ana", user=50, message_id=1))
+        )
+        await until(lambda: posted())
+        approve, _reject = buttons(posted()[0])
+        mid = next(1000 + n + 1 for n, (m, p) in enumerate(b.calls) if p is posted()[0])
+        await tap(b, approve["callback_data"], 50, mid)
+        assert lines(data_dir, "answers.jsonl") == []
+        await tap(b, approve["callback_data"], 7, mid)
+        await turn
+        await drain(b)
+
+    run(go())
+    (decision,) = lines(data_dir, "answers.jsonl")
+    assert decision["approved"] is True and decision["by"] == "7"
+
+
 def test_an_ask_nobody_can_answer_is_declined_at_once(data_dir, tmp_path):
     b, _ = setup(data_dir, tmp_path)  # no admins
     cfg(data_dir, ask=True, confirm_by="admins")

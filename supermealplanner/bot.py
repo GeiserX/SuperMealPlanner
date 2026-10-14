@@ -995,10 +995,11 @@ class Bot:
         return ask
 
     def _approvers(self, turn_state: Turn, confirm_by) -> list[int]:
-        """Who may answer an ask: the person the turn answers, or the admins when it is asked of
-        them or when the turn carries several people's messages."""
+        """Who may answer an ask: the person the turn answers when that person is in the household,
+        or the admins when it is asked of them, when the turn carries several people's messages, or
+        when the asker is a stranger let in by bot.group_open."""
         users = turn_state.users()
-        if confirm_by == "asker" and len(users) == 1:
+        if confirm_by == "asker" and len(users) == 1 and self.person_of(users[0]) is not None:
             return users
         cfg = self.data.settings.bot
         return [cfg.people[pid] for pid in cfg.admins if pid in cfg.people]
