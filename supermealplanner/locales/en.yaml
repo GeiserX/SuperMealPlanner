@@ -273,7 +273,7 @@ remind_offer: "{name}, shall I remind you?\n{lines}\n\nIf you do not answer, I d
 remind_offer_nobody: "Shall I set a reminder?\n{lines}\n\nIf you do not answer, I do nothing."
 remind_here: "Reminder here"
 remind_calendar: "In the calendar"
-remind_nothing: "Nothing"
+remind_nothing: "No"
 remind_timeout: "No answer: nothing"
 remind_set: "I will remind you here on {when}."
 remind_set_log: "⏰ Reminder set for {when}: {text}"

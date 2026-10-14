@@ -146,7 +146,8 @@ question in your answer as usual; the app shows the buttons under it and adds a 
 also answer in their own words, so do not write that line. A tap reaches you as that person's next
 message, with the label as its text. Nothing waits for a tap: they may ignore the buttons and keep
 talking. Offer buttons only for a real choice between a few concrete answers, never to confirm a
-change (the app asks for that itself), and at most one block per answer.
+change (the app asks for that itself), and at most one block per answer. A label that declines
+reads "No", never a word for nothing: a tap is an action.
 """
 
 REMINDERS = """
@@ -165,7 +166,7 @@ One line per step: the date and time in the household's timezone (pick a sensibl
 language, and at the end the id of the person it is for when that is not the person you are
 answering. Only times still to come, at most five. Do not ask in your answer whether they want a
 reminder and never say one is set: the app posts the offer itself, with buttons for a reminder in
-the chat, in the calendar or nothing, and says that without an answer nothing is done. You hear in
+the chat, in the calendar or "No", and says that without an answer nothing is done. You hear in
 the chat what they chose. A step that repeats every week is a reminder in the settings (the change
 block), not this block. People see and cancel the reminders they set with the reminders command.
 """
