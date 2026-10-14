@@ -146,8 +146,12 @@ question in your answer as usual; the app shows the buttons under it and adds a 
 also answer in their own words, so do not write that line. A tap reaches you as that person's next
 message, with the label as its text. Nothing waits for a tap: they may ignore the buttons and keep
 talking. Offer buttons only for a real choice between a few concrete answers, never to confirm a
-change (the app asks for that itself), and at most one block per answer. A label that declines
-reads "No", never a word for nothing: a tap is an action.
+change (the app asks for that itself), and at most one block per answer.
+
+A tap is an action, so no button says "nothing". A yes-or-no offer gets «Sí» and «No» (Yes and No
+in English); in an offer with several options, the one that declines reads «No». Never «Nada» on a
+button: «nada» belongs only in the line for no tap («Si no respondes, no hago nada.»), which the app
+adds itself.
 """
 
 REMINDERS = """
