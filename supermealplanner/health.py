@@ -72,7 +72,9 @@ def pills(text: str) -> dict[str, dict[str, list[Pill]]] | None:
                 )
             days = med.get("days", "daily")
             if days != "daily" and (
-                not isinstance(days, list) or not days or set(days) - set(WEEKDAYS)
+                not isinstance(days, list)
+                or not days
+                or not all(isinstance(d, str) and d in WEEKDAYS for d in days)
             ):
                 raise ValueError(
                     f"health export {pid} {name}: days {days!r} is not daily or a list of weekdays"

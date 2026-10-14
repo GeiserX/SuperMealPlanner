@@ -142,9 +142,10 @@ def test_an_unknown_slot_is_refused_and_never_kept(data_dir, remote):
     assert not (data_dir / "state/health/export.yaml").exists()
 
 
-def test_bad_days_are_refused(data_dir, remote):
+@pytest.mark.parametrize("days", [["lunes"], [["monday"]], [{"d": "monday"}], [], "weekly"])
+def test_bad_days_are_refused(data_dir, remote, days):
     bad = yaml.safe_load(yaml.safe_dump(EXPORT))
-    bad["people"]["luis"]["meds"][1]["days"] = ["lunes"]
+    bad["people"]["luis"]["meds"][1]["days"] = days
     remote.body = bad
     with pytest.raises(DataError, match="days .* is not daily or a list of weekdays"):
         load(data_dir)
