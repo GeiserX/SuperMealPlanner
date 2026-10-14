@@ -161,7 +161,7 @@ def person_days(data: Data, db: DB, plan: Plan, day: dt.date) -> list[PersonDay]
             factor=f,
             kcal_target=round(f * data.household.reference_kcal),
             protein_target=p.protein_g.target,
-            pills={k: v for k, v in p.pills.items() if v},
+            pills=p.pills_on(day),
             days_since_injection=days_since_injection(p, day),
         )
         for meal in MEALS:

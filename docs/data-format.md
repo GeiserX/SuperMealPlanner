@@ -58,7 +58,7 @@ people:
       breakfast: [{name: Vitamin D3, dose: 2000 IU}]
       lunch: [{name: Omega-3, dose: 1 softgel}]
       dinner: []
-      bedtime: []
+      bedtime: [{name: Magnesium, dose: 300 mg, days: [monday, thursday]}]   # days: daily when left out
     notes: ["Drinks more water on hot days"]   # yours, by hand; the chat never changes them
     chat_notes: []              # what the household told the assistant; it adds and removes these
   - id: sam
@@ -78,6 +78,8 @@ rules:                        # per 7 days; the plan validator enforces them
 ```
 
 `swaps` changes an ingredient for one person only: their plate and the shopping list use the other ingredient in the same quantity, the recipe text stays as written, and nobody else's plate changes. Both ids must be in `ingredients.yaml`, in the same unit, and the one eaten instead must not be among the person's avoided foods. On a day in `training_days` the person's energy target is their calorie target plus `training_extra_kcal` (0 to 600; 150, roughly what 45 to 60 minutes of strength training uses above resting, when left out), so every plate of that day grows a little. `batch.avoid_days` may not hold all seven days. A week whose Monday to Wednesday, or Thursday to Sunday, are all avoided gets one session; the morning cook on the first Monday of a new plan, for that day's lunch, is the one exception to the rule.
+
+A pill with `days` shows, and counts for the lunch pills reminder, only on those weekdays. With `settings.health_export` (below), a person the export lists takes their pills from it instead of from here.
 
 `goal.mode` is `lose`, `maintain` or `gain`. `glp1` is optional: with it, plates are a little smaller for the three days after the weekly injection and a little larger from day 4, and lighter dishes are preferred early in the week.
 
@@ -133,7 +135,27 @@ reminders:
   - {id: batch, kind: batch, at: ["12:00"]}
   - {id: defrost, kind: defrost, at: ["21:00"]}
   - {id: lunch-pills, kind: pills_lunch, at: ["16:00"]}
+health_export:                # optional: each person's pills from a file another service keeps
+  url: https://health.example.org/export.yaml
+  token_env: HEALTH_EXPORT_TOKEN   # optional: sent as "Authorization: token <value>"
+  cache: state/health/export.yaml  # the last good copy, inside the data folder; this is the default
+  timeout_s: 5
 ```
+
+**Health export.** Another service (a health record, a doctor's app) can own the household's medicines and supplements. `health_export.url` points at a YAML file of this shape; every other key in it is ignored:
+
+```yaml
+people:
+  alex:                       # a person id from household.yaml
+    meds:
+      - {name: Vitamin D3, dose: 2000 IU, slot: breakfast, days: daily, food: "With breakfast"}
+      - {name: Weekly shot, dose: 1 mg, slot: waking, days: [monday]}
+      - {name: Sleep aid, dose: 5 mg, slot: as_needed}
+```
+
+`slot` is one of the pill slots (`waking`, `breakfast`, `lunch`, `dinner`, `bedtime`) or `as_needed`, which is taken when needed and so never shows as a daily pill. `days` is `daily` or a list of weekdays. `food` becomes the pill's note. A slot or a day the app cannot place stops the data from loading, with a clear error from `smp check`; the file is then not kept. A person listed with `meds` takes their pills from the export (an empty list means none), and household.yaml's pills stay the fallback for a person the export leaves out.
+
+The app fetches the file when the data loads: at start and every hour. It sends the ETag of the last good copy, so an unchanged file costs a 304, and keeps that copy at `cache` with a `.meta` file beside it. When a fetch fails (no answer within `timeout_s`, an error status, or something that is not an export), the last good copy is used; with no copy, everyone's pills come from household.yaml. `smp check` ends with one line per person saying where their pills came from. A check of a change from the chat never fetches: pills never change from the chat. Nothing logs the URL, the token or the file.
 
 Reminder times are `HH:MM` in the household timezone; a bad time or an unknown `{placeholder}` is rejected when the data loads. Reminder kinds: `message` sends its text (`{names}` and `{today}` are filled in); `meal` sends today's `meal` (breakfast, lunch or dinner) with where it comes from and the recipe link; `shopping` links the week's list; `batch` lists today's batch dishes, only on batch days; `defrost` fires only when tomorrow's lunch is in the freezer; `pills_lunch` asks each person with lunch pills who has not logged them yet.
 

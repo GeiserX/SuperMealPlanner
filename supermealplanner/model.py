@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import yaml
@@ -129,6 +129,17 @@ class Pill(Loose):
     name: str
     dose: str = ""
     note: str = ""
+    # a pill that is not daily: the days it is taken
+    days: list[Weekday] | Literal["daily"] = "daily"
+
+    @model_validator(mode="after")
+    def _some_day(self) -> Pill:
+        if self.days != "daily" and not self.days:
+            raise ValueError(f"pill {self.name}: days is empty, it would never be taken")
+        return self
+
+    def on(self, day: dt.date) -> bool:
+        return self.days == "daily" or WEEKDAYS[day.weekday()] in self.days
 
 
 class Goal(Loose):
@@ -192,6 +203,11 @@ class Person(Loose):
 
     def age(self, on: dt.date) -> int:
         return on.year - self.birth_year
+
+    def pills_on(self, day: dt.date) -> dict[str, list[Pill]]:
+        """The pills of that day by slot, only the slots with any."""
+        out = {slot: [x for x in pills if x.on(day)] for slot, pills in self.pills.items()}
+        return {slot: pills for slot, pills in out.items() if pills}
 
 
 class Calendar(Loose):
@@ -353,6 +369,22 @@ class Transcription(Loose):
     timeout_s: int = 600
 
 
+class HealthExport(Strict):
+    """A file another service keeps with each person's medicines (health.py)."""
+
+    url: str
+    token_env: str | None = None  # the env var with a token for the URL, sent as "token <value>"
+    cache: str = "state/health/export.yaml"  # the last good copy, under the data folder
+    timeout_s: float = Field(default=5, gt=0, le=60)
+
+    @model_validator(mode="after")
+    def _cache_inside(self) -> HealthExport:
+        p = PurePosixPath(self.cache)
+        if p.is_absolute() or ".." in p.parts or not p.name:
+            raise ValueError("health_export.cache must be a path inside the data folder")
+        return self
+
+
 class Settings(Loose):
     locale: str | None = None  # falls back to household.locale
     base_url: str = ""  # public address of the web app, used for links in bot messages
@@ -367,6 +399,7 @@ class Settings(Loose):
     toppers: list[Topper] = (
         DEFAULT_TOPPERS  # quick extras suggested when a day falls short on protein
     )
+    health_export: HealthExport | None = None  # each person's pills from another service's file
 
 
 # ---------- loading ----------
@@ -384,6 +417,8 @@ class Data(BaseModel):
     ingredients: dict[str, Ingredient]
     recipes: dict[str, Recipe]
     settings: Settings = Settings()
+    # person id -> where their pills came from, when settings.health_export is set
+    pill_sources: dict[str, str] = {}
 
     @property
     def locale(self) -> str:
@@ -404,7 +439,9 @@ def _read_yaml(path: Path):
         raise DataError(f"{path}: not valid YAML: {e}") from e
 
 
-def load(root: str | Path) -> Data:
+def load(root: str | Path, health: bool = True) -> Data:
+    """health=False leaves settings.health_export alone (a check of a copy, where pills cannot
+    change)."""
     root = Path(root)
     errors: list[str] = []
 
@@ -491,19 +528,34 @@ def load(root: str | Path) -> Data:
             if pid not in people:
                 errors.append(f"settings.yaml reminder {r.id}: unknown person {pid}")
 
+    pill_sources: dict[str, str] = {}
+    if health and settings.health_export and not errors:
+        from .health import apply
+
+        try:
+            pill_sources = apply(root, settings.health_export, household)
+        except ValueError as e:
+            errors.append(f"settings.yaml health_export: {e}")
+
     if errors:
         raise DataError("\n".join(errors))
     return Data(
-        root=root, household=household, ingredients=ingredients, recipes=recipes, settings=settings
+        root=root,
+        household=household,
+        ingredients=ingredients,
+        recipes=recipes,
+        settings=settings,
+        pill_sources=pill_sources,
     )
 
 
-def check(root: str | Path) -> str:
-    """Everything `smp check` validates: the data and every store catalogue. Returns a one-line
-    summary; raises DataError with what is wrong."""
+def check(root: str | Path, health: bool = True) -> str:
+    """Everything `smp check` validates: the data and every store catalogue. Returns a summary
+    (with where each person's pills came from, when a health export is set); raises DataError with
+    what is wrong."""
     from .stores import catalogs
 
-    data = load(root)
+    data = load(root, health=health)
     try:
         cats = catalogs(data)
     except Exception as e:  # noqa: BLE001  any broken catalogue is a data error
@@ -516,7 +568,10 @@ def check(root: str | Path) -> str:
     ]
     if unknown:
         raise DataError(f"catalogue entries for unknown ingredients: {unknown}")
-    return (
+    out = (
         f"ok: {len(data.household.people)} people, {len(data.ingredients)} ingredients, "
         f"{len(data.recipes)} recipes, {len(cats)} store catalogues"
     )
+    for pid, source in data.pill_sources.items():
+        out += f"\npills of {pid}: from {source}"
+    return out

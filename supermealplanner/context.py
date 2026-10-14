@@ -270,7 +270,12 @@ def facts(
         for slot, pills in p.pills.items():
             if pills:
                 out.append(
-                    f"  - pills {slot}: " + "; ".join(f"{x.name} {x.dose}".strip() for x in pills)
+                    f"  - pills {slot}: "
+                    + "; ".join(
+                        f"{x.name} {x.dose}".strip()
+                        + ("" if x.days == "daily" else f" (on {', '.join(x.days)})")
+                        for x in pills
+                    )
                 )
         for note in p.notes:
             out.append(f"  - note: {note}")
