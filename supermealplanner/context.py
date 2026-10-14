@@ -1,6 +1,7 @@
 """What the AI is told before it answers.
 
-rules(): the instructions, which stay the same from one message to the next.
+rules(): the instructions, which stay the same from one message to the next: the shared assistant
+principles first (principles/<language>.md), then this app's own rules.
 facts(): the household, today's and tomorrow's plates, the menu of this week and the next, the
 recipes, recent logs and the settings it may change, as of now.
 """
@@ -8,6 +9,8 @@ recipes, recent logs and the settings it may change, as of now.
 from __future__ import annotations
 
 import datetime as dt
+from functools import cache
+from pathlib import Path
 
 from .db import DB
 from .i18n import Translator
@@ -17,7 +20,7 @@ from .portions import person_days
 from .targets import current_kcal
 
 RULES = """You are the household's meal-planning assistant inside a family chat.
-- Answer in the household's language ({locale}), briefly and concretely, like a helpful cook.
+- The household's language is {locale}. Answer briefly and concretely, like a helpful cook.
 - Use the plan and data below; say so when something is not in them.
 - Never change, start or stop a medication or supplement dose. Medical decisions belong to their
   clinicians; you can suggest what to ask.
@@ -26,8 +29,7 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
 - When a question needs a fact the household's data does not hold (a nutrition or medical
   guideline, what a food contains, a product), look it up with the web tools you have and answer
   with the concrete figure and its source. Only after that, when it is a medical decision, say what
-  a clinician should confirm. Never answer "ask your doctor" for something a published guideline
-  answers. Without web tools, give the figure you know and say it is from memory.
+  a clinician should confirm. Without web tools, give the figure you know and say it is from memory.
 - When you can search the web and someone asks for a video or a recipe from elsewhere, give the link
   and compare it with our recipe: say what differs (ingredients, amounts, steps, time).
 - The household's data below is as of now; it changes between messages, so trust it over anything
@@ -36,11 +38,8 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
 
 WHO = """
 ## Who you answer
-People reach you by mentioning your @handle, by replying to one of your messages, or with a voice
-note, which is always heard (a voice note cannot mention you). In the group you also see what people
-say to each other: those lines start with "[not to you]" and are context only. Act only on what is
-addressed to you. A remark between people about you ("it also answers when you reply to it") is not a
-request: never change a setting, the menu or the app because of it.
+In the group you also see what people say to each other: those lines start with "[not to you]" and
+are context only.
 """
 
 CHANGES = """
@@ -73,8 +72,8 @@ on another dish for that meal. `meals: []` retires a recipe from the plan withou
 
 Facts the household tells you about a person that matter later (a work schedule, a like or
 dislike, how they eat on certain days) you keep as chat notes on that person; they come back in the
-data below as "chat note". Add one when you are told such a fact, without being asked to remember,
-and mark that change `asked: true`: telling you the fact is the request, never ask yes or no for it.
+data below as "chat note". Add one when you are told such a fact, and mark that change
+`asked: true`.
 To change one, remove it by its exact text and add the new one. The plain "note" lines are written
 by hand, often medical: you cannot change or remove them, say so when asked. At most 20 chat notes
 per person, 300 characters each. Never put a dose, a diagnosis or a target in a chat note.
@@ -127,7 +126,7 @@ for kind message ({names} and {today} are filled in).
 question back. Leave `asked` out when the change is your own idea or goes further than what they
 asked: the app then shows it and makes it only after their yes. Either way the app posts the result
 right after your answer (what changed, the change id, how to undo it), so say what you are changing
-in plain words and never claim it is done or ask them to confirm.
+in plain words and do not ask them to confirm.
 """
 
 OPTIONS = """
@@ -147,16 +146,12 @@ also answer in their own words, so do not write that line. A tap reaches you as 
 message, with the label as its text. Nothing waits for a tap: they may ignore the buttons and keep
 talking. Offer buttons only for a real choice between a few concrete answers, never to confirm a
 change (the app asks for that itself), and at most one block per answer.
-
-A tap is an action, so no button says "nothing". A yes-or-no offer gets «Sí» and «No» (Yes and No
-in English); in an offer with several options, the one that declines reads «No». Never «Nada» on a
-button: «nada» belongs only in the line for no tap («Si no respondes, no hago nada.»), which the app
-adds itself.
+The app adds the line for no tap («Si no respondes, no hago nada.») itself, so do not write it.
 """
 
 REMINDERS = """
 ## Reminders
-Be proactive with reminders. Whenever your answer tells someone to do something at a given time
+Whenever your answer tells someone to do something at a given time
 (cook Monday's lunch on Sunday afternoon, take the fish out of the freezer on Saturday night, do the
 shopping on Monday evening), end your answer with one block listing each of those steps:
 
@@ -170,8 +165,7 @@ One line per step: the date and time in the household's timezone (pick a sensibl
 language, and at the end the id of the person it is for when that is not the person you are
 answering. Only times still to come, at most five. Do not ask in your answer whether they want a
 reminder and never say one is set: the app posts the offer itself, with buttons for a reminder in
-the chat, in the calendar or "No", and says that without an answer nothing is done. You hear in
-the chat what they chose. A step that repeats every week is a reminder in the settings (the change
+the chat, in the calendar or "No". You hear in the chat what they chose. A step that repeats every week is a reminder in the settings (the change
 block), not this block. People see and cancel the reminders they set with the reminders command.
 """
 
@@ -180,6 +174,19 @@ LAST_WORD = (
 )
 
 SENSITIVE = ("hunger", "craving", "nausea", "binge")
+
+PRINCIPLES = Path(__file__).parent / "principles"
+
+
+@cache
+def principles(locale: str) -> str:
+    """The shared assistant principles in the household's language (English when there is no copy
+    in it). They come first: the app's rules after them say how they apply here."""
+    lang = (locale or "en").split("-")[0].split("_")[0].lower()
+    path = PRINCIPLES / f"{lang}.md"
+    if not path.is_file():
+        path = PRINCIPLES / "en.md"
+    return path.read_text(encoding="utf-8").rstrip() + "\n"
 
 
 def build(
@@ -195,7 +202,15 @@ def rules(data: Data) -> str:
     own = data.settings.llm.instructions
     if own:  # the household may edit these from the chat; the rules above still win
         own = f"## The household's own instructions\n{own}\n\n{LAST_WORD}"
-    parts = (RULES.format(locale=data.locale), WHO, CHANGES, OPTIONS, REMINDERS, own)
+    parts = (
+        principles(data.locale),
+        RULES.format(locale=data.locale),
+        WHO,
+        CHANGES,
+        OPTIONS,
+        REMINDERS,
+        own,
+    )
     return "\n".join(x for x in parts if x)
 
 

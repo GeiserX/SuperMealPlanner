@@ -400,7 +400,8 @@ def test_the_rules_teach_menu_changes_asked_and_research(data_dir, tmp_path):
     rules = context.rules(data)
     for needle in ("asked: true", "regenerate:", "pause:", "undo: true", "Never say you cannot"):
         assert needle in rules, needle
-    assert "look it up" in rules and '"ask your doctor"' in rules and "source" in rules
+    assert "look it up" in rules and "source" in rules
+    assert '"Ask your doctor" is not an answer' in " ".join(rules.split())  # the principles
     assert "only after they say yes" not in rules
     change(data, {"pause": {"from": str(D(1)), "to": str(D(2))}})
     facts = context.facts(data, DB(tmp_path / "x.db"), MONDAY)

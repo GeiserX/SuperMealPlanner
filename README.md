@@ -26,13 +26,14 @@ SuperMealPlanner is a self-hosted meal planner for a household that eats the sam
 - Change settings from the chat: reminders, batch days, guests, foods to avoid and more, saved as a git commit you can revert. It can also change a recipe you already have and keep notes about each person. What you ask for is done at once; what the assistant suggests waits for your yes. When it tells you to do something at a time, it offers a reminder here or in your calendar, with buttons, and does nothing if you do not answer.
 - Bring your own AI: any OpenAI-compatible endpoint, Anthropic, or a plugin file that can keep the conversation.
 - Every string is translatable; English and Spanish ship today.
+- The assistant reads the shared assistant principles first, in English or Spanish (`supermealplanner/principles/`): twelve rules on whom it answers, buttons, offers, privacy and honest results. The app's own rules after them only add what is specific to meal planning. The files are copied unchanged from the shared text, and a test pins their hashes.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/GeiserX/SuperMealPlanner && cd SuperMealPlanner
 uv run smp --data ./my-household plan --start 2026-10-12 --no-calendar --write
-docker run -p 8080:8080 -v "$PWD/my-household:/data" drumsergio/supermealplanner:0.7.2
+docker run -p 8080:8080 -v "$PWD/my-household:/data" drumsergio/supermealplanner:0.7.3
 ```
 
 Open http://localhost:8080 and add it to your phone's home screen. The data folder holds `household.yaml`, `ingredients.yaml` and `recipes/`; the full format, with a complete example, is in [docs/data-format.md](docs/data-format.md). Keep that folder in a private repository: it holds health details.

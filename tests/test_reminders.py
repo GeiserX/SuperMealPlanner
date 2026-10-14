@@ -397,18 +397,39 @@ def test_a_group_line_not_to_the_bot_reaches_the_ai_marked(data_dir, tmp_path):
 
 def test_the_rules_say_who_is_answered_and_how_to_offer_reminders(data):
     rules = context.rules(data)
-    assert "[not to you]" in rules and "is not a\nrequest" in rules
-    assert "```reminders" in rules and "Be proactive with reminders" in rules
+    assert "[not to you]" in rules and "A remark between people about you is not an order" in rules
+    assert "```reminders" in rules and "offer it with buttons, once" in rules  # the principles
 
 
 def test_the_rules_say_a_tap_is_an_action_so_no_button_says_nada(data):
-    flat = " ".join(context.rules(data).split())
-    assert "A tap is an action" in flat
-    assert "A yes-or-no offer gets «Sí» and «No»" in flat
-    assert "the one that declines reads «No»" in flat
-    assert "Never «Nada» on a button" in flat
-    assert "«Si no respondes, no hago nada.»" in flat
-    assert "- Nada" not in flat
+    # the shared principles say it, in the household's language; the app's own rules only name the
+    # line for no tap, which the app writes itself
+    for locale, says in (
+        (
+            "es",
+            (
+                "Pulsar un botón es una acción",
+                "lleva «Sí» y «No»",
+                "la que rechaza dice «No»",
+                "Nunca «Nada» en un botón",
+            ),
+        ),
+        (
+            "en",
+            (
+                "A tap on a button is an action",
+                'gets "Yes" and "No"',
+                'the one that declines reads "No"',
+                'Never "Nothing" on a button',
+            ),
+        ),
+    ):
+        data.settings.locale = locale
+        flat = " ".join(context.rules(data).split())
+        for line in says:
+            assert line in flat, line
+        assert "«Si no respondes, no hago nada.»" in flat
+        assert "- Nada" not in flat
 
 
 def test_the_menu_lists_reminders_in_both_languages():
