@@ -642,7 +642,7 @@ def validate(root: Path, texts: dict[str, str]) -> None:
             (copy / name).parent.mkdir(parents=True, exist_ok=True)
             (copy / name).write_text(text, encoding="utf-8")
         try:
-            check(copy)
+            check(copy, health=False)  # pills never change from the chat
         except DataError as e:
             raise ChangeError(f"the data would not validate: {str(e)[:500]}") from None
 

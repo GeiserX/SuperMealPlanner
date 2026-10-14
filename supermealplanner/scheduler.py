@@ -1,6 +1,7 @@
 """What runs on its own, once an hour.
 
-1. Pull the data repo when it is a git checkout and SMP_GIT_PULL=1, then reload it.
+1. Pull the data repo when it is a git checkout and SMP_GIT_PULL=1, then reload it. With
+   settings.health_export the data reloads every hour anyway, which fetches the export again.
    SMP_GIT_TOKEN, if set, authenticates an https pull (Gitea or GitHub token, read-only).
 2. Keep a plan ready: when no plan covers the next 7 days, generate the next 4 weeks from the
    Monday after the newest plan (or this Monday), reading busy afternoons from the calendar.
@@ -25,21 +26,23 @@ log = logging.getLogger("supermealplanner")
 
 def pull(state) -> None:
     root = state.root
-    if os.environ.get("SMP_GIT_PULL") != "1" or not (root / ".git").exists():
+    git = os.environ.get("SMP_GIT_PULL") == "1" and (root / ".git").exists()
+    if not git and not state.data.settings.health_export:
         return
-    env = git_env(os.environ.get("SMP_GIT_TOKEN", ""))
-    with GIT_LOCK:  # never in the middle of a change the bot is saving
-        r = subprocess.run(
-            ["git", "-C", str(root), "pull", "--ff-only", "--quiet"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-            env=env,
-        )
-    if r.returncode != 0:
-        log.warning("git pull failed: %s", r.stderr.strip()[:300])
-    try:
+    if git:
+        env = git_env(os.environ.get("SMP_GIT_TOKEN", ""))
+        with GIT_LOCK:  # never in the middle of a change the bot is saving
+            r = subprocess.run(
+                ["git", "-C", str(root), "pull", "--ff-only", "--quiet"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+                env=env,
+            )
+        if r.returncode != 0:
+            log.warning("git pull failed: %s", r.stderr.strip()[:300])
+    try:  # also fetches the health export again
         state.reload()
     except DataError as e:  # a broken push: keep serving the last good data
         where = sorted(

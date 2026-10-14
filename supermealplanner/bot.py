@@ -1841,7 +1841,7 @@ class Bot:
         if r.kind == "pills_lunch":
             todo = []
             for p in people:
-                if not p.pills.get("lunch"):
+                if not p.pills_on(day).get("lunch"):
                     continue
                 rows = db.daily(p.id, day)
                 done = (
