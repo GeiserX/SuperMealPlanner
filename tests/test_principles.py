@@ -49,6 +49,8 @@ def test_the_apps_rules_no_longer_repeat_what_the_principles_say(data):
         "never ask yes or no for it",
         "never claim it is done",
         "A label that declines",
+        "A yes-or-no offer gets",
+        "Never «Nada» on a button",
         "Be proactive with reminders",
         "without an answer nothing is done",
     ):
