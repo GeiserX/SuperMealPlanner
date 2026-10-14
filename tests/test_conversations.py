@@ -25,7 +25,7 @@ HERE = pathlib.Path(__file__).parent
 
 def converse(turn, settings):
     with (HERE / "turns.jsonl").open("a") as f:
-        f.write(json.dumps(turn) + "\\n")
+        f.write(json.dumps({k: v for k, v in turn.items() if not callable(v)}) + "\\n")
     cfg = json.loads((HERE / "reply.json").read_text()) if (HERE / "reply.json").exists() else {}
     if cfg.get("fail"):
         raise RuntimeError("provider down")
@@ -53,6 +53,7 @@ class ChatBot:
     def __new__(cls, data, db):
         b = Bot(FakeState(data, db, MONDAY))
         b.token, b.username, b.bot_id, b.calls = "x", "chefbot", 99, []
+        b.debounce = 0  # a test's messages go at once unless it sets one
 
         async def call(client, method, _tries=0, **params):
             b.calls.append((method, params))
@@ -635,7 +636,7 @@ def test_the_bot_applies_a_change_only_after_the_askers_yes(data_dir, repo, tmp_
     run(b.handle(None, msg("@chefbot comemos a las 14:30")))
     said = ChatBot.texts(b, -100)
     assert "```change" not in said[0] and "Te lo cambio." in said[0]
-    assert "Lunch time: 14:00 → 14:30" in said[1] and "yes" in said[1]
+    assert "Lunch time: 14:00 → 14:30" in said[1] and "Tap Yes or No" in said[1]
     run(b.handle(None, msg("yes", user=8, **TO_BOT)))  # someone else: not their change
     run(b.handle(None, msg("ok, thanks", **TO_BOT)))  # not only an answer: the change waits
     run(b.handle(None, msg("no idea what to cook", **TO_BOT)))
@@ -788,7 +789,7 @@ def test_a_proposal_waits_for_the_askers_yes_and_the_plugin_carries_it_out(data_
     assert turns(data_dir)[-1]["proposals"] is True  # the plugin learns the app can confirm
     said = ChatBot.texts(b, -100)
     assert said[0] == "I can draft that."
-    assert "Open a pull request: add /soup." in said[1] and "yes" in said[1]
+    assert "Open a pull request: add /soup." in said[1] and "Tap Yes or No" in said[1]
     assert len(said) == 2  # the malformed proposal is dropped
     reply(data_dir, text="ok")
     run(b.handle(None, msg("yes", user=8, **TO_BOT)))  # someone else's yes

@@ -6,9 +6,20 @@ Map each person to their Telegram user id in bot.people.
 
 In a private chat the bot always answers. A voice note is always answered, in the group too, because
 it cannot mention the bot. In the group it answers only a text message that mentions its
-@handle or replies to it. Telegram shows a bot with privacy mode on (the default) only commands and
-replies to it, so for mentions make the bot a group admin or turn privacy off (BotFather,
-/setprivacy -> Disable). The bot logs a warning at start when it cannot see them.
+@handle or replies to it.
+
+One answer per burst: a chat's messages wait DEBOUNCE_S after the newest one (and up to VOICE_WAIT_S
+for a voice note still being transcribed) and go to the AI together; what arrives while it writes is
+handed to the running answer (llm.py, turn["incoming"]), and only what that answer did not take makes
+the next turn. An answer that covers one message replies to it; one that covers several is sent
+plainly. An edited message is handled by where it is: still waiting, its new text goes; in the
+running answer, a correction joins it; already answered, the correction starts a new answer; an edit
+that adds the mention is a new message. Changes, proposals and the provider's asks come with inline
+buttons; a typed yes or no still works, and only the person asked (or an admin) can tap.
+
+Telegram shows a bot with privacy mode on (the default) only commands and replies to it, so for
+mentions (and edits of messages without one) make the bot a group admin or turn privacy off
+(BotFather, /setprivacy -> Disable). The bot logs a warning at start when it cannot see them.
 
 Only the configured group and private chats with the people in bot.people are answered.
 """
@@ -21,8 +32,11 @@ import html
 import logging
 import os
 import re
+import secrets
+import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -96,6 +110,40 @@ WAITING = "bot.waiting.{}"
 LEGACY_PENDING = "bot.pending.{}"
 RUNNING = "bot.running"  # proposals the plugin is carrying out now, across every chat
 ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft takes minutes)
+# a chat's turn starts this long after its newest message, so a burst goes together
+DEBOUNCE_S = 2.5
+VOICE_WAIT_S = 30  # a turn waits this long at most for a voice note of its chat still transcribing
+OPTIONS = "bot.options.{}"  # choices offered as buttons under an answer, per chat
+OPTIONS_TTL = 12 * 3600  # a choice can be tapped this long
+OPTIONS_KEEP = 20
+
+
+@dataclass
+class Item:
+    """A message that called the bot, waiting for its answer or in one."""
+
+    row: int  # its row in the chat log
+    mid: int | None  # its Telegram message id (what the answer replies to)
+    uid: int | None  # who sent it
+    who: str | None  # their person id
+    ts: float  # when it arrived (the bot's clock)
+
+
+@dataclass
+class Turn:
+    """One answer being written for a chat."""
+
+    chat: int
+    items: list[Item]  # the messages it was started with
+    pulled: list[Item] = field(default_factory=list)  # handed to it while it ran
+    asks: list[str] = field(default_factory=list)  # keys of the provider's asks it posted
+    closed: bool = False
+
+    def rows(self) -> set[int]:
+        return {i.row for i in [*self.items, *self.pulled]}
+
+    def users(self) -> list[int]:
+        return list(dict.fromkeys(i.uid for i in [*self.items, *self.pulled] if i.uid))
 
 
 class Bot:
@@ -113,6 +161,15 @@ class Bot:
         self.started = False
         self.bot_id = 0
         self.writing = asyncio.Lock()  # one settings change at a time
+        self.debounce, self.voice_wait, self.clock = DEBOUNCE_S, VOICE_WAIT_S, time.monotonic
+        # per chat: messages waiting for a turn. The provider's thread takes from it while a turn
+        # runs (turn["incoming"]), so it is guarded by a thread lock, never held across an await
+        self.queues: dict[int, list[Item]] = {}
+        self.qlock = threading.Lock()
+        self.driving: set[int] = set()  # chats with a loop running their turns
+        self.voicing: dict[int, list[float]] = {}  # chat -> start of each note being transcribed
+        self.running: dict[int, Turn] = {}
+        self.asks: dict[str, dict] = {}  # open asks of the provider, by key
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -165,13 +222,17 @@ class Bot:
         markdown: bool = False,
         who: str | None = None,
         ids: list[int] | None = None,
+        buttons: list[list[tuple[str, str]]] | None = None,
     ) -> int | None:
         """markdown: the text is the AI's Markdown, sent as Telegram HTML; a chunk Telegram refuses
         to parse goes again as plain text. Returns the id of the last message sent; `ids` collects
-        the id of every piece."""
+        the id of every piece. buttons: rows of (label, callback data), under the last piece."""
         sent = None
-        for chunk in _chunks(text, fences=markdown):
+        chunks = list(_chunks(text, fences=markdown))
+        for n, chunk in enumerate(chunks):
             params = {"chat_id": chat_id, "disable_web_page_preview": True}
+            if buttons and n == len(chunks) - 1:
+                params["reply_markup"] = keyboard(buttons)
             if reply_to:
                 params["reply_parameters"] = {
                     "message_id": reply_to,
@@ -301,7 +362,7 @@ class Bot:
                     "getUpdates",
                     offset=self.offset,
                     timeout=50,
-                    allowed_updates=["message"],
+                    allowed_updates=["message", "edited_message", "callback_query"],
                 )
             except TelegramError as e:
                 if e.code == 409:
@@ -315,6 +376,16 @@ class Bot:
                 continue
             for u in updates:
                 self.offset = u["update_id"] + 1
+                if u.get("edited_message") or u.get("callback_query"):
+                    work = (
+                        self.edited(client, u["edited_message"])
+                        if u.get("edited_message")
+                        else self.tapped(client, u["callback_query"])
+                    )
+                    task = asyncio.create_task(self.quietly(work))
+                    self.tasks.add(task)
+                    task.add_done_callback(self.tasks.discard)
+                    continue
                 msg = u.get("message")
                 if not msg:
                     continue
@@ -341,12 +412,23 @@ class Bot:
             except Exception as e2:  # noqa: BLE001  the reply is best effort
                 log.warning("could not send the error reply: %s", safe(e2))
 
+    async def quietly(self, work) -> None:
+        """An edit or a tap in its own task; a failure is logged, never posted."""
+        try:
+            await work
+        except Exception as e:  # noqa: BLE001
+            log.warning("handling an edit or a tap failed: %s", safe(e))
+
     async def reminders(self, client) -> None:
         while True:
             try:
                 await self.tick_reminders(client)
             except Exception as e:  # noqa: BLE001
                 log.warning("reminder tick failed: %s", safe(e))
+            try:
+                await self.expire_asks(client)
+            except Exception as e:  # noqa: BLE001
+                log.warning("ask expiry failed: %s", safe(e))
             await asyncio.sleep(30)
 
     # ------------------------------------------------------------- messages
@@ -371,13 +453,16 @@ class Bot:
         if voice and not msg.get("text"):
             if not self.allowed(chat, user.get("id", 0)) or not cfg.voice:
                 return
-            # a voice note always calls the bot, in the group too: it cannot mention or reply by itself
-            asked, keep_all = True, cfg.history_scope == "all"
+            # a voice note always calls the bot, in the group too: it cannot mention or reply by itself.
+            # While it is transcribed, the chat's next turn waits for it (VOICE_WAIT_S at most).
+            start = self.clock()
+            notes = self.voicing.setdefault(chat["id"], [])
+            notes.append(start)
             try:
-                text = await self.transcribe(client, voice)
-            except Exception as e:  # noqa: BLE001
-                log.warning("transcription failed: %s", safe(e))
-                if asked:
+                try:
+                    text = await self.transcribe(client, voice)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("transcription failed: %s", safe(e))
                     await self.send(
                         client,
                         chat["id"],
@@ -385,16 +470,15 @@ class Bot:
                         msg["message_id"],
                         record=False,
                     )
-                return
-            who = self.person_of(user.get("id", 0))
-            if asked or keep_all:
-                self.state.db.add_chat(
-                    chat["id"], "user", who or user.get("first_name"), f"🎤 {text}"
-                )
-            if asked:
+                    return
+                who = self.person_of(user.get("id", 0))
                 await self.send(client, chat["id"], f"🎤 {text}", msg["message_id"], record=False)
-                async with self.ai:
-                    await self.ask(client, chat["id"], msg["message_id"], who, user.get("id"))
+                self.take(chat["id"], user, who, msg, f"🎤 {text}", asked=True)
+            finally:
+                notes.remove(start)
+                if not notes:
+                    self.voicing.pop(chat["id"], None)
+            await self.drive(client, chat["id"])
             return
         text = msg["text"].strip()
         if text.startswith("/chatid"):  # setup: household members only, nothing stored
@@ -423,10 +507,92 @@ class Bot:
             return
         asked = private or self.mentioned(text) or self.replied(msg)
         if asked or cfg.history_scope == "all":
-            self.state.db.add_chat(chat["id"], "user", who or user.get("first_name"), text)
+            self.take(chat["id"], user, who, msg, text, asked)
         if asked:
-            async with self.ai:
-                await self.ask(client, chat["id"], msg["message_id"], who, user.get("id"))
+            await self.drive(client, chat["id"])
+
+    def take(
+        self,
+        chat_id: int,
+        user: dict,
+        who,
+        msg: dict | None,
+        text: str,
+        asked: bool,
+        log_mid: bool = True,
+    ) -> int:
+        """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
+        running one). No await in here: a turn that starts reads the log and the queue together.
+        log_mid False: the answer replies to msg, but the log row is not that message (an edit's
+        correction), so an edit of msg still finds msg's own row."""
+        row = self.state.db.add_chat(
+            chat_id,
+            "user",
+            who or user.get("first_name"),
+            text,
+            mid=(msg or {}).get("message_id") if log_mid else None,
+            asked=asked,
+        )
+        if asked:
+            item = Item(row, (msg or {}).get("message_id"), user.get("id"), who, self.clock())
+            with self.qlock:
+                self.queues.setdefault(chat_id, []).append(item)
+        return row
+
+    async def drive(self, client, chat_id: int) -> None:
+        """Run the chat's turns until its queue is empty. One loop per chat: a message that arrives
+        while it runs only joins the queue, and the loop (or the running turn) takes it."""
+        if chat_id in self.driving:
+            return
+        self.driving.add(chat_id)
+        try:
+            while True:
+                await self.settle(chat_id)
+                async with self.ai:
+                    with self.qlock:
+                        items = self.queues.pop(chat_id, [])
+                    if not items:
+                        return
+                    # read with the queue, before any await: a later message goes to the turn
+                    # through incoming(), never in both
+                    rows = self.state.db.chat_rows(
+                        chat_id, self.data.settings.bot.history, self.data.settings.bot.history_days
+                    )
+                    try:
+                        await self.ask(client, chat_id, items, rows)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:  # noqa: BLE001  the next turn of the chat still runs
+                        log.warning("a turn failed: %s", safe(e))
+                        try:
+                            await self.send(
+                                client,
+                                chat_id,
+                                self.t("bot_error"),
+                                _reply_to(items),
+                                record=False,
+                            )
+                        except Exception as e2:  # noqa: BLE001
+                            log.warning("could not send the error reply: %s", safe(e2))
+        finally:
+            self.driving.discard(chat_id)
+
+    async def settle(self, chat_id: int) -> None:
+        """Wait until the chat's newest message is DEBOUNCE_S old and no voice note of it is still
+        being transcribed (for VOICE_WAIT_S at most from the note's start)."""
+        while True:
+            with self.qlock:
+                newest = max((i.ts for i in self.queues.get(chat_id) or []), default=None)
+            if newest is None:
+                return
+            now = self.clock()
+            wait = newest + self.debounce - now
+            notes = self.voicing.get(chat_id)
+            if notes:
+                wait = max(wait, min(notes) + self.voice_wait - now)
+            if wait <= 0:
+                return
+            await asyncio.sleep(min(wait, 0.5))
 
     def rules(self) -> str:
         """The AI's instructions, with the people's Telegram handles."""
@@ -444,69 +610,148 @@ class Bot:
             )
         return out
 
-    async def ask(
-        self,
-        client,
-        chat_id: int,
-        reply_to: int,
-        asker: str | None = None,
-        user_id: int | None = None,
-    ) -> None:
-        """One AI answer. A provider that keeps the conversation gets only what it has not seen;
-        the household's data goes with every message, fresh."""
+    async def ask(self, client, chat_id: int, items: list[Item], rows: list[dict]) -> None:
+        """One AI answer for the queued messages `items`. A provider that keeps the conversation
+        gets only what it has not seen; the household's data goes with every message, fresh.
+        Messages that arrive meanwhile are handed to it; the ones its answer does not take go back
+        to the queue for the next turn."""
         data, db = self.data, self.state.db
         if data.settings.llm.provider == "none":
-            await self.send(client, chat_id, self.t("bot_no_llm"), reply_to)
+            await self.send(client, chat_id, self.t("bot_no_llm"), _reply_to(items))
             return
         key = f"bot.conversation.{chat_id}"
         conv = db.get_kv(key) or {}
-        rows = db.chat_rows(chat_id, data.settings.bot.history)
         seen = conv.get("seen", 0) if conv.get("id") else 0
-        fresh = [r for r in rows if r["id"] > seen and not (seen and r["who"] == AI)]
+        done = set(conv.get("done") or []) if conv.get("id") else set()
+        fresh = [
+            r
+            for r in rows
+            if r["id"] > seen and r["id"] not in done and not (seen and r["who"] == AI)
+        ]
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
-            # messages that came in together: an earlier turn already took this one with them
-            return
+            return  # an earlier turn already took these messages
+        turn_state = Turn(chat_id, items)
+        self.running[chat_id] = turn_state
+        reply = None
         try:
-            await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
-        except TelegramError as e:  # only a courtesy: the answer still goes
-            log.info("typing indicator failed: %s", e)
-        private = chat_id > 0
-        viewer = asker if private else None
-        facts = await asyncio.to_thread(
-            context.facts, data, db, self.state.today(), viewer, not private
-        )
-        turn = {
-            "conversation": conv.get("id"),
-            "rules": self.rules(),
-            "context": facts,
-            "new": _messages(fresh),
-            "history": _messages([r for r in rows if r not in fresh]),
-            "files": await asyncio.to_thread(_files, data.root),
-        }
-        try:
-            reply = await asyncio.wait_for(
-                llm.converse(data, turn), timeout=data.settings.llm.timeout_s
+            try:
+                await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
+            except TelegramError as e:  # only a courtesy: the answer still goes
+                log.info("typing indicator failed: %s", e)
+            private = chat_id > 0
+            last_item = items[-1]
+            viewer = last_item.who if private else None
+            facts = await asyncio.to_thread(
+                context.facts, data, db, self.state.today(), viewer, not private
             )
-        except Exception as e:  # noqa: BLE001
-            log.warning("AI call failed: %s", safe(e))
-            # never recorded: the unanswered message goes again with the next one
-            await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
-            return
+            turn = {
+                "conversation": conv.get("id"),
+                "rules": self.rules(),
+                "context": facts,
+                "new": _messages(fresh),
+                "history": _messages([r for r in rows if r not in fresh]),
+                "files": await asyncio.to_thread(_files, data.root),
+                "incoming": self._incoming(turn_state),
+            }
+            if llm.asks(data):
+                turn["ask"] = self._asker(client, turn_state)
+            try:
+                reply = await asyncio.wait_for(
+                    llm.converse(data, turn), timeout=data.settings.llm.timeout_s
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("AI call failed: %s", safe(e))
+                # never recorded: the unanswered messages go again with the next one
+                await self.send(
+                    client, chat_id, self.t("bot_error"), _reply_to(items), record=False
+                )
+                return
+        finally:
+            with self.qlock:
+                turn_state.closed = True  # a provider thread that outlives the turn takes nothing
+                missed = [
+                    i for i in turn_state.pulled if reply is None or i.row not in reply.covers
+                ]
+                if reply is not None and missed:  # the next turn sends them, at the head
+                    self.queues[chat_id] = [*missed, *self.queues.get(chat_id, [])]
+            self.running.pop(chat_id, None)
+            await self.close_asks(client, turn_state)
+        covered = [*items, *(i for i in turn_state.pulled if i.row in reply.covers)]
+        reply_to = _reply_to(covered)
+        anchor = covered[-1]  # changes and proposals act for the newest message's sender
         text, change = changes.extract(reply.text)
+        text, offered = llm.extract_options(text)
+        offered = reply.options or offered
         if not text and change is None and not reply.proposals:
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return
         if text:
-            await self.send(client, chat_id, text, reply_to, markdown=True, who=AI)
+            await self.answer_text(client, chat_id, text, reply_to, offered, covered)
         if reply.conversation:
             last = max((r["id"] for r in rows), default=seen)
-            db.set_kv(key, {"id": reply.conversation, "seen": last if reply.kept else seen})
+            if reply.kept:
+                took = {i.row for i in covered if i.row > last}
+                done = sorted({d for d in done if d > last} | took)
+                db.set_kv(key, {"id": reply.conversation, "seen": last, "done": done})
+            else:
+                db.set_kv(key, {"id": reply.conversation, "seen": seen, "done": sorted(done)})
         else:
             db.set_kv(key, None)
         if change is not None:
-            await self.propose(client, chat_id, reply_to, asker, user_id, change)
+            await self.propose(client, chat_id, anchor.mid, anchor.who, anchor.uid, change)
         for proposal in reply.proposals:
-            await self.offer(client, chat_id, reply_to, asker, user_id, proposal)
+            await self.offer(client, chat_id, anchor.mid, anchor.who, anchor.uid, proposal)
+
+    async def answer_text(self, client, chat_id, text, reply_to, offered, covered) -> None:
+        """The answer, with the choices it offers as buttons under it."""
+        if not offered:
+            await self.send(client, chat_id, text, reply_to, markdown=True, who=AI)
+            return
+        key = secrets.token_hex(4)
+        rows = [[(label, f"o:{key}:{n}")] for n, label in enumerate(offered)]
+        sent = await self.send(
+            client,
+            chat_id,
+            f"{text}\n\n_{self.t('options_hint')}_",
+            reply_to,
+            markdown=True,
+            who=AI,
+            buttons=rows,
+        )
+        users = list(dict.fromkeys(i.uid for i in covered if i.uid))
+        kept = [
+            o
+            for o in self.state.db.get_kv(OPTIONS.format(chat_id)) or []
+            if time.time() - o.get("ts", 0) <= OPTIONS_TTL
+        ]
+        item = {"key": key, "msg": sent, "labels": offered, "for": users, "ts": time.time()}
+        self.state.db.set_kv(OPTIONS.format(chat_id), [*kept, item][-OPTIONS_KEEP:])
+
+    def _incoming(self, turn_state: Turn):
+        """turn["incoming"]: the chat's messages queued since the last call, for the provider's
+        thread. Once the turn is over it hands over nothing, so a late call steals nothing from the
+        next turn."""
+        db, chat_id = self.state.db, turn_state.chat
+
+        def incoming() -> list[dict]:
+            with self.qlock:
+                if turn_state.closed:
+                    return []
+                got = self.queues.pop(chat_id, [])
+                turn_state.pulled.extend(got)
+            rows = {r["id"]: r for r in db.chat_by_ids(chat_id, [i.row for i in got])}
+            return [
+                {
+                    "id": i.row,
+                    "role": "user",
+                    "content": f"{rows[i.row]['who'] or 'someone'}: {rows[i.row]['text']}",
+                    "ts": rows[i.row]["ts"],
+                }
+                for i in got
+                if i.row in rows
+            ]
+
+        return incoming
 
     # ------------------------------------------------------------- settings changes
     async def propose(self, client, chat_id, reply_to, asker, user_id, change) -> None:
@@ -537,8 +782,10 @@ class Bot:
             t("change_confirm", name=self.mention(asker), lines="\n".join(lines)),
             reply_to,
             ids=msgs,
+            buttons=self.yes_no(key := secrets.token_hex(4)),
         )
         item = {
+            "key": key,
             "change": change,
             "by": [user_id],
             "asker": asker,
@@ -611,13 +858,323 @@ class Bot:
             await self.send(client, chat_id, self.t("pending_which"), msg["message_id"])
             return True
         pending = (meant or mine)[0]
-        self.drop(chat_id, pending)
-        if yes and "proposal" in pending:
-            await self.act(client, chat_id, msg["message_id"], pending)
-            return True
-        reply = await self.apply(pending) if yes else self.t("change_cancelled")
-        await self.send(client, chat_id, reply, msg["message_id"])
+        who = self.person_of(user.get("id", 0)) or user.get("first_name")
+        self.state.db.add_chat(
+            chat_id, "user", who, text.strip(), mid=msg["message_id"], asked=True
+        )
+        await self.settle_pending(client, chat_id, pending, yes, msg["message_id"])
         return True
+
+    async def settle_pending(
+        self, client, chat_id: int, pending: dict, yes: bool, reply_to
+    ) -> None:
+        """Carry out the answer to what waited (typed or tapped): its buttons go first, so it is
+        answered once."""
+        self.drop(chat_id, pending)
+        await self.unbutton(client, chat_id, pending.get("msg"))
+        if yes and "proposal" in pending:
+            await self.act(client, chat_id, reply_to, pending)
+            return
+        reply = await self.apply(pending) if yes else self.t("change_cancelled")
+        await self.send(client, chat_id, reply, reply_to)
+
+    # ------------------------------------------------------------- buttons
+    def yes_no(self, key: str) -> list[list[tuple[str, str]]]:
+        return [[(self.t("button_yes"), f"c:{key}:y"), (self.t("button_no"), f"c:{key}:n")]]
+
+    async def unbutton(self, client, chat_id: int, message_id, label: str | None = None) -> None:
+        """Take the buttons off a message (best effort); label: one inert button saying what was
+        chosen instead."""
+        if not message_id:
+            return
+        markup = keyboard([[(label, "x")]]) if label else {"inline_keyboard": []}
+        try:
+            await self.call(
+                client,
+                "editMessageReplyMarkup",
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=markup,
+            )
+        except TelegramError as e:
+            log.info("could not take the buttons off a message: %s", e)
+
+    async def toast(self, client, query: dict, text: str | None = None) -> None:
+        params = {"callback_query_id": query["id"]}
+        if text:
+            params["text"] = text
+        try:
+            await self.call(client, "answerCallbackQuery", **params)
+        except TelegramError as e:
+            log.info("could not answer a tap: %s", e)
+
+    async def tapped(self, client, query: dict) -> None:
+        """A tap on one of the bot's buttons: a yes or no to a change or a proposal (c:), to an ask
+        of the provider (a:), or one of the choices under an answer (o:). Only the person asked (or
+        an admin, as the item says) may tap; anyone else gets a note and nothing changes."""
+        user, message = query.get("from") or {}, query.get("message") or {}
+        chat = message.get("chat") or {}
+        kind, _, rest = str(query.get("data") or "").partition(":")
+        key, _, choice = rest.partition(":")
+        if kind not in ("c", "a", "o") or not chat or not self.allowed(chat, user.get("id", 0)):
+            await self.toast(client, query)
+            return
+        if kind == "c":
+            await self.tapped_confirm(client, query, chat["id"], key, choice == "y")
+        elif kind == "a":
+            await self.tapped_ask(client, query, chat["id"], key, choice == "y")
+        else:
+            await self.tapped_option(client, query, chat, key, choice)
+
+    async def tapped_confirm(self, client, query, chat_id: int, key: str, yes: bool) -> None:
+        user = query.get("from") or {}
+        mid = (query.get("message") or {}).get("message_id")
+        item = next((i for i in self.pending(chat_id) if i.get("key") == key), None)
+        if item is None:
+            await self.toast(client, query, self.t("tap_gone"))
+            await self.unbutton(client, chat_id, mid)
+            return
+        by = item.get("by")
+        if user.get("id") not in (by if isinstance(by, list) else [by]):
+            names = ", ".join(self.mention(p) for p in self._people(by))
+            await self.toast(client, query, self.t("tap_not_yours", name=names))
+            return
+        await self.toast(client, query)
+        who = self.person_of(user.get("id", 0)) or user.get("first_name")
+        word = self.t("button_yes" if yes else "button_no")
+        self.state.db.add_chat(chat_id, "user", who, word, asked=True)  # as a typed answer is
+        await self.settle_pending(client, chat_id, item, yes, mid)
+
+    def _people(self, ids) -> list[str]:
+        ids = ids if isinstance(ids, list) else [ids]
+        return [pid for pid, uid in self.data.settings.bot.people.items() if uid in ids]
+
+    async def tapped_option(self, client, query, chat: dict, key: str, choice: str) -> None:
+        """A choice under an answer: that person's next message, as if typed. The buttons give way
+        to the one chosen."""
+        user = query.get("from") or {}
+        mid = (query.get("message") or {}).get("message_id")
+        db, kv = self.state.db, OPTIONS.format(chat["id"])
+        offers = db.get_kv(kv) or []
+        item = next((o for o in offers if o.get("key") == key), None)
+        if item is None or time.time() - item.get("ts", 0) > OPTIONS_TTL:
+            await self.toast(client, query, self.t("tap_gone"))
+            await self.unbutton(client, chat["id"], mid)
+            return
+        if item.get("for") and user.get("id") not in item["for"]:
+            names = ", ".join(self.mention(p) for p in self._people(item["for"]))
+            await self.toast(client, query, self.t("tap_not_yours", name=names))
+            return
+        labels = item.get("labels") or []
+        if not choice.isdigit() or int(choice) >= len(labels):
+            await self.toast(client, query)
+            return
+        label = labels[int(choice)]
+        db.set_kv(kv, [o for o in offers if o.get("key") != key] or None)  # chosen once
+        await self.toast(client, query)
+        await self.unbutton(client, chat["id"], mid, f"✓ {label}")
+        who = self.person_of(user.get("id", 0))
+        # the answer to it replies to the question the choice came from
+        self.take(chat["id"], user, who, {"message_id": mid}, label, asked=True)
+        await self.drive(client, chat["id"])
+
+    # ------------------------------------------------------------- the provider's asks
+    def _asker(self, client, turn_state: Turn):
+        """turn["ask"]: the provider's thread asks a person for a yes; the bot posts it."""
+        loop = asyncio.get_running_loop()
+
+        def ask(request: dict) -> None:
+            def post():
+                task = asyncio.create_task(self.quietly(self.pose(client, turn_state, request)))
+                self.tasks.add(task)
+                task.add_done_callback(self.tasks.discard)
+
+            loop.call_soon_threadsafe(post)
+
+        return ask
+
+    def _approvers(self, turn_state: Turn, confirm_by) -> list[int]:
+        """Who may answer an ask: the person the turn answers, or the admins when it is asked of
+        them or when the turn carries several people's messages."""
+        users = turn_state.users()
+        if confirm_by == "asker" and len(users) == 1:
+            return users
+        cfg = self.data.settings.bot
+        return [cfg.people[pid] for pid in cfg.admins if pid in cfg.people]
+
+    async def pose(self, client, turn_state: Turn, request: dict) -> None:
+        """Post an ask with Approve and Reject. One that nobody can answer is declined at once, so
+        the provider never waits for nothing."""
+        if not isinstance(request, dict) or not isinstance(request.get("id"), str):
+            return
+        chat_id, summary = turn_state.chat, str(request.get("summary") or "").strip()
+        if any(a.get("request", {}).get("id") == request["id"] for a in self.asks.values()):
+            return  # asked already
+        ids = self._approvers(turn_state, request.get("confirm_by"))
+        expires = request.get("expires_at")
+        expires = float(expires) if isinstance(expires, int | float) else time.time() + 300
+        if turn_state.closed or not ids or not summary or expires <= time.time():
+            await self.decline(request, "no one could be asked")
+            return
+        key = secrets.token_hex(4)
+        names = ", ".join(self.mention(p) for p in self._people(ids))
+        try:
+            sent = await self.send(
+                client,
+                chat_id,
+                self.t("ask_confirm", name=names, summary=summary),
+                turn_state.items[-1].mid,
+                record=False,
+                buttons=[
+                    [
+                        (self.t("button_approve"), f"a:{key}:y"),
+                        (self.t("button_reject"), f"a:{key}:n"),
+                    ]
+                ],
+            )
+        except TelegramError as e:
+            log.warning("could not post an ask: %s", e)
+            await self.decline(request, "no one could be asked")
+            return
+        self.asks[key] = {
+            "request": request,
+            "by": ids,
+            "chat": chat_id,
+            "msg": sent,
+            "expires": expires,
+        }
+        if turn_state.closed:  # the turn ended while it was posted
+            await self.close_asks(client, turn_state, [key])
+        else:
+            turn_state.asks.append(key)
+
+    async def decline(self, request: dict, note: str, by: str = "bot") -> dict:
+        try:
+            return await llm.answer(self.data, request, {"approved": False, "by": by, "note": note})
+        except Exception as e:  # noqa: BLE001  the ask expires on the provider's side anyway
+            log.warning("could not decline an ask: %s", safe(e))
+            return {"ok": None, "error": None}
+
+    async def tapped_ask(self, client, query, chat_id: int, key: str, yes: bool) -> None:
+        user = query.get("from") or {}
+        item = self.asks.get(key)
+        mid = (query.get("message") or {}).get("message_id")
+        if item is None or item["expires"] <= time.time():
+            self.asks.pop(key, None)
+            await self.toast(client, query, self.t("tap_gone"))
+            await self.unbutton(client, chat_id, mid)
+            return
+        if user.get("id") not in item["by"]:
+            names = ", ".join(self.mention(p) for p in self._people(item["by"]))
+            await self.toast(client, query, self.t("tap_not_yours", name=names))
+            return
+        self.asks.pop(key)  # answered once
+        await self.toast(client, query)
+        label = self.t("button_approve" if yes else "button_reject")
+        await self.unbutton(client, chat_id, item["msg"], f"✓ {label}")
+        try:
+            out = await llm.answer(
+                self.data,
+                item["request"],
+                {"approved": yes, "by": str(user.get("id")), "note": None},
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("an ask's answer failed: %s", safe(e))
+            out = {"ok": False, "error": type(e).__name__}
+        if not yes:
+            return  # the turn's answer says what came of it
+        said = (
+            self.t("ask_done")
+            if out.get("ok")
+            else self.t("ask_failed", error=str(out.get("error") or "?")[:300])
+        )
+        await self.send(client, chat_id, said, item["msg"], record=False)
+
+    async def close_asks(self, client, turn_state: Turn, keys=None, note=None) -> None:
+        """The turn ended (or a message of it was edited): its open asks lose their buttons. With
+        a note, each is declined with it first and the chat hears why."""
+        for key in keys if keys is not None else list(turn_state.asks):
+            item = self.asks.pop(key, None)
+            if key in turn_state.asks:
+                turn_state.asks.remove(key)
+            if item is None:
+                continue
+            if note:
+                await self.decline(item["request"], note)
+            await self.unbutton(client, item["chat"], item["msg"])
+            if note:
+                await self.send(
+                    client, item["chat"], self.t("ask_edited"), item["msg"], record=False
+                )
+
+    async def expire_asks(self, client) -> None:
+        for key, item in list(self.asks.items()):
+            if item["expires"] <= time.time():
+                self.asks.pop(key, None)
+                await self.unbutton(client, item["chat"], item["msg"])
+
+    # ------------------------------------------------------------- edits
+    async def edited(self, client, msg: dict) -> None:
+        """An edited message, handled by where it is (see the module's docstring). It is never a
+        yes or a no, and never runs a command."""
+        chat, user = msg["chat"], msg.get("from", {})
+        text = (msg.get("text") or "").strip()
+        if not text or text.startswith("/") or not self.allowed(chat, user.get("id", 0)):
+            return
+        chat_id, db = chat["id"], self.state.db
+        who = self.person_of(user.get("id", 0))
+        name = self.data.household.person(who).name if who else user.get("first_name") or "?"
+        calls = chat.get("type") == "private" or self.mentioned(text) or self.replied(msg)
+        row = db.find_chat(chat_id, msg["message_id"])
+        if row is None:  # never stored: a new message if it now calls the bot
+            if calls:
+                self.take(chat_id, user, who, msg, text, asked=True)
+                await self.drive(client, chat_id)
+            return
+        before, now = self.clean(row["text"]), self.clean(text)
+        asked = bool(row["asked"]) if row["asked"] is not None else calls
+        if before == now and (asked or not calls):
+            return  # formatting only: nothing changes, not even who it calls
+        turn_state = self.running.get(chat_id)
+        with self.qlock:
+            queued = next((i for i in self.queues.get(chat_id, []) if i.row == row["id"]), None)
+            if queued is not None:  # still waiting: the new text goes, the debounce starts over
+                queued.ts = self.clock()
+        if queued is not None:
+            db.edit_chat(row["id"], text)
+            return
+        if turn_state is not None and row["id"] in turn_state.rows():
+            db.edit_chat(row["id"], text)
+            await self.close_asks(client, turn_state, note=f"editado: {now}")
+            note = (
+                f"[{name} edited a message of this turn. Reconsider your answer with the new "
+                f"wording.]\nBefore: {before}\nNow: {now}"
+            )
+            self.take(chat_id, user, who, None, note, asked=True)
+            return  # the running turn takes it, or the next one does
+        if not asked:
+            db.edit_chat(row["id"], text, asked=calls)
+            if calls:  # the edit adds the mention: a new message to answer
+                with self.qlock:
+                    item = Item(row["id"], msg["message_id"], user.get("id"), who, self.clock())
+                    self.queues.setdefault(chat_id, []).append(item)
+                await self.drive(client, chat_id)
+            return
+        db.edit_chat(row["id"], text)
+        said = (db.answer_after(chat_id, row["id"]) or "")[:1500]
+        note = (
+            f"[{name} edited a message you already answered. Check whether your answer still "
+            f"holds with the new wording, and say what changes.]\nBefore: {before}\nNow: {now}"
+            + (f"\nYour answer was: {said}" if said else "")
+        )
+        self.take(chat_id, user, who, msg, note, asked=True, log_mid=False)
+        await self.drive(client, chat_id)
+
+    def clean(self, text: str) -> str:
+        """A message's words without the bot's @handle."""
+        if self.username:
+            text = re.sub(rf"@{re.escape(self.username)}\b", " ", text, flags=re.IGNORECASE)
+        return " ".join(text.split())
 
     async def apply(self, pending: dict, asked: bool = False) -> str:
         """Make a change and say what came of it. Settings and recipes are one git commit in the
@@ -726,16 +1283,18 @@ class Bot:
                 return
             where, answer_to = self.chat_id, None
         msgs: list[int] = []
+        key = secrets.token_hex(4)
         sent = await self.send(
             client,
             where,
             t("proposal_confirm", name=names, summary=proposal["summary"]),
             answer_to,
             ids=msgs,
+            buttons=self.yes_no(key),
         )
         if where != chat_id:
             await self.send(client, chat_id, t("proposal_in_group", name=names), reply_to)
-        item = {**pending, "by": ids, "msg": sent, "msgs": msgs}
+        item = {**pending, "key": key, "by": ids, "msg": sent, "msgs": msgs}
         self.wait_for(where, item, lambda i: (i.get("proposal") or {}).get("id") == proposal["id"])
 
     async def act(self, client, chat_id: int, reply_to: int, pending: dict) -> None:
@@ -942,6 +1501,9 @@ class Bot:
             self.state.db.set_kv(WAITING.format(chat_id), None)
             self.state.db.set_kv(LEGACY_PENDING.format(chat_id), None)
             self.state.db.clear_chat(chat_id)
+            self.state.db.set_kv(OPTIONS.format(chat_id), None)
+            with self.qlock:
+                self.queues.pop(chat_id, None)
         if conv.get("id"):
             try:
                 await llm.forget(self.data, conv["id"])
@@ -1213,16 +1775,28 @@ class Bot:
             self.state.db.mark_sent(r.id, now.date(), at)  # only after Telegram took it
 
 
+def _reply_to(items: list[Item]) -> int | None:
+    """An answer replies to the message it answers only when it answers exactly one."""
+    return items[0].mid if len(items) == 1 else None
+
+
+def keyboard(rows: list[list[tuple[str, str]]]) -> dict:
+    return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in rows]}
+
+
 def _messages(rows: list[dict]) -> list[dict]:
-    """Chat log rows as model messages; who wrote a user message goes in front of it."""
+    """Chat log rows as model messages; who wrote a user message goes in front of it. Each carries
+    the ids of the rows merged into it and when the last of them was written."""
     out: list[dict] = []
     for h in rows:
         role = "assistant" if h["role"] == "assistant" else "user"
         content = h["text"] if role == "assistant" else f"{h['who'] or 'someone'}: {h['text']}"
         if out and out[-1]["role"] == role:
             out[-1]["content"] += "\n" + content
+            out[-1]["ids"].append(h.get("id"))
+            out[-1]["ts"] = h.get("ts")
         else:
-            out.append({"role": role, "content": content})
+            out.append({"role": role, "content": content, "ids": [h.get("id")], "ts": h.get("ts")})
     return out
 
 

@@ -279,6 +279,7 @@ class Bot(Loose):
     admins: list[str] = []  # person ids whose yes approves what only an admin may (a pull request)
     handles: dict[str, str] = {}  # person id -> @handle; looked up from Telegram when left out
     history: int = 20  # recent messages kept as context for the AI
+    history_days: int = 0  # and every message of these last days (0: only `history`)
     # in a group the AI answers only a message that mentions the bot's @handle or replies to it; a
     # private chat always gets an answer
     # a voice note is always transcribed and answered, in the group too: it cannot mention the bot

@@ -187,7 +187,7 @@ bot_about_voice: "Voice notes reach me in a private chat and in the group: I wri
 bot_new: "New conversation: I've forgotten what we talked about. Your plan and data are still here."
 bot_cmd_new: Start a new conversation with me
 bot_about_changes: "⚙️ Changes\nAsk me to change the menu: another dish for a day, two days swapped, a pause while you eat what you have at home, or a new draw from a Monday. Ask me too for a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, the shopping stores, how I answer, a new recipe or a change to one you have (for example taking it out of breakfast). Tell me things about each of you that I should keep in mind and I note them. What you ask for I do at once and tell you what changed; it can be undone. When the idea is mine, I show it and wait for your yes. Pills, calories and goals are never changed from the chat."
-change_confirm: "{name}, shall I change this?\n{lines}\nReply to this message with «yes» or «no»."
+change_confirm: "{name}, shall I change this?\n{lines}\nTap Yes or No. If you want something else, reply to this message."
 change_yes_words: ["yes", "y", "ok", "okay", "sure", "go"]
 change_no_words: ["no", "n", "nope", "cancel"]
 change_cancelled: Okay, nothing changed.
@@ -246,7 +246,7 @@ change_plan_shift: "The menu from {day} on moves later and starts again on {back
 change_plan_undo: The last menu change is taken back
 change_done: "Done:\n{lines}"
 menu_applied: "The menu is updated. To take it back, ask me to undo the last menu change."
-proposal_confirm: "{name}, shall I go ahead?\n{summary}\nReply to this message with «yes» or «no»."
+proposal_confirm: "{name}, shall I go ahead?\n{summary}\nTap Yes or No. If you want something else, reply to this message."
 proposal_no_admins: "Only an admin can approve this, and none is set (bot.admins)."
 proposal_members_only: Only the people of the household can ask for this.
 proposal_failed: "That didn't work: {error}"
@@ -255,3 +255,14 @@ proposal_admins_no_group: "Only an admin can approve this, and this chat is your
 proposal_unsupported: "The AI provider cannot carry out proposals."
 proposal_interrupted: "I restarted while I was working on this, so it did not finish. Ask for it again if you still want it."
 pending_which: "Several things are waiting for your answer: reply «yes» or «no» to the message of the one you mean."
+button_yes: "Yes"
+button_no: "No"
+button_approve: "Approve"
+button_reject: "Reject"
+tap_gone: "This is no longer waiting for an answer."
+tap_not_yours: "Only {name} can answer this."
+options_hint: "Or tell me something else."
+ask_confirm: "{name}, do you approve this?\n{summary}"
+ask_done: "Done."
+ask_failed: "It failed: {error}"
+ask_edited: "You edited your message, so I did not make this change. Nothing changed."

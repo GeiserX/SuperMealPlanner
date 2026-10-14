@@ -186,7 +186,7 @@ bot_about_voice: "Las notas de voz me llegan por privado y en el grupo: escribo 
 bot_new: "Conversación nueva: he olvidado lo que hablamos. Vuestro plan y vuestros datos siguen aquí."
 bot_cmd_new: Empezar una conversación nueva conmigo
 bot_about_changes: "⚙️ Cambios\nPedidme cambiar el menú: otro plato para un día, intercambiar dos días, una pausa mientras coméis lo que tenéis en casa, o un menú nuevo a partir de un lunes. Pedidme también un recordatorio, los días de batch, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, las tiendas de la compra, cómo os respondo, una receta nueva o un cambio en una que ya tenéis (por ejemplo, quitarla del desayuno). Contadme cosas de cada uno que deba tener en cuenta y las apunto. Lo que me pedís lo hago al momento y os digo qué ha cambiado; se puede deshacer. Cuando la idea es mía, os la enseño y espero vuestro sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
-change_confirm: "{name}, ¿hago este cambio?\n{lines}\nResponde a este mensaje con «sí» o «no»."
+change_confirm: "{name}, ¿hago este cambio?\n{lines}\nToca Sí o No. Si quieres otra cosa, responde a este mensaje."
 change_yes_words: ["sí", "si", "vale", "ok", "okay", "claro", "dale", "adelante", "venga", "yes"]
 change_no_words: ["no", "nop", "cancela", "cancelar"]
 change_cancelled: Vale, no cambio nada.
@@ -245,7 +245,7 @@ change_plan_shift: "El menú a partir del {day} se retrasa y vuelve a empezar el
 change_plan_undo: Se deshace el último cambio del menú
 change_done: "Hecho:\n{lines}"
 menu_applied: "El menú ya está actualizado. Para volver atrás, pedidme que deshaga el último cambio del menú."
-proposal_confirm: "{name}, ¿lo hago?\n{summary}\nResponde a este mensaje con «sí» o «no»."
+proposal_confirm: "{name}, ¿lo hago?\n{summary}\nToca Sí o No. Si quieres otra cosa, responde a este mensaje."
 proposal_no_admins: "Esto solo lo puede aprobar un administrador, y no hay ninguno configurado (bot.admins)."
 proposal_members_only: Solo las personas de casa pueden pedir esto.
 proposal_failed: "No ha salido bien: {error}"
@@ -254,3 +254,14 @@ proposal_admins_no_group: "Esto solo lo puede aprobar un administrador, y este c
 proposal_unsupported: "El proveedor de IA no puede llevar a cabo propuestas."
 proposal_interrupted: "Me reinicié mientras trabajaba en esto y no terminó. Pídemelo otra vez si aún lo quieres."
 pending_which: "Hay varias cosas esperando tu respuesta: responde «sí» o «no» al mensaje de la que quieras."
+button_yes: "Sí"
+button_no: "No"
+button_approve: "Aprobar"
+button_reject: "Rechazar"
+tap_gone: "Esto ya no está esperando respuesta."
+tap_not_yours: "Esto solo lo puede responder {name}."
+options_hint: "O cuéntame otra cosa."
+ask_confirm: "{name}, ¿lo apruebas?\n{summary}"
+ask_done: "Hecho."
+ask_failed: "Falló: {error}"
+ask_edited: "Has editado tu mensaje, así que no he hecho este cambio. No he cambiado nada."
