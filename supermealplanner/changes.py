@@ -19,7 +19,7 @@ The AI ends an answer with one fenced block:
 
 Only the paths in ALLOWED can change; pills, calorie and protein targets and goals never can. Avoided
 foods are often medical (a drug interaction, a kidney diet): a person may only add to their own list,
-and only by hand can a food come off it. The pills reminder never changes from the chat. A person's
+and only by hand can a food come off it. A pills reminder changes only for a person it names. A person's
 `notes` are written by hand and are often medical: the chat only adds to and removes from the
 separate `chat_notes` list. Applying
 edits the files in the data folder (keeping their comments), runs the same validation as
@@ -145,7 +145,7 @@ def _match(path: str) -> tuple[str, str] | None:
     return None
 
 
-PROTECTED_REMINDER_KINDS = {"pills_lunch"}  # never added, edited or removed from the chat
+PILLS_REMINDER_KINDS = {"pills_lunch"}  # changed or dropped from the chat only by a person it names
 
 
 def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
@@ -191,8 +191,31 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
                 now.kind if now else None,
                 value.get("kind") if isinstance(value, dict) else None,
             }
-            if kinds & PROTECTED_REMINDER_KINDS:
-                raise ChangeError("the pills reminder can only be changed by hand")
+            if kinds & PILLS_REMINDER_KINDS:
+                # A pills reminder belongs to the people it names: each of them may change it or
+                # drop it from the chat (the person who stops taking a pill at lunch, for example),
+                # nobody may set one for someone else, and the pills themselves stay by hand.
+                named = set(now.people) if now is not None else set()
+                if (
+                    now is not None
+                    and now.kind in PILLS_REMINDER_KINDS
+                    and named
+                    and asker not in named
+                ):
+                    raise ChangeError(
+                        "someone else's pills reminder can only be changed by that person or by hand"
+                    )
+                if isinstance(value, dict) and "people" in value:
+                    extra = set(map(str, value["people"] or [])) - named - {asker}
+                    if extra:
+                        raise ChangeError("a pills reminder can only name the person who asks")
+                if (now is None or now.kind not in PILLS_REMINDER_KINDS) and (
+                    not isinstance(value, dict)
+                    or list(map(str, value.get("people") or [])) != [asker]
+                ):
+                    raise ChangeError(
+                        "a new pills reminder can only be set for the person who asks"
+                    )
         if label == "instructions" and not (
             isinstance(value, str) and len(value) <= INSTRUCTIONS_MAX
         ):

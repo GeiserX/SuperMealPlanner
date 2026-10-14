@@ -465,19 +465,30 @@ def test_avoided_foods_only_grow_and_only_on_the_askers_own_list(data):
     assert changes.parse({"set": {ana: ["salmon"]}}, data, "ana").edits  # she had none
 
 
-def test_the_pills_reminder_never_changes_from_the_chat(data_dir):
+def test_the_pills_reminder_changes_only_for_the_person_it_names(data_dir):
+    # "No me recuerdes esto nunca más" must work: the person named drops their
+    # own pills reminder from the chat, nobody sets one for someone else, the pills stay by hand.
     data = bot_data(data_dir)  # reminder "pills" is kind pills_lunch
-    for value in (
-        None,
-        {"enabled": False},
-        {"at": ["23:00"]},
-    ):
-        with pytest.raises(changes.ChangeError, match="pills reminder"):
-            changes.parse({"set": {"settings.reminders.pills": value}}, data, "luis")
-    new = {"kind": "pills_lunch", "at": ["16:00"], "enabled": False}
+    pills = next(r for r in data.settings.reminders if r.kind == "pills_lunch")
+    pills.people = ["luis"]
+    for value in (None, {"enabled": False}, {"at": ["23:00"]}):
+        assert changes.parse({"set": {"settings.reminders.pills": value}}, data, "luis").edits
+    for value in (None, {"enabled": False}):
+        with pytest.raises(changes.ChangeError, match="someone else's pills reminder"):
+            changes.parse({"set": {"settings.reminders.pills": value}}, data, "ana")
+    with pytest.raises(changes.ChangeError, match="only name the person who asks"):
+        changes.parse(
+            {"set": {"settings.reminders.pills": {"people": ["luis", "ana"]}}}, data, "luis"
+        )
+    new = {"kind": "pills_lunch", "at": ["16:00"], "people": ["ana"]}
     with pytest.raises(changes.ChangeError, match="pills reminder"):
         changes.parse({"set": {"settings.reminders.otra": new}}, data, "luis")
-    with pytest.raises(changes.ChangeError, match="pills reminder"):  # nor turn one into it
+    assert changes.parse(
+        {"set": {"settings.reminders.otra": {**new, "people": ["luis"]}}}, data, "luis"
+    ).edits
+    with pytest.raises(
+        changes.ChangeError, match="new pills reminder"
+    ):  # nor turn one into it for all
         changes.parse({"set": {"settings.reminders.water": {"kind": "pills_lunch"}}}, data, "luis")
     assert changes.parse({"set": {"settings.reminders.water": {"at": ["11:00"]}}}, data, "luis")
 

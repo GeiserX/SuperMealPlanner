@@ -355,7 +355,7 @@ def test_an_asked_settings_change_is_committed_at_once_and_the_safety_rules_hold
         {"household.people.luis.kcal.start": 1200},
         {"household.people.ana.avoid_ingredients": ["tomate"]},
         {"household.people.luis.avoid_ingredients": []},
-        {"settings.reminders.pills": {"at": ["17:00"]}},
+        {"settings.reminders.pills": {"people": ["luis", "ana"]}},  # a pills reminder for someone else
     ):
         reply(data_dir, text=block({"asked": True, "set": forbidden}))
         run(b.handle(None, msg("@chefbot hazlo")))
