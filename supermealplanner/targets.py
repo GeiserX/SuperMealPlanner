@@ -169,9 +169,16 @@ def evaluate(db: DB, hh: Household, p: Person, today: dt.date, apply: bool = Fal
     return st
 
 
+def training_extra(p: Person, day: dt.date) -> float:
+    """The kcal a strength-training day adds to this person's target; 0 on other days."""
+    from .model import WEEKDAYS
+
+    return p.training_extra_kcal if WEEKDAYS[day.weekday()] in p.training_days else 0.0
+
+
 def day_factor(hh: Household, p: Person, kcal: float, day: dt.date) -> float:
     """How much of a reference serving this person eats on this day."""
-    f = kcal / hh.reference_kcal
+    f = (kcal + training_extra(p, day)) / hh.reference_kcal
     if p.glp1:
         from .model import WEEKDAYS
 

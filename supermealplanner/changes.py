@@ -61,12 +61,15 @@ ALLOWED = {
     "household.guests.*": "guests",
     "household.batch.preferred_days": "batch_days",
     "household.batch.sessions_per_week": "batch_sessions",
+    "household.batch.avoid_days": "batch_avoid_days",
     "household.rules.legumes_min": "rule",
     "household.rules.fish_min": "rule",
     "household.rules.oily_fish_min": "rule",
     "household.rules.salad_daily": "rule",
     "household.rules.max_repeats_per_4_weeks": "rule",
     "household.people.*.avoid_ingredients": "avoid",
+    "household.people.*.swaps": "swaps",
+    "household.people.*.training_days": "training_days",
     "settings.shopping.primary": "shopping_primary",
     "settings.shopping.alternatives": "shopping_alternatives",
     "settings.sections.*": "section",
@@ -146,6 +149,8 @@ def _match(path: str) -> tuple[str, str] | None:
 
 
 PILLS_REMINDER_KINDS = {"pills_lunch"}  # changed or dropped from the chat only by a person it names
+# a person's own: only they may change these from the chat
+OWN = {"avoid", "swaps", "training_days"}
 
 
 def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
@@ -170,11 +175,21 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
             raise ChangeError(f"{path} cannot be changed from the chat")
         label, arg = hit
         top, *keys = path.split(".")
-        if label == "avoid":
+        if label in OWN:
             if arg not in people:
                 raise ChangeError(f"no person {arg}")
             if arg != asker:
-                raise ChangeError("only the person themselves can add to the foods they avoid")
+                raise ChangeError(
+                    "only the person themselves can change their avoided foods, swaps or "
+                    "training days"
+                )
+        if label == "swaps" and not (
+            isinstance(value, dict) and all(isinstance(v, str) for v in value.values())
+        ):
+            raise ChangeError(f"{path} must be the whole new map of ingredient id to ingredient id")
+        if label in ("training_days", "batch_avoid_days") and not isinstance(value, list):
+            raise ChangeError(f"{path} must be the whole new list of weekdays")
+        if label == "avoid":
             if not isinstance(value, list):
                 raise ChangeError(f"{path} must be the whole new list")
             dropped = [
@@ -364,10 +379,17 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
     lines = []
     for e in p.edits:
         name = e.arg
-        if e.label == "avoid":
+        if e.label in OWN:
             name = data.household.person(e.arg).name
         what = t(f"change_{e.label}", name=name)
         old = _current(data, e)
+        if e.label == "swaps":
+            lines.append(f"• {what}: {_swaps(old, data, t)} → {_swaps(e.value, data, t)}")
+            continue
+        if e.label in ("training_days", "batch_avoid_days"):
+            days = [_field("days", v, t) if v else t("change_none") for v in (old, e.value)]
+            lines.append(f"• {what}: {days[0]} → {days[1]}")
+            continue
         if e.label == "instructions":  # a whole text: only the lines that change
             lines.append(f"• {what}:")
             lines += _text_diff(old if isinstance(old, str) else "", str(e.value or ""))
@@ -402,6 +424,18 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
         lines.append("• " + t(f"change_note_{op}", name=name, text=text))
     new = {p.recipe["id"]: p.recipe.get("name")} if p.recipe else None
     return lines + menu.describe(p.plan, data, t, new)
+
+
+def _swaps(value, data: Data, t) -> str:
+    """A person's swaps as "Apple → Pear", with the ingredients' names."""
+    if not value:
+        return t("change_none")
+
+    def name(iid) -> str:
+        ing = data.ingredients.get(str(iid))
+        return ing.name if ing else str(iid)
+
+    return ", ".join(f"{name(a)} → {name(b)}" for a, b in value.items())
 
 
 def _plain(value):

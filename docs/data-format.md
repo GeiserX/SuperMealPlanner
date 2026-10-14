@@ -31,8 +31,9 @@ calendar:
   ics_env: CALENDAR_ICS_URL   # env var holding a secret iCal address; optional
   busy_afternoon: ["16:00", "20:00"]   # an event overlapping this window makes the afternoon busy
 batch:
-  preferred_days: [monday, friday, saturday]
+  preferred_days: [monday, friday, saturday]   # tried first
   sessions_per_week: 2
+  avoid_days: [tuesday]       # never a batch session on these, even when every other afternoon is busy
 people:
   - id: alex
     name: Alex
@@ -48,6 +49,9 @@ people:
     glp1: {drug: semaglutide, day: monday, early_week_factor: 0.95, late_week_factor: 1.05}
     packs: [glp1, binge-eating-safe]
     avoid_ingredients: [grapefruit]
+    swaps: {milk: oat-drink}    # ingredient id -> the one this person eats instead
+    training_days: [monday, thursday]   # strength training: the day's energy target rises
+    training_extra_kcal: 150    # by this much; 150 when left out
     avoid_tags_at_dinner: [cold-soup, fried]
     pills:                    # shown next to the meal they go with; the app never changes a dose
       waking: []
@@ -72,6 +76,8 @@ rules:                        # per 7 days; the plan validator enforces them
   salad_daily: true
   max_repeats_per_4_weeks: 2
 ```
+
+`swaps` changes an ingredient for one person only: their plate and the shopping list use the other ingredient in the same quantity, the recipe text stays as written, and nobody else's plate changes. Both ids must be in `ingredients.yaml`, in the same unit, and the one eaten instead must not be among the person's avoided foods. On a day in `training_days` the person's energy target is their calorie target plus `training_extra_kcal` (0 to 600; 150, roughly what 45 to 60 minutes of strength training uses above resting, when left out), so every plate of that day grows a little. `batch.avoid_days` may not hold all seven days. A week whose Monday to Wednesday, or Thursday to Sunday, are all avoided gets one session; the morning cook on the first Monday of a new plan, for that day's lunch, is the one exception to the rule.
 
 `goal.mode` is `lose`, `maintain` or `gain`. `glp1` is optional: with it, plates are a little smaller for the three days after the weekly injection and a little larger from day 4, and lighter dishes are preferred early in the week.
 
@@ -166,7 +172,7 @@ A plugin can also offer to do something outside the chat, such as opening a pull
 
 ### Changes from the chat
 
-The AI ends its answer with a `change` block, and the app makes the change for the person who was talking. The block may change a short list of settings: `household.lunch_time`, `shopping_day`, `guests`, `batch.preferred_days`, `batch.sessions_per_week`, the weekly `rules`, additions to the asker's own `avoid_ingredients`, `shopping.primary` and `alternatives`, `sections`, `reminders` (a `pills_lunch` one only by a person it names, and never for someone else), `llm.instructions` (how the assistant answers: the whole new text, at most 4000 characters; the confirmation shows only the lines that change), a new recipe, and some fields of a recipe that exists (`name`, `meals`, `tags`, `season`, `serves_note`, `video`, `steps`, `ingredients`, `nutrition`; never `id`, `kind` or how long it keeps). It may also add to and remove from a person's `chat_notes`, the facts the household told the assistant (at most 20 per person, 300 characters each). A person's `notes` are written by hand and the chat never changes them. Pills, the pills reminder, calorie and protein targets and goals are never on it. Avoided foods are often medical, so nobody can change another person's list from the chat, and a food comes off a list only by hand. When the block says `asked: true` (the person asked for exactly this change), the bot makes it at once and answers with what changed, the commit id and how to undo it. Without it (the change is the AI's own idea) the bot shows the change in plain words and waits for that person to answer yes or no; in the group the answer has to reply to the bot or mention it, so an "ok" said to someone else is not a yes. Either way the limits above hold. To save settings it pulls the data repo, edits the file (comments and layout stay), runs the same validation as `smp check` on a copy, and pushes one git commit, so every change can be reverted. That needs the data folder to be a git checkout and `SMP_GIT_WRITE_TOKEN` (a token that may push to the data repo). Without them the bot shows the change for a person to make by hand.
+The AI ends its answer with a `change` block, and the app makes the change for the person who was talking. The block may change a short list of settings: `household.lunch_time`, `shopping_day`, `guests`, `batch.preferred_days`, `batch.sessions_per_week`, `batch.avoid_days`, the weekly `rules`, additions to the asker's own `avoid_ingredients`, the asker's own `swaps` and `training_days` (the whole new map or list; `training_extra_kcal` stays by hand), `shopping.primary` and `alternatives`, `sections`, `reminders` (a `pills_lunch` one only by a person it names, and never for someone else), `llm.instructions` (how the assistant answers: the whole new text, at most 4000 characters; the confirmation shows only the lines that change), a new recipe, and some fields of a recipe that exists (`name`, `meals`, `tags`, `season`, `serves_note`, `video`, `steps`, `ingredients`, `nutrition`; never `id`, `kind` or how long it keeps). It may also add to and remove from a person's `chat_notes`, the facts the household told the assistant (at most 20 per person, 300 characters each). A person's `notes` are written by hand and the chat never changes them. Pills, the pills reminder, calorie and protein targets and goals are never on it. Avoided foods are often medical, so nobody can change another person's list, swaps or training days from the chat, and a food comes off a list only by hand. When the block says `asked: true` (the person asked for exactly this change), the bot makes it at once and answers with what changed, the commit id and how to undo it. Without it (the change is the AI's own idea) the bot shows the change in plain words and waits for that person to answer yes or no; in the group the answer has to reply to the bot or mention it, so an "ok" said to someone else is not a yes. Either way the limits above hold. To save settings it pulls the data repo, edits the file (comments and layout stay), runs the same validation as `smp check` on a copy, and pushes one git commit, so every change can be reverted. That needs the data folder to be a git checkout and `SMP_GIT_WRITE_TOKEN` (a token that may push to the data repo). Without them the bot shows the change for a person to make by hand.
 
 Recipe edits and notes go in the same block and are saved in the same commit:
 

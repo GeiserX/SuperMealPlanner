@@ -300,24 +300,30 @@ def _glp1_phase(data: Data, d: dt.date) -> str:
 
 
 def _choose_sessions(data: Data, monday: dt.date, busy: dict[dt.date, list[str]]) -> list[Session]:
-    pref = [WEEKDAYS.index(d) for d in data.household.batch.preferred_days]
+    """The week's batch afternoons: a preferred day that is free, else the next free one. A day in
+    batch.avoid_days is never picked, not even when every other day is busy. A half of the week
+    (Monday to Wednesday, Thursday to Sunday) whose every day is avoided gets no session; a week
+    left with none cooks on the first day the rest of the week allows."""
+    batch = data.household.batch
+    avoid = {WEEKDAYS.index(d) for d in batch.avoid_days}
+    pref = [WEEKDAYS.index(d) for d in batch.preferred_days]
     first = [w for w in pref if w <= 2] + [0, 1, 2]
     second = [w for w in pref if w >= 3] + [4, 5, 6, 3]
-    out = []
-    for cands in (first, second)[: data.household.batch.sessions_per_week]:
-        seen, pick = [], None
-        for w in cands:
-            if w in seen:
-                continue
-            seen.append(w)
+
+    def choose(cands: list[int]) -> Session | None:
+        allowed = list(dict.fromkeys(w for w in cands if w not in avoid))
+        if not allowed:
+            return None
+        for w in allowed:
             d = monday + dt.timedelta(days=w)
             if d not in busy:
-                pick = Session(date=d)
-                break
-        if pick is None:
-            d = monday + dt.timedelta(days=seen[0])
-            pick = Session(date=d, busy=busy.get(d, []))
-        out.append(pick)
+                return Session(date=d)
+        d = monday + dt.timedelta(days=allowed[0])
+        return Session(date=d, busy=busy.get(d, []))
+
+    out = [s for c in (first, second)[: batch.sessions_per_week] if (s := choose(c))]
+    if not out:  # never empty: avoid_days always leaves a day (model.Batch)
+        out = [choose(first + second)]
     return out
 
 
