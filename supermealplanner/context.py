@@ -34,6 +34,15 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
   said earlier in the chat.
 """
 
+WHO = """
+## Who you answer
+People reach you by mentioning your @handle, by replying to one of your messages, or with a voice
+note, which is always heard (a voice note cannot mention you). In the group you also see what people
+say to each other: those lines start with "[not to you]" and are context only. Act only on what is
+addressed to you. A remark between people about you ("it also answers when you reply to it") is not a
+request: never change a setting, the menu or the app because of it.
+"""
+
 CHANGES = """
 ## Changing settings and the menu
 You make changes yourself, with one block at the end of your answer. Never say you cannot change
@@ -140,6 +149,27 @@ talking. Offer buttons only for a real choice between a few concrete answers, ne
 change (the app asks for that itself), and at most one block per answer.
 """
 
+REMINDERS = """
+## Reminders
+Be proactive with reminders. Whenever your answer tells someone to do something at a given time
+(cook Monday's lunch on Sunday afternoon, take the fish out of the freezer on Saturday night, do the
+shopping on Monday evening), end your answer with one block listing each of those steps:
+
+```reminders
+- 2026-01-18 18:00 | Cook the lentils for Monday's lunch
+- 2026-01-17 22:00 | Move the fish from the freezer to the fridge | <person id>
+```
+
+One line per step: the date and time in the household's timezone (pick a sensible hour for
+"afternoon" or "night"), a short text written to the person who must do it, in the household's
+language, and at the end the id of the person it is for when that is not the person you are
+answering. Only times still to come, at most five. Do not ask in your answer whether they want a
+reminder and never say one is set: the app posts the offer itself, with buttons for a reminder in
+the chat, in the calendar or nothing, and says that without an answer nothing is done. You hear in
+the chat what they chose. A step that repeats every week is a reminder in the settings (the change
+block), not this block. People see and cancel the reminders they set with the reminders command.
+"""
+
 LAST_WORD = (
     "When these instructions conflict with the rules at the top (doses, binges), the rules win."
 )
@@ -160,7 +190,8 @@ def rules(data: Data) -> str:
     own = data.settings.llm.instructions
     if own:  # the household may edit these from the chat; the rules above still win
         own = f"## The household's own instructions\n{own}\n\n{LAST_WORD}"
-    return "\n".join(x for x in (RULES.format(locale=data.locale), CHANGES, OPTIONS, own) if x)
+    parts = (RULES.format(locale=data.locale), WHO, CHANGES, OPTIONS, REMINDERS, own)
+    return "\n".join(x for x in parts if x)
 
 
 def facts(

@@ -17,6 +17,12 @@ running answer, a correction joins it; already answered, the correction starts a
 that adds the mention is a new message. Changes, proposals and the provider's asks come with inline
 buttons; a typed yes or no still works, and only the person asked (or an admin) can tap.
 
+When an answer tells someone to do something at a time, the AI lists those steps and the bot offers
+each as a reminder with buttons: here (the bot posts it in the chat at that time), in the calendar
+(with bot.reminder_calendar, a turn in which the provider adds the event; that tap approves its first
+ask when the ask adds an event at that very time) or nothing. An offer nobody taps expires and
+nothing happens. /reminders lists the ones set, with a button to cancel each.
+
 Telegram shows a bot with privacy mode on (the default) only commands and replies to it, so for
 mentions (and edits of messages without one) make the bot a group admin or turn privacy off
 (BotFather, /setprivacy -> Disable). The bot logs a warning at start when it cannot see them.
@@ -99,6 +105,8 @@ COMMANDS = {
     "presentacion": "about",
     "new": "new",
     "nuevo": "new",
+    "reminders": "reminders",
+    "recordatorios": "reminders",
 }
 USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")  # Telegram usernames (4-letter ones exist)
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
@@ -116,6 +124,10 @@ VOICE_WAIT_S = 30  # a turn waits this long at most for a voice note of its chat
 OPTIONS = "bot.options.{}"  # choices offered as buttons under an answer, per chat
 OPTIONS_TTL = 12 * 3600  # a choice can be tapped this long
 OPTIONS_KEEP = 20
+REMIND = "bot.remind"  # reminders offered with buttons and not yet settled, across every chat
+REMIND_TTL = 1800  # an offer can be tapped this long; then nothing is done
+REMIND_DAYS = 60  # the furthest ahead a reminder may be
+LATE_S = 600  # a reminder posted this much after its time says so
 
 
 @dataclass
@@ -127,6 +139,9 @@ class Item:
     uid: int | None  # who sent it
     who: str | None  # their person id
     ts: float  # when it arrived (the bot's clock)
+    # a tap on a reminder's "in the calendar": approves the turn's first ask when it adds the
+    # event at that time {"by": user id, "at": epoch seconds, "used": bool}
+    grant: dict | None = None
 
 
 @dataclass
@@ -144,6 +159,9 @@ class Turn:
 
     def users(self) -> list[int]:
         return list(dict.fromkeys(i.uid for i in [*self.items, *self.pulled] if i.uid))
+
+    def grants(self) -> list[dict]:
+        return [i.grant for i in [*self.items, *self.pulled] if i.grant is not None]
 
 
 class Bot:
@@ -426,7 +444,12 @@ class Bot:
             except Exception as e:  # noqa: BLE001
                 log.warning("reminder tick failed: %s", safe(e))
             try:
+                await self.tick_once(client)
+            except Exception as e:  # noqa: BLE001
+                log.warning("one-off reminder tick failed: %s", safe(e))
+            try:
                 await self.expire_asks(client)
+                await self.expire_offers(client)
             except Exception as e:  # noqa: BLE001
                 log.warning("ask expiry failed: %s", safe(e))
             await asyncio.sleep(30)
@@ -501,8 +524,14 @@ class Bot:
             handler = COMMANDS.get(cmd)
             if handler:
                 reply = await getattr(self, f"cmd_{handler}")(who, arg.strip(), user, chat)
+                reply, rows = reply if isinstance(reply, tuple) else (reply, None)
                 await self.send(
-                    client, chat["id"], reply, msg["message_id"], record=handler != "new"
+                    client,
+                    chat["id"],
+                    reply,
+                    msg["message_id"],
+                    record=handler != "new",
+                    buttons=rows,
                 )
             return
         asked = private or self.mentioned(text) or self.replied(msg)
@@ -520,6 +549,7 @@ class Bot:
         text: str,
         asked: bool,
         log_mid: bool = True,
+        grant: dict | None = None,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
@@ -534,7 +564,8 @@ class Bot:
             asked=asked,
         )
         if asked:
-            item = Item(row, (msg or {}).get("message_id"), user.get("id"), who, self.clock())
+            mid = (msg or {}).get("message_id")
+            item = Item(row, mid, user.get("id"), who, self.clock(), grant)
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
         return row
@@ -682,7 +713,9 @@ class Bot:
         text, change = changes.extract(reply.text)
         text, offered = llm.extract_options(text)
         offered = reply.options or offered
-        if not text and change is None and not reply.proposals:
+        text, listed = llm.extract_reminders(text)
+        listed = reply.reminders or listed
+        if not text and change is None and not reply.proposals and not listed:
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return
         if text:
@@ -701,6 +734,8 @@ class Bot:
             await self.propose(client, chat_id, anchor.mid, anchor.who, anchor.uid, change)
         for proposal in reply.proposals:
             await self.offer(client, chat_id, anchor.mid, anchor.who, anchor.uid, proposal)
+        if listed:
+            await self.offer_reminders(client, chat_id, listed, covered, reply_to)
 
     async def answer_text(self, client, chat_id, text, reply_to, offered, covered) -> None:
         """The answer, with the choices it offers as buttons under it."""
@@ -910,19 +945,28 @@ class Bot:
 
     async def tapped(self, client, query: dict) -> None:
         """A tap on one of the bot's buttons: a yes or no to a change or a proposal (c:), to an ask
-        of the provider (a:), or one of the choices under an answer (o:). Only the person asked (or
+        of the provider (a:), one of the choices under an answer (o:), where a reminder offered
+        goes (r:), or the cancel of a reminder set (k:). Only the person asked (or
         an admin, as the item says) may tap; anyone else gets a note and nothing changes."""
         user, message = query.get("from") or {}, query.get("message") or {}
         chat = message.get("chat") or {}
         kind, _, rest = str(query.get("data") or "").partition(":")
         key, _, choice = rest.partition(":")
-        if kind not in ("c", "a", "o") or not chat or not self.allowed(chat, user.get("id", 0)):
+        if (
+            kind not in ("c", "a", "o", "r", "k")
+            or not chat
+            or not self.allowed(chat, user.get("id", 0))
+        ):
             await self.toast(client, query)
             return
         if kind == "c":
             await self.tapped_confirm(client, query, chat["id"], key, choice == "y")
         elif kind == "a":
             await self.tapped_ask(client, query, chat["id"], key, choice == "y")
+        elif kind == "r":
+            await self.tapped_remind(client, query, chat, key, choice)
+        elif kind == "k":
+            await self.tapped_cancel(client, query, chat["id"], key, choice)
         else:
             await self.tapped_option(client, query, chat, key, choice)
 
@@ -1012,9 +1056,20 @@ class Bot:
         chat_id, summary = turn_state.chat, str(request.get("summary") or "").strip()
         if any(a.get("request", {}).get("id") == request["id"] for a in self.asks.values()):
             return  # asked already
-        ids = self._approvers(turn_state, request.get("confirm_by"))
         expires = request.get("expires_at")
         expires = float(expires) if isinstance(expires, int | float) else time.time() + 300
+        grant = next((g for g in turn_state.grants() if not g.get("used")), None)
+        if grant is not None and not turn_state.closed and summary and expires > time.time():
+            grant["used"] = True  # the turn's first ask uses it up, whatever that ask is
+            when = request.get("when")
+            if (
+                request.get("action") == "add"
+                and isinstance(when, int | float)
+                and abs(when - grant["at"]) < 60
+            ):
+                await self.preapproved(client, turn_state, request, grant, summary)
+                return
+        ids = self._approvers(turn_state, request.get("confirm_by"))
         if turn_state.closed or not ids or not summary or expires <= time.time():
             await self.decline(request, "no one could be asked")
             return
@@ -1049,6 +1104,35 @@ class Bot:
             await self.close_asks(client, turn_state, [key])
         else:
             turn_state.asks.append(key)
+
+    async def preapproved(self, client, turn_state: Turn, request, grant, summary) -> None:
+        """The ask a reminder's "in the calendar" tap asked for: approved by that tap, and the
+        chat sees what was approved and how it went."""
+        try:
+            out = await llm.answer(
+                self.data,
+                request,
+                {
+                    "approved": True,
+                    "by": str(grant["by"]),
+                    "note": "approved with the reminder's calendar button",
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("a preapproved ask failed: %s", safe(e))
+            out = {"ok": False, "error": type(e).__name__}
+        said = (
+            self.t("ask_done")
+            if out.get("ok")
+            else self.t("ask_failed", error=str(out.get("error") or "?")[:300])
+        )
+        await self.send(
+            client,
+            turn_state.chat,
+            f"{self.t('ask_preapproved', summary=summary)}\n{said}",
+            turn_state.items[-1].mid,
+            record=False,
+        )
 
     async def decline(self, request: dict, note: str, by: str = "bot") -> dict:
         try:
@@ -1404,6 +1488,7 @@ class Bot:
         "water",
         "pills",
         "about",
+        "reminders",
         "new",
         "help",
     )
@@ -1486,7 +1571,7 @@ class Bot:
         if cfg.llm.provider == "none":
             lines.append(t("bot_no_llm"))
         else:
-            lines += ["", t("bot_about_changes")]
+            lines += ["", t("bot_about_changes"), "", t("bot_about_once")]
         if cfg.bot.private_chats:
             lines += ["", t("bot_about_private")]
         if cfg.base_url:
@@ -1780,6 +1865,243 @@ class Bot:
                 await self.send(client, chat, text)
             self.state.db.mark_sent(r.id, now.date(), at)  # only after Telegram took it
 
+    # ------------------------------------------------------------- one-off reminders
+    def _zone(self) -> ZoneInfo:
+        return ZoneInfo(self.data.household.timezone)
+
+    def _when(self, at: float) -> str:
+        """A reminder's time as the household reads it: "Sunday 18 Oct, 18:00"."""
+        local = dt.datetime.fromtimestamp(at, self._zone())
+        return self.t("reminder_when", date=self.t.date(local.date()), time=f"{local:%H:%M}")
+
+    def _person(self, pid) -> str | None:
+        return pid if pid in {p.id for p in self.data.household.people} else None
+
+    def _offered(self, listed: list[dict], who) -> list[dict]:
+        """The reminders an answer listed that can be kept: a time still to come, within
+        REMIND_DAYS, for a person of the household (the person answered when it names nobody)."""
+        zone, now, out = self._zone(), time.time(), []
+        for r in listed:
+            try:
+                at = dt.datetime.strptime(r["when"], "%Y-%m-%d %H:%M").replace(tzinfo=zone)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not now + 60 <= at.timestamp() <= now + REMIND_DAYS * 86400:
+                continue
+            person = self._person(r.get("person")) or who
+            out.append({"at": at.timestamp(), "text": r["text"], "person": person, "done": None})
+        return out
+
+    def _offers(self) -> list[dict]:
+        return [o for o in self.state.db.get_kv(REMIND) or [] if isinstance(o, dict)]
+
+    def _remind_rows(self, key: str, items: list[dict]) -> list[list[tuple[str, str]]]:
+        """Each reminder's buttons (here, in the calendar, nothing), or one inert button saying
+        what became of it."""
+        t, rows = self.t, []
+        calendar = self.data.settings.bot.reminder_calendar
+        for n, r in enumerate(items):
+            pre = f"{n + 1} · " if len(items) > 1 else ""
+            if r.get("done"):
+                rows.append([(f"✓ {pre}{t('remind_' + r['done'])}", "x")])
+                continue
+            first = [(pre + t("remind_here"), f"r:{key}:{n}h")]
+            if calendar:
+                first.append((pre + t("remind_calendar"), f"r:{key}:{n}c"))
+            rows += [first, [(pre + t("remind_nothing"), f"r:{key}:{n}x")]]
+        return rows
+
+    async def offer_reminders(self, client, chat_id, listed, covered, reply_to) -> None:
+        """One message with the reminders an answer listed and buttons for each. Nothing happens
+        until a tap; untapped, the offer expires (REMIND_TTL) as nothing."""
+        items = self._offered(listed, covered[-1].who if covered else None)
+        if not items:
+            return
+        t, people = self.t, self.data.settings.bot.people
+        many = len(items) > 1
+        lines = [
+            (f"{n + 1}. " if many else "") + f"{self._when(r['at'])}: {r['text']}"
+            for n, r in enumerate(items)
+        ]
+        persons = list(dict.fromkeys(r["person"] for r in items if r["person"]))
+        names = ", ".join(self.mention(p) for p in persons)
+        key = secrets.token_hex(4)
+        sent = await self.send(
+            client,
+            chat_id,
+            t(
+                "remind_offer" if names else "remind_offer_nobody",
+                name=names,
+                lines="\n".join(lines),
+            ),
+            reply_to,
+            buttons=self._remind_rows(key, items),
+        )
+        users = [i.uid for i in covered if i.uid] + [people[p] for p in persons if p in people]
+        offer = {
+            "key": key,
+            "chat": chat_id,
+            "msg": sent,
+            "for": list(dict.fromkeys(users)),
+            "items": items,
+            "ts": time.time(),
+        }
+        live = [o for o in self._offers() if time.time() - o.get("ts", 0) <= REMIND_TTL]
+        self.state.db.set_kv(REMIND, [*live, offer])
+
+    async def rekey(self, client, chat_id: int, message_id, rows) -> None:
+        if not message_id:
+            return
+        try:
+            await self.call(
+                client,
+                "editMessageReplyMarkup",
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=keyboard(rows),
+            )
+        except TelegramError as e:
+            log.info("could not change the buttons of a message: %s", e)
+
+    async def tapped_remind(self, client, query, chat: dict, key: str, choice: str) -> None:
+        """Where an offered reminder goes: here (stored, posted at its time), in the calendar (a
+        turn in which the provider adds it, approved by this tap) or nothing."""
+        user, t = query.get("from") or {}, self.t
+        mid = (query.get("message") or {}).get("message_id")
+        offers = self._offers()
+        offer = next(
+            (o for o in offers if o.get("key") == key and o.get("chat") == chat["id"]), None
+        )
+        n, c = choice[:-1], choice[-1:]
+        if offer is None or time.time() - offer.get("ts", 0) > REMIND_TTL:
+            await self.toast(client, query, t("tap_gone"))
+            if offer is None:
+                await self.unbutton(client, chat["id"], mid)
+            return
+        if offer["for"] and user.get("id") not in offer["for"]:
+            names = ", ".join(self.mention(p) for p in self._people(offer["for"]))
+            await self.toast(client, query, t("tap_not_yours", name=names))
+            return
+        items = offer["items"]
+        calendar = self.data.settings.bot.reminder_calendar
+        if (
+            not n.isdigit()
+            or int(n) >= len(items)
+            or c not in ("h", "c", "x")
+            or (c == "c" and not calendar)
+        ):
+            await self.toast(client, query)
+            return
+        item = items[int(n)]
+        if item.get("done"):
+            await self.toast(client, query, t("tap_gone"))
+            return
+        item["done"] = {"h": "here", "c": "calendar", "x": "nothing"}[c]
+        # saved before any await: a second tap finds it settled
+        rest = [o for o in offers if o.get("key") != key]
+        open_items = any(not i.get("done") for i in items)
+        self.state.db.set_kv(REMIND, [*rest, offer] if open_items else rest or None)
+        who = self.person_of(user.get("id", 0))
+        when = self._when(item["at"])
+        await self.toast(client, query, t("remind_set", when=when) if c == "h" else None)
+        await self.rekey(client, chat["id"], offer["msg"], self._remind_rows(key, items))
+        if c == "h":
+            person = item["person"] or who
+            self.state.db.add_reminder(chat["id"], person, item["at"], item["text"], user.get("id"))
+            # the AI hears it with the rest of the chat
+            self.state.db.add_chat(
+                chat["id"], "assistant", None, t("remind_set_log", when=when, text=item["text"])
+            )
+        elif c == "c":
+            local = dt.datetime.fromtimestamp(item["at"], self._zone())
+            text = t("remind_calendar_turn", when=when, iso=local.isoformat(), text=item["text"])
+            grant = {"by": user.get("id"), "at": item["at"], "used": False}
+            self.take(chat["id"], user, who, {"message_id": offer["msg"]}, text, True, grant=grant)
+            await self.drive(client, chat["id"])
+
+    async def expire_offers(self, client) -> None:
+        """Offers nobody settled in REMIND_TTL: nothing is done, and their buttons say so."""
+        offers = self._offers()
+        now = time.time()
+        gone = [o for o in offers if now - o.get("ts", 0) > REMIND_TTL]
+        if not gone:
+            return
+        self.state.db.set_kv(REMIND, [o for o in offers if o not in gone] or None)
+        for o in gone:
+            for r in o.get("items") or []:
+                r["done"] = r.get("done") or "timeout"
+            await self.rekey(
+                client, o["chat"], o.get("msg"), self._remind_rows(o["key"], o["items"])
+            )
+
+    async def tick_once(self, client) -> None:
+        """Post every one-off reminder whose time has come, naming the person it is for, then mark
+        it sent. One Telegram refuses for good (the chat is gone) is marked failed."""
+        now = time.time()
+        for r in self.state.db.due_reminders(now):
+            pid = self._person(r["person"])
+            text = f"⏰ {self.mention(pid)}: {r['text']}" if pid else f"⏰ {r['text']}"
+            if now - r["at"] > LATE_S:
+                text += "\n" + self.t("reminder_late", when=self._when(r["at"]))
+            try:
+                await self.send(client, r["chat"], text)
+            except TelegramError as e:
+                if e.code in (400, 403):
+                    log.warning("a reminder could not be posted: %s", e)
+                    self.state.db.settle_reminder(r["id"], "failed")
+                    continue
+                raise
+            self.state.db.settle_reminder(r["id"], "sent")  # only after Telegram took it
+
+    async def cmd_reminders(self, who, arg, user, chat=None):
+        """The chat's reminders still to come, each with a button to cancel it."""
+        t = self.t
+        rows = self.state.db.reminders((chat or {}).get("id"))[:20]
+        if not rows:
+            return t("reminders_none")
+        lines, buttons = [t("reminders_title")], []
+        for n, r in enumerate(rows, 1):
+            pid = self._person(r["person"])
+            # plain names: listing a reminder must not notify the people it is for
+            name = f" · {self.data.household.person(pid).name}" if pid else ""
+            lines.append(f"{n}. {self._when(r['at'])}{name}: {r['text']}")
+            buttons.append([(t("reminders_cancel", n=n), f"k:{r['id']}:{n}")])
+        return "\n".join(lines), buttons
+
+    async def tapped_cancel(self, client, query, chat_id: int, rid: str, n: str) -> None:
+        """Cancel a reminder from the /reminders list; its button says so."""
+        db, t = self.state.db, self.t
+        r = db.reminder(int(rid)) if rid.isdigit() else None
+        message = query.get("message") or {}
+        if r is None or r["chat"] != chat_id:
+            await self.toast(client, query, t("tap_gone"))
+            return
+        uid = (query.get("from") or {}).get("id")
+        if self.person_of(uid or 0) is None and uid != r["by"]:  # a stranger under group_open
+            await self.toast(client, query, t("reminder_not_yours"))
+            return
+        if not db.settle_reminder(r["id"], "cancelled"):
+            await self.toast(client, query, t("tap_gone"))
+            return
+        await self.toast(client, query, t("reminder_cancelled"))
+        db.add_chat(
+            chat_id,
+            "assistant",
+            None,
+            t("reminder_cancelled_log", when=self._when(r["at"]), text=r["text"]),
+        )
+        tapped = query.get("data")
+        rows = [
+            [
+                (f"✓ {t('reminders_cancelled', n=n)}", "x")
+                if b.get("callback_data") == tapped
+                else (b.get("text", ""), b.get("callback_data", "x"))
+                for b in row
+            ]
+            for row in (message.get("reply_markup") or {}).get("inline_keyboard") or []
+        ]
+        await self.rekey(client, chat_id, message.get("message_id"), rows)
+
 
 def _reply_to(items: list[Item]) -> int | None:
     """An answer replies to the message it answers only when it answers exactly one."""
@@ -1791,12 +2113,15 @@ def keyboard(rows: list[list[tuple[str, str]]]) -> dict:
 
 
 def _messages(rows: list[dict]) -> list[dict]:
-    """Chat log rows as model messages; who wrote a user message goes in front of it. Each carries
-    the ids of the rows merged into it and when the last of them was written."""
+    """Chat log rows as model messages; who wrote a user message goes in front of it, and a group
+    message that did not call the bot is marked "[not to you]". Each carries the ids of the rows
+    merged into it and when the last of them was written."""
     out: list[dict] = []
     for h in rows:
         role = "assistant" if h["role"] == "assistant" else "user"
         content = h["text"] if role == "assistant" else f"{h['who'] or 'someone'}: {h['text']}"
+        if role == "user" and h.get("asked") == 0:  # said in the group, not to the bot
+            content = f"[not to you] {content}"
         if out and out[-1]["role"] == role:
             out[-1]["content"] += "\n" + content
             out[-1]["ids"].append(h.get("id"))

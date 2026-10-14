@@ -48,11 +48,23 @@ The answer may offer the person choices: "options": ["short label", ...] in the 
 or an ```options block at the end of the text with one "- label" per line. The app shows them as
 buttons under the answer; a tap is that person's next message. They never wait for a tap.
 
+The answer may offer reminders: when it tells someone to do something at a time (cook on Sunday
+afternoon, take the fish out of the freezer on Saturday night), "reminders": [{"when": "YYYY-MM-DD
+HH:MM", "text": str, "person": person id or None}, ...] in the dict (at most five, the time in the
+household's timezone), or a ```reminders block at the end of the text with one
+"- YYYY-MM-DD HH:MM | text" line each (" | <person id>" at the end names whom it is for). The app
+posts them in one message with buttons per reminder: a reminder here (the app posts the text in the
+chat at that time), in the calendar (with bot.reminder_calendar: a new turn asks the provider to add
+the event, and that tap approves its first ask of that turn when the ask adds an event at that very
+time), or nothing. An offer nobody taps expires and nothing happens.
+
 A plugin whose actions need a person's yes while it works defines
       def answer(request: dict, decision: dict, settings: dict) -> dict
 and gets turn["ask"](request) from the app, callable from its thread: request is {"id": str,
 "summary": str, "confirm_by": "asker" | "admins", "expires_at": epoch seconds}. The app posts the
-summary with Approve and Reject buttons, and on a tap by the right person (or at once, with
+summary with Approve and Reject buttons (a request may also say "action": "add" | "change" |
+"delete" and "when": the event's start in epoch seconds, so a tap on a reminder's "in the calendar"
+can approve the event it asked for), and on a tap by the right person (or at once, with
 approved False and a note, when nobody can be asked, or when that person edits a message of the
 turn) calls answer(request, {"approved": bool, "by": str, "note": str | None}, settings), which
 returns {"ok": bool | None, "error": str | None}: the app then says done or failed under the ask.
@@ -91,6 +103,7 @@ class Reply:
     proposals: list[dict] = field(default_factory=list)
     covers: set[int] = field(default_factory=set)  # handed-over messages the answer took in
     options: list[str] = field(default_factory=list)  # choices to offer as buttons
+    reminders: list[dict] = field(default_factory=list)  # {"when", "text", "person"} to offer
 
 
 CONFIRM_BY = ("asker", "admins", "none")
@@ -116,6 +129,52 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     lines = [x.strip() for x in blocks[-1].group(1).splitlines()]
     labels = [x[1:].strip() for x in lines if x.startswith(("-", "*"))]
     return OPTIONS.sub("", text).strip(), options(labels)
+
+
+REMINDERS_MAX, REMINDER_CHARS = 5, 300
+REMINDERS = re.compile(r"\n?```reminders[ \t]*\n(.*?)```[ \t]*", re.DOTALL)
+WHEN = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}")
+
+
+def reminders(raw) -> list[dict]:
+    """Well-formed reminders: a time written as YYYY-MM-DD HH:MM, a short text, a person id or None;
+    at most REMINDERS_MAX, anything else is dropped. Whether the time is still to come is the
+    app's to judge when it offers them."""
+    out: list[dict] = []
+    for r in raw if isinstance(raw, list) else []:
+        if not isinstance(r, dict):
+            continue
+        when = str(r.get("when") or "").strip()
+        text = " ".join(str(r.get("text") or "").split())
+        person = r.get("person")
+        if not WHEN.fullmatch(when) or not text or len(text) > REMINDER_CHARS:
+            continue
+        item = {
+            "when": when.replace("T", " "),
+            "text": text,
+            "person": str(person) if isinstance(person, str) and person.strip() else None,
+        }
+        if all((o["when"], o["text"]) != (item["when"], item["text"]) for o in out):
+            out.append(item)
+    return out[:REMINDERS_MAX]
+
+
+def extract_reminders(text: str) -> tuple[str, list[dict]]:
+    """The answer without its ```reminders block, and the reminders it lists."""
+    blocks = list(REMINDERS.finditer(text))
+    if not blocks:
+        return text, []
+    found = []
+    for line in blocks[-1].group(1).splitlines():
+        line = line.strip()
+        if not line.startswith(("-", "*")):
+            continue
+        parts = [x.strip() for x in line[1:].split("|")]
+        if len(parts) >= 2:
+            found.append(
+                {"when": parts[0], "text": parts[1], "person": parts[2] if len(parts) > 2 else None}
+            )
+    return REMINDERS.sub("", text).strip(), reminders(found)
 
 
 def _proposals(raw) -> list[dict]:
@@ -156,6 +215,7 @@ async def converse(data: Data, turn: dict) -> Reply:
             _proposals(out.get("proposals")),
             {int(i) for i in covers if isinstance(i, int)} if isinstance(covers, list) else set(),
             options(out.get("options")),
+            reminders(out.get("reminders")),
         )
     return Reply(str(out).strip())
 

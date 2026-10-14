@@ -128,6 +128,7 @@ bot_help: |
   /list: this week's shopping list
   /weight 82.4 · /waist 95 · /craving 7 · /water: log for yourself
   /about: everything I do
+  /reminders: the reminders to come, to cancel one
   /new: start a new conversation with me
   /chatid: this chat's id
   Ask anything else in plain words and I'll answer from our plan and data.
@@ -266,3 +267,26 @@ ask_confirm: "{name}, do you approve this?\n{summary}"
 ask_done: "Done."
 ask_failed: "It failed: {error}"
 ask_edited: "You edited your message, so I did not make this change. Nothing changed."
+
+# one-off reminders the AI offers, /reminders
+remind_offer: "{name}, shall I remind you?\n{lines}\n\nIf you do not answer, I do nothing."
+remind_offer_nobody: "Shall I set a reminder?\n{lines}\n\nIf you do not answer, I do nothing."
+remind_here: "Reminder here"
+remind_calendar: "In the calendar"
+remind_nothing: "Nothing"
+remind_timeout: "No answer: nothing"
+remind_set: "I will remind you here on {when}."
+remind_set_log: "⏰ Reminder set for {when}: {text}"
+remind_calendar_turn: "Add an event to the calendar for this reminder, once, on {when} ({iso}): «{text}». I asked with the reminder's «In the calendar» button."
+reminder_when: "{date}, {time}"
+reminder_late: "(late: it was for {when})"
+reminders_none: "No reminders to come in this chat. The fixed ones are in /about."
+reminders_title: "⏰ Reminders to come:"
+reminders_cancel: "Cancel {n}"
+reminders_cancelled: "Cancelled {n}"
+reminder_cancelled: "Cancelled."
+reminder_cancelled_log: "⏰ Reminder cancelled: {when}: {text}"
+ask_preapproved: "Approved with the «In the calendar» button:\n{summary}"
+bot_about_once: "⏰ Reminders\nWhen I tell you to do something at a time, I offer a reminder with buttons; if you do not answer, I do nothing. /reminders shows the ones set and cancels them."
+bot_cmd_reminders: "The reminders to come, to cancel one"
+reminder_not_yours: "Only the household or whoever set it can cancel a reminder."
