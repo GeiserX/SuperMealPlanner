@@ -215,6 +215,9 @@ change_batch_days: Días de batch
 change_batch_sessions: Sesiones de batch por semana
 change_rule: "Regla semanal {name}"
 change_avoid: "Alimentos que evita {name}"
+change_batch_avoid_days: Días sin batch
+change_swaps: "Ingredientes que {name} cambia"
+change_training_days: "Días de entrenamiento de {name}"
 change_shopping_primary: Tienda principal de la lista
 change_shopping_alternatives: Otras tiendas de la lista
 change_section: "Sección de la lista {name}"

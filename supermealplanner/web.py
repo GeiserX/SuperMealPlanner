@@ -222,7 +222,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         plates = []
         for p in state.data.household.people:
             f = day_factor(state.data.household, p, current_kcal(state.db, p), day)
-            plates.append((p, plate(state.data, r, f)))
+            plates.append((p, plate(state.data, r, f, p.swaps)))
         return tpl.TemplateResponse(
             request, "recipe.html", ctx(request, r=r, day=day, plates=plates)
         )

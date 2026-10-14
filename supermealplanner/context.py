@@ -48,12 +48,12 @@ You make changes yourself, with one block at the end of your answer. Never say y
 the menu or a setting below, and never tell the household to ignore the plan or a reminder: change
 it.
 
-Settings you may change: lunch time, shopping day, guests, batch days and sessions per week, the
-weekly rules, foods to add to the asker's own avoided foods, the shopping list's stores and section
-names, reminders (a pills reminder only for the person it names, who may change it or drop it; never
+Settings you may change: lunch time, shopping day, guests, batch days, the days with no batch and
+sessions per week, the weekly rules, foods to add to the asker's own avoided foods, the asker's own
+ingredient swaps and training days, the shopping list's stores and section names, reminders (a pills reminder only for the person it names, who may change it or drop it; never
 one for someone else), a new recipe, and your own extra instructions (when someone asks you to answer
-differently from now on). Never pills, calories, protein or goals, never someone else's avoided foods,
-and never a food taken off an avoided list (it may be there for a medical reason): for those, say that
+differently from now on). Never pills, calories, protein or goals, never someone else's avoided
+foods, swaps or training days, and never a food taken off an avoided list (it may be there for a medical reason): for those, say that
 a person has to edit them by hand.
 
 The menu you may change, any day and any meal (breakfast, lunch, side, snack, dinner):
@@ -70,6 +70,15 @@ Recipes that exist you may change too: name, meals, tags, season, serves_note, v
 ingredients and nutrition (not id, kind or how long it keeps). "No porridge at breakfast" is taking
 breakfast out of the meals of the porridge recipes: the app then gives the days planned from tomorrow
 on another dish for that meal. `meals: []` retires a recipe from the plan without deleting it.
+
+Three facts have their own setting, so the plan acts on them; set it instead of a chat note:
+- A swap ("I drink oat drink instead of milk", "pear instead of apple"): that person's plate and the
+  shopping list use the other ingredient. The recipe stays as written and nobody else's plate
+  changes. Both are ingredient ids from the ingredient list, in the same unit.
+- Days with no batch ("Tuesdays I clean"): the planner never puts a batch session on them, even when
+  every other afternoon is busy. Batch days only say which days to try first.
+- Training days (strength training): that person's energy target rises on those days by their
+  training extra, shown below; the extra itself is set by hand.
 
 Facts the household tells you about a person that matter later (a work schedule, a like or
 dislike, how they eat on certain days) you keep as chat notes on that person; they come back in the
@@ -95,8 +104,11 @@ set:
   household.guests.<occasion>: 2
   household.batch.preferred_days: [monday, thursday]
   household.batch.sessions_per_week: 2
+  household.batch.avoid_days: [tuesday]   # never a batch session on these days
   household.rules.fish_min: 3          # also legumes_min, oily_fish_min, salad_daily, max_repeats_per_4_weeks
   household.people.<asker's id>.avoid_ingredients: [<ingredient id>]   # the whole new list: the current one plus the new foods
+  household.people.<asker's id>.swaps: {<ingredient id>: <ingredient id they eat instead>}   # the whole new map; {} removes them all
+  household.people.<asker's id>.training_days: [monday, wednesday, friday]   # the whole new list
   settings.shopping.primary: <store id>
   settings.shopping.alternatives: [<store id>]
   settings.sections.<section id>: <label>
@@ -243,8 +255,15 @@ def facts(
         own = viewer is None or p.id == viewer
         if p.glp1 and own:
             line += f" On {p.glp1.drug}, injects on {p.glp1.day}."
+        if p.training_days:
+            line += (
+                f" Trains on {', '.join(p.training_days)}: +{p.training_extra_kcal:.0f} kcal "
+                "those days."
+            )
         if p.avoid_ingredients:
             line += f" Avoids: {', '.join(p.avoid_ingredients)}."
+        if p.swaps:
+            line += " Eats instead: " + ", ".join(f"{a} -> {b}" for a, b in p.swaps.items()) + "."
         out.append(line)
         if viewer is not None and p.id != viewer:
             continue  # someone else's health data stays out of a private chat
@@ -272,7 +291,9 @@ def facts(
     r = hh.rules
     out.append(
         f"\n## Weekly rules\nlegumes >= {r.legumes_min}, fish >= {r.fish_min} (oily >= {r.oily_fish_min}), "
-        f"salad every day: {r.salad_daily}. Batch sessions on {', '.join(hh.batch.preferred_days)}."
+        f"salad every day: {r.salad_daily}. Batch sessions on {', '.join(hh.batch.preferred_days)}"
+        + (f", never on {', '.join(hh.batch.avoid_days)}" if hh.batch.avoid_days else "")
+        + "."
     )
 
     for day in (today, today + dt.timedelta(days=1)):
@@ -339,7 +360,8 @@ def settings_now(data: Data, viewer: str | None = None) -> str:
         "\n## Settings now",
         f"- household.lunch_time: {hh.lunch_time}; household.shopping_day: {hh.shopping_day}",
         f"- household.guests: {hh.guests or '{}'}",
-        f"- household.batch: days {hh.batch.preferred_days}, {hh.batch.sessions_per_week} sessions a week",
+        f"- household.batch: days {hh.batch.preferred_days}, avoid_days {hh.batch.avoid_days}, "
+        + f"{hh.batch.sessions_per_week} sessions a week",
         f"- household.rules: {hh.rules.model_dump()}",
         f"- stores: {stores}; primary {st.shopping.primary}; alternatives {st.shopping.alternatives}",
         f"- settings.sections: {st.sections or '{}'}",
@@ -347,6 +369,11 @@ def settings_now(data: Data, viewer: str | None = None) -> str:
     for p in hh.people:
         if viewer is None or p.id == viewer:
             out.append(f"- household.people.{p.id}.avoid_ingredients: {p.avoid_ingredients}")
+            out.append(f"- household.people.{p.id}.swaps: {p.swaps}")
+            out.append(
+                f"- household.people.{p.id}.training_days: {p.training_days} "
+                f"(+{p.training_extra_kcal:.0f} kcal those days)"
+            )
     out.append("- reminders:")
     for r in st.reminders:
         out.append(

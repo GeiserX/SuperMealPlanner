@@ -216,6 +216,9 @@ change_batch_days: Batch days
 change_batch_sessions: Batch sessions a week
 change_rule: "Weekly rule {name}"
 change_avoid: "Foods {name} avoids"
+change_batch_avoid_days: Days with no batch
+change_swaps: "{name}'s ingredient swaps"
+change_training_days: "{name}'s training days"
 change_shopping_primary: Main store for the list
 change_shopping_alternatives: Other stores for the list
 change_section: "List section {name}"

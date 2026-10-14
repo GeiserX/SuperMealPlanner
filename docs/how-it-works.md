@@ -4,7 +4,7 @@
 
 The planner is plain code: the same data and the same start date always give the same plan, and it needs no AI.
 
-1. It picks two batch afternoons a week from `batch.preferred_days`, skipping afternoons with a calendar event between `calendar.busy_afternoon` times.
+1. It picks two batch afternoons a week from `batch.preferred_days`, skipping afternoons with a calendar event between `calendar.busy_afternoon` times, and never on a day in `batch.avoid_days`, even when every other afternoon is busy.
 2. Each batch dish covers up to two lunches. A lunch eaten more than `fridge_days` after cooking comes from the freezer, so only dishes that freeze can go there. The batch sheet says which container goes where and when to move it to the fridge.
 3. Dinners are quick or need no cooking. They are scored toward the week's missing legumes and fish, toward light dishes after a GLP-1 injection, and toward guest dishes on Sunday.
 4. Breakfasts and snacks rotate through fixed staples. A `treat` snack lands on Saturday. A staple that uses an avoided ingredient is left out of the rotation, and the plan logs a warning naming the staple and the ingredient instead of failing.
@@ -28,7 +28,7 @@ The menu can be changed from the chat (see the bot below). Plans are generated f
 
 ## Portions
 
-A recipe is written for one reference serving, what a person eating 2,000 kcal a day eats. A person's factor for a day is their current calorie target divided by 2,000, times the GLP-1 factor for that day of the week if they have one. Plates show grams and kitchen units ("2 thighs", "½ onion"). When a day falls short of a person's protein target, the app suggests quick extras from `settings.toppers`.
+A recipe is written for one reference serving, what a person eating 2,000 kcal a day eats. A person's factor for a day is their current calorie target divided by 2,000, times the GLP-1 factor for that day of the week if they have one. On a day in the person's `training_days` their calorie target first grows by `training_extra_kcal`. A person's `swaps` put another ingredient on their own plate, in the same quantity; everyone else's plate stays as the recipe says. Plates show grams and kitchen units ("2 thighs", "½ onion"). When a day falls short of a person's protein target, the app suggests quick extras from `settings.toppers`.
 
 ## Targets
 
@@ -38,7 +38,7 @@ A plan is never redone when the data changes, because lunches may already be coo
 
 ## Shopping
 
-The list adds up every plate of the week. Batch dishes are bought in the week they are cooked. With store catalogues, each line shows the first clean product, how many packs, and the price, plus the same at an alternative store. `/list?store=<id>` writes the whole list for one store, which is handy for an online order.
+The list adds up every plate of the week, each with its eater's swaps, so a swapped ingredient is bought only for the person who eats it. The batch sheet splits the pot the same way. Batch dishes are bought in the week they are cooked. With store catalogues, each line shows the first clean product, how many packs, and the price, plus the same at an alternative store. `/list?store=<id>` writes the whole list for one store, which is handy for an online order.
 
 ## The bot
 
@@ -56,7 +56,7 @@ The bot answers private chats with the people in `bot.people`, and the configure
 - Edits count: an edit of a waiting message sends the new text, an edit of a message being answered reaches that answer as a correction, an edit of an answered message gets a new answer that says what changes, and an edit that adds the bot's mention is answered.
 - When the AI puts a choice to someone (which dish, which day), it can offer the choices as buttons under its answer; a tap is that person's answer, and they can ignore the buttons and keep talking.
 - When the AI tells someone to do something at a time (cook on Sunday afternoon, take the fish out on Saturday night), the bot offers each step as a reminder, with buttons: here, in the calendar (with `bot.reminder_calendar`) or No. Nothing happens without a tap, and the offer expires after 30 minutes. A reminder set here is posted in the chat at its time, naming the person, and survives a restart; `/reminders` lists them and cancels one. In the group, messages not addressed to the bot reach the AI as context, marked, so a remark between people is never taken as an order.
-- The AI can change the menu (a dish, a swap, a pause, a shift by whole weeks, a new draw, an undo), a recipe that exists (taking it out of breakfast, for example, which also takes it out of the days planned from tomorrow on), its own notes about each person, and a short list of settings (reminders, batch days, lunch time, weekly rules, guests, foods the asker adds to their own avoided list, the shopping stores, its own instructions, a new recipe). A change the person asked for is made at once, and the bot answers with what changed and how to undo it. A change the AI comes up with on its own is shown first, with Yes and No buttons, and made only after that person taps or writes yes. Settings are saved as one git commit in the data repo. Pills, the pills reminder, calories, protein, goals and taking a food off an avoided list are never on the list ([data format](data-format.md#changes-from-the-chat)).
+- The AI can change the menu (a dish, a swap, a pause, a shift by whole weeks, a new draw, an undo), a recipe that exists (taking it out of breakfast, for example, which also takes it out of the days planned from tomorrow on), its own notes about each person, and a short list of settings (reminders, batch days and days with no batch, lunch time, weekly rules, guests, foods the asker adds to their own avoided list, the asker's own ingredient swaps and training days, the shopping stores, its own instructions, a new recipe). A change the person asked for is made at once, and the bot answers with what changed and how to undo it. A change the AI comes up with on its own is shown first, with Yes and No buttons, and made only after that person taps or writes yes. Settings are saved as one git commit in the data repo. Pills, the pills reminder, calories, protein, goals and taking a food off an avoided list are never on the list ([data format](data-format.md#changes-from-the-chat)).
 - A plugin provider can also offer to do something outside the chat, such as a pull request with a change to the app that a person reviews and merges. The bot shows it and carries it out only after a yes from the person who asked, or from one of `bot.admins` when the plugin says an admin must approve ([data format](data-format.md#settingsyaml)).
 - When the bot addresses a person (a reminder for them, the lunch-pills check, the AI telling someone what to do), it uses their Telegram @handle so Telegram notifies them. It looks each username up at start; `bot.handles` overrides it, and someone without a username keeps their name.
 - Reminders fire once each, inside a 10-minute window after their time: plain messages, today's meal with its recipe link, batch days, shopping day, defrosting, and lunch pills not logged yet.

@@ -86,11 +86,35 @@ class Plate:
     protein: float
 
 
-def plate(data: Data, r: Recipe, factor: float) -> Plate:
-    lines = []
+def amounts(data: Data, r: Recipe, servings: dict[str, float]) -> dict[str, float]:
+    """Ingredient quantities of a recipe for some eaters (person id, or any other key such as
+    "guests", who eat the recipe as written), each with their servings. A person's swaps replace
+    an ingredient in their share only. Ordered as the recipe lists them, a swap next to the
+    ingredient it replaces."""
+    people = {p.id: p.swaps for p in data.household.people}
+    out: dict[str, float] = {}
     for item in r.ingredients:
-        ing = data.ingredients[item.id]
-        lines.append(f"{ing.name}: {fmt_qty(ing, item.qty * factor, data.locale)}")
+        for eater, n in servings.items():
+            iid = people.get(eater, {}).get(item.id, item.id)
+            out[iid] = out.get(iid, 0) + item.qty * n
+    return out
+
+
+def _lines(data: Data, qty: dict[str, float]) -> list[str]:
+    out = []
+    for iid, q in qty.items():
+        ing = data.ingredients[iid]
+        out.append(f"{ing.name}: {fmt_qty(ing, q, data.locale)}")
+    return out
+
+
+def plate(data: Data, r: Recipe, factor: float, swaps: dict[str, str] | None = None) -> Plate:
+    """One plate: the recipe at `factor` reference servings, with the eater's swaps."""
+    qty: dict[str, float] = {}
+    for item in r.ingredients:
+        iid = (swaps or {}).get(item.id, item.id)
+        qty[iid] = qty.get(iid, 0) + item.qty * factor
+    lines = _lines(data, qty)
     return Plate(
         recipe=r,
         factor=factor,
@@ -143,7 +167,7 @@ def person_days(data: Data, db: DB, plan: Plan, day: dt.date) -> list[PersonDay]
         for meal in MEALS:
             rid = getattr(d, meal)
             if rid and rid in data.recipes:
-                pd.plates[meal] = plate(data, data.recipes[rid], f)
+                pd.plates[meal] = plate(data, data.recipes[rid], f, p.swaps)
         short = p.protein_g.target - pd.protein
         for top in data.settings.toppers:
             if short <= 5:
@@ -202,44 +226,58 @@ class Shopping:
     labels: dict[str, str] = field(default_factory=dict)
 
 
-def servings_for_week(data: Data, db: DB, plan: Plan, monday: dt.date) -> dict[str, float]:
-    """Reference servings to buy per recipe for the week starting `monday`.
+def servings_by_eater(
+    data: Data, db: DB, plan: Plan, monday: dt.date
+) -> dict[str, dict[str, float]]:
+    """Reference servings to buy per recipe and eater (person id, or "guests") for the week
+    starting `monday`.
 
     Lunch dishes are bought for the week they are cooked in; everything else for the day it is eaten.
     Sunday lunch adds the household's guest servings.
     """
     hh = data.household
     week = {monday + dt.timedelta(days=i) for i in range(7)}
-    total: dict[str, float] = {}
+    total: dict[str, dict[str, float]] = {}
 
-    def add(rid: str, n: float):
-        total[rid] = total.get(rid, 0) + n
+    def add(rid: str, eaters: dict[str, float]):
+        row = total.setdefault(rid, {})
+        for eater, n in eaters.items():
+            if n:
+                row[eater] = row.get(eater, 0) + n
 
     guests = hh.guests.get("sunday_lunch", 0)
     for s in plan.sessions:
         for x in s.dishes:
             if x.cook in week:
                 for e in x.eat:
-                    n = sum(factors(data, db, e).values())
+                    add(x.recipe, factors(data, db, e))
                     if e.weekday() == 6:
-                        n += guests
-                    add(x.recipe, n)
+                        add(x.recipe, {"guests": guests})
     for d in plan.days:
         if d.date in week:
-            n = sum(factors(data, db, d.date).values())
+            f = factors(data, db, d.date)
             for meal in ("breakfast", "dinner", "snack", "side"):
                 rid = getattr(d, meal)
                 if rid:
-                    add(rid, n)
+                    add(rid, f)
     return total
 
 
+def servings_for_week(data: Data, db: DB, plan: Plan, monday: dt.date) -> dict[str, float]:
+    """Reference servings to buy per recipe for the week starting `monday`, everyone together."""
+    return {
+        rid: sum(row.values()) for rid, row in servings_by_eater(data, db, plan, monday).items()
+    }
+
+
 def needs(data: Data, db: DB, plan: Plan, monday: dt.date) -> dict[str, float]:
-    """Ingredient quantities for the week, in each ingredient's unit."""
+    """Ingredient quantities for the week, in each ingredient's unit, with each person's swaps."""
     need: dict[str, float] = {}
-    for rid, n in servings_for_week(data, db, plan, monday).items():
-        for item in data.recipes[rid].ingredients if rid in data.recipes else []:
-            need[item.id] = need.get(item.id, 0) + item.qty * n
+    for rid, row in servings_by_eater(data, db, plan, monday).items():
+        if rid not in data.recipes:
+            continue
+        for iid, q in amounts(data, data.recipes[rid], row).items():
+            need[iid] = need.get(iid, 0) + q
     return need
 
 
@@ -319,7 +357,7 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
             r = data.recipes.get(x.recipe)
             if r is None:  # repaired within the hour
                 continue
-            conts, total = [], 0.0
+            conts, total, eaters = [], 0.0, {}
             for e in x.eat:
                 f = factors(data, db, e)
                 if e.weekday() == 6 and data.household.guests.get("sunday_lunch"):
@@ -335,9 +373,14 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
                     )
                 )
                 total += sum(f.values())
+                for eater, n in f.items():
+                    eaters[eater] = eaters.get(eater, 0) + n
             out.append(
                 BatchDish(
-                    recipe=r, total=total, containers=conts, lines=plate(data, r, total).lines
+                    recipe=r,
+                    total=total,
+                    containers=conts,
+                    lines=_lines(data, amounts(data, r, eaters)),
                 )
             )
     return out

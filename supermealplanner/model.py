@@ -35,6 +35,9 @@ CANONICAL_TAGS = (
 Weekday = Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 WEEKDAYS: list[str] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 PILL_SLOTS = ("waking", "breakfast", "lunch", "dinner", "bedtime")
+# kcal added on a training day when the person does not say: roughly what a strength session of
+# 45-60 minutes uses above resting, kept modest so a plate grows a little, not a meal
+TRAINING_EXTRA_KCAL = 150
 
 
 class Strict(BaseModel):
@@ -175,6 +178,10 @@ class Person(Loose):
     pills: dict[str, list[Pill]] = {}
     notes: list[str] = []
     chat_notes: list[str] = []  # facts the household told the assistant; the chat may edit these
+    # ingredient id -> the one this person eats instead: their plate and the shopping list use it
+    swaps: dict[str, str] = {}
+    training_days: list[Weekday] = []  # strength training: the day's energy target rises
+    training_extra_kcal: float = Field(default=TRAINING_EXTRA_KCAL, ge=0, le=600)
 
     @model_validator(mode="after")
     def _pill_slots(self) -> Person:
@@ -193,8 +200,15 @@ class Calendar(Loose):
 
 
 class Batch(Loose):
-    preferred_days: list[Weekday] = ["monday", "friday", "saturday"]
+    preferred_days: list[Weekday] = ["monday", "friday", "saturday"]  # tried first
     sessions_per_week: int = Field(default=2, ge=1, le=2)
+    avoid_days: list[Weekday] = []  # never a batch session on these, busy or not
+
+    @model_validator(mode="after")
+    def _some_day_left(self) -> Batch:
+        if set(self.avoid_days) >= set(WEEKDAYS):
+            raise ValueError("batch.avoid_days leaves no day to cook on")
+        return self
 
 
 class Rules(Loose):
@@ -453,6 +467,23 @@ def load(root: str | Path) -> Data:
     for pid in settings.bot.admins:
         if pid not in settings.bot.people:
             errors.append(f"settings.yaml bot.admins: {pid} is not in bot.people")
+    for person in household.people:
+        if person.id == "guests":  # the key of guest servings in the shopping list and batch sheet
+            errors.append("household.yaml: guests is reserved for guest servings, not a person id")
+        for old, new in person.swaps.items():
+            where = f"household.yaml {person.id} swaps {old}"
+            if old not in ingredients or new not in ingredients:
+                missing = [x for x in (old, new) if x not in ingredients]
+                errors.append(f"{where}: unknown ingredient {', '.join(missing)}")
+            elif old == new:
+                errors.append(f"{where}: swaps an ingredient for itself")
+            elif ingredients[old].unit != ingredients[new].unit:
+                errors.append(
+                    f"{where}: {old} is in {ingredients[old].unit} and {new} in "
+                    f"{ingredients[new].unit}; a swap keeps the quantity, so both need one unit"
+                )
+            elif new in person.avoid_ingredients:
+                errors.append(f"{where}: {new} is one of the foods {person.id} avoids")
     for r in settings.reminders:
         if r.kind == "message" and not r.text:
             errors.append(f"settings.yaml reminder {r.id}: kind message needs text")
