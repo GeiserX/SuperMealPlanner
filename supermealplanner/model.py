@@ -468,6 +468,8 @@ def load(root: str | Path) -> Data:
         if pid not in settings.bot.people:
             errors.append(f"settings.yaml bot.admins: {pid} is not in bot.people")
     for person in household.people:
+        if person.id == "guests":  # the key of guest servings in the shopping list and batch sheet
+            errors.append("household.yaml: guests is reserved for guest servings, not a person id")
         for old, new in person.swaps.items():
             where = f"household.yaml {person.id} swaps {old}"
             if old not in ingredients or new not in ingredients:

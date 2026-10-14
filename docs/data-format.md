@@ -11,7 +11,7 @@ stores/*.yaml         store catalogues: the real product to buy per ingredient (
 state/                written by the app: plans/<monday>.yaml, paused.yaml and supermealplanner.db
 ```
 
-Keep the data directory in its own private repository: it holds health details. Ids are lowercase kebab-case ASCII. Food names, steps and units are in whatever language you cook in.
+Keep the data directory in its own private repository: it holds health details. Ids are lowercase kebab-case ASCII, and `guests` is not a person id: it names the guest servings. Food names, steps and units are in whatever language you cook in.
 
 ## Portion model
 

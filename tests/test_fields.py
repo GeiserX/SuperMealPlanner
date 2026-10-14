@@ -251,3 +251,11 @@ def test_the_assistant_knows_the_three_fields(data_dir, tmp_path):
     assert "Eats instead: yogur -> kefir." in facts
     assert "Trains on monday, friday: +150 kcal those days." in facts
     assert "household.people.ana.swaps: {'yogur': 'kefir'}" in facts
+
+
+def test_guests_is_not_a_person_id(data_dir):
+    def rename(hh):
+        person(hh, "ana")["id"] = "guests"
+
+    with pytest.raises(DataError, match="reserved for guest servings"):
+        edit(data_dir, rename)
