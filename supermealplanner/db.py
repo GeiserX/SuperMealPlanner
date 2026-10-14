@@ -253,6 +253,10 @@ class DB:
                     "UPDATE chat SET text=?, asked=? WHERE id=?", (text[:4000], int(asked), row)
                 )
 
+    def delete_chat(self, row: int) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM chat WHERE id=?", (row,))
+
     def clear_chat(self, chat: int) -> None:
         with self.conn() as c:
             c.execute("DELETE FROM chat WHERE chat=?", (chat,))

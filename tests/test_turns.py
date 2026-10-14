@@ -440,3 +440,73 @@ def test_the_bot_asks_telegram_for_edits_and_taps_and_routes_them(data_dir, tmp_
     assert seen == [["message", "edited_message", "callback_query"]]
     assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["luis: @chefbot qué cenamos"]
     assert ("answerCallbackQuery", {"callback_query_id": "q"}) in b.calls
+
+
+def test_a_mention_added_to_a_message_an_earlier_turn_saw_is_still_answered(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path, history_scope="all")
+    run(b.handle(None, msg("qué cenamos", message_id=1)))  # context only
+    run(b.handle(None, msg("@chefbot hola", message_id=2)))  # its turn takes the line above
+    assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["luis: qué cenamos\nluis: @chefbot hola"]
+    run(b.edited(None, msg("@chefbot qué cenamos", message_id=1)))
+    assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["luis: @chefbot qué cenamos"]
+    assert db.find_chat(-100, 1)["text"] == "@chefbot qué cenamos"
+
+
+def test_two_taps_at_once_settle_a_proposal_once(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)
+    cfg(
+        data_dir, proposals=[{"id": "p3", "summary": "Open a pull request.", "confirm_by": "asker"}]
+    )
+    run(b.handle(None, msg("@chefbot add /soup", message_id=1)))
+    yes, _no = buttons(sends(b, -100)[-1])
+    mid = 1000 + len(b.calls)
+    fake = b.call
+
+    async def call(client, method, _tries=0, **params):  # Telegram takes a moment, as it does
+        await asyncio.sleep(0.01)
+        return await fake(client, method, _tries, **params)
+
+    b.call = call
+
+    async def both():
+        await asyncio.gather(
+            tap(b, yes["callback_data"], 7, mid), tap(b, yes["callback_data"], 7, mid)
+        )
+
+    run(both())
+    assert [a["id"] for a in lines(data_dir, "acts.jsonl")] == ["p3"]
+
+
+def test_a_correction_whose_turn_ends_meanwhile_still_gets_its_turn(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)
+    cfg(data_dir, ask=True)
+    real_close = b.close_asks
+
+    async def slow_close(client, turn_state, keys=None, note=None):
+        if note:  # the edit's decline: the turn ends while it is on its way
+            await until(lambda: not b.running)
+        await real_close(client, turn_state, keys, note)
+
+    b.close_asks = slow_close
+
+    async def go():
+        turn = asyncio.create_task(b.handle(None, msg("@chefbot comida con Ana", message_id=1)))
+        await until(lambda: any("do you approve" in p["text"] for p in sends(b, -100)))
+        edit = asyncio.create_task(
+            b.edited(None, msg("@chefbot comida con Ana a las 15", message_id=1))
+        )
+        await asyncio.sleep(0.05)
+        cfg(data_dir)
+        await tap(b, buttons(posted_ask(b))[1]["callback_data"], 7, 0)  # reject: the turn ends
+        await turn
+        await edit
+        await drain(b)
+
+    run(go())
+    last = lines(data_dir, "turns.jsonl")[-1]
+    assert len(lines(data_dir, "turns.jsonl")) == 2
+    assert "Now: comida con Ana a las 15" in last["new"][-1]
+
+
+def posted_ask(b):
+    return next(p for p in sends(b, -100) if "do you approve" in p["text"])

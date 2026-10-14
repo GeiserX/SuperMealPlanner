@@ -939,6 +939,7 @@ class Bot:
             names = ", ".join(self.mention(p) for p in self._people(by))
             await self.toast(client, query, self.t("tap_not_yours", name=names))
             return
+        self.drop(chat_id, item)  # before any await: a second tap finds nothing
         await self.toast(client, query)
         who = self.person_of(user.get("id", 0)) or user.get("first_name")
         word = self.t("button_yes" if yes else "button_no")
@@ -1145,20 +1146,24 @@ class Bot:
             return
         if turn_state is not None and row["id"] in turn_state.rows():
             db.edit_chat(row["id"], text)
-            await self.close_asks(client, turn_state, note=f"editado: {now}")
             note = (
                 f"[{name} edited a message of this turn. Reconsider your answer with the new "
                 f"wording.]\nBefore: {before}\nNow: {now}"
             )
+            # queued before any await: the running turn takes it, or the chat's loop runs it next
             self.take(chat_id, user, who, None, note, asked=True)
-            return  # the running turn takes it, or the next one does
+            await self.close_asks(client, turn_state, note=f"editado: {now}")
+            await self.drive(client, chat_id)  # the turn may have ended meanwhile
+            return
         if not asked:
-            db.edit_chat(row["id"], text, asked=calls)
-            if calls:  # the edit adds the mention: a new message to answer
-                with self.qlock:
-                    item = Item(row["id"], msg["message_id"], user.get("id"), who, self.clock())
-                    self.queues.setdefault(chat_id, []).append(item)
-                await self.drive(client, chat_id)
+            if not calls:
+                db.edit_chat(row["id"], text)
+                return
+            # the edit adds the mention: a new message to answer. Its row moves to now, so a turn
+            # that already took the old wording as context does not count it as seen
+            db.delete_chat(row["id"])
+            self.take(chat_id, user, who, msg, text, asked=True)
+            await self.drive(client, chat_id)
             return
         db.edit_chat(row["id"], text)
         said = (db.answer_after(chat_id, row["id"]) or "")[:1500]
