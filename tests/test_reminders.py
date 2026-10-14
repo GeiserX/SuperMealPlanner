@@ -401,6 +401,16 @@ def test_the_rules_say_who_is_answered_and_how_to_offer_reminders(data):
     assert "```reminders" in rules and "Be proactive with reminders" in rules
 
 
+def test_the_rules_say_a_tap_is_an_action_so_no_button_says_nada(data):
+    flat = " ".join(context.rules(data).split())
+    assert "A tap is an action" in flat
+    assert "A yes-or-no offer gets «Sí» and «No»" in flat
+    assert "the one that declines reads «No»" in flat
+    assert "Never «Nada» on a button" in flat
+    assert "«Si no respondes, no hago nada.»" in flat
+    assert "- Nada" not in flat
+
+
 def test_the_menu_lists_reminders_in_both_languages():
     from supermealplanner.i18n import Translator
 
