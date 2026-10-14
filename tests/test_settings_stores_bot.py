@@ -145,11 +145,12 @@ class FakeBot:
 
         b = Bot(FakeState(data, db, today))
         b.token, b.username, b.sent, b.asked = "x", "chefbot", [], []
+        b.debounce = 0  # a test's messages go at once unless it sets one
 
         async def send(client, chat_id, text, reply_to=None, record=True, **kw):
             b.sent.append((chat_id, text))
 
-        async def ask(client, chat_id, reply_to, asker=None, user_id=None):
+        async def ask(client, chat_id, items, rows=None):
             b.asked.append(chat_id)
 
         async def transcribe(client, voice):

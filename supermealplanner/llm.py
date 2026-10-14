@@ -33,6 +33,30 @@ calls
 with the same dict. "none" (a step that changes nothing, such as drafting) runs at once, in the
 background, and only for a household member. act returns the text to post, or {"text": ...,
 "proposals": [...]} with follow-ups, which are offered the same way.
+
+Messages that arrive while an answer is being written join it, so a burst gets one answer. Every
+message in turn["new"] and turn["history"] carries "ids" (the app's ids of the messages merged into
+it) and "ts" (when the last of them was written, ISO 8601 UTC). The app also sets
+      turn["incoming"]() -> list of {"id": int, "role": "user", "content": str, "ts": str}
+which a plugin may call from its thread at any time while it works on the answer: each call hands
+over the messages that arrived since the last call (an edit of a message of this turn arrives as a
+correction in the same shape). The dict it returns then names the ones its answer took into
+account, "covers": [ids]; every handed-over message it does not name is sent again with the next
+turn. A plugin that never calls incoming() covers nothing extra: those messages make the next turn.
+
+The answer may offer the person choices: "options": ["short label", ...] in the dict (at most five),
+or an ```options block at the end of the text with one "- label" per line. The app shows them as
+buttons under the answer; a tap is that person's next message. They never wait for a tap.
+
+A plugin whose actions need a person's yes while it works defines
+      def answer(request: dict, decision: dict, settings: dict) -> dict
+and gets turn["ask"](request) from the app, callable from its thread: request is {"id": str,
+"summary": str, "confirm_by": "asker" | "admins", "expires_at": epoch seconds}. The app posts the
+summary with Approve and Reject buttons, and on a tap by the right person (or at once, with
+approved False and a note, when nobody can be asked, or when that person edits a message of the
+turn) calls answer(request, {"approved": bool, "by": str, "note": str | None}, settings), which
+returns {"ok": bool | None, "error": str | None}: the app then says done or failed under the ask.
+Past expires_at, or once the turn ends, the buttons go.
 """
 
 from __future__ import annotations
@@ -41,6 +65,7 @@ import asyncio
 import importlib.util
 import inspect
 import os
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -64,9 +89,33 @@ class Reply:
     conversation: str | None = None
     kept: bool = True
     proposals: list[dict] = field(default_factory=list)
+    covers: set[int] = field(default_factory=set)  # handed-over messages the answer took in
+    options: list[str] = field(default_factory=list)  # choices to offer as buttons
 
 
 CONFIRM_BY = ("asker", "admins", "none")
+OPTIONS_MAX, OPTION_CHARS = 5, 40
+OPTIONS = re.compile(r"\n?```options[ \t]*\n(.*?)```[ \t]*", re.DOTALL)
+
+
+def options(raw) -> list[str]:
+    """Well-formed choices: short, distinct, at most OPTIONS_MAX; anything else is dropped."""
+    out: list[str] = []
+    for o in raw if isinstance(raw, list) else []:
+        label = " ".join(str(o).split()) if isinstance(o, str | int | float) else ""
+        if label and len(label) <= OPTION_CHARS and label not in out:
+            out.append(label)
+    return out[:OPTIONS_MAX]
+
+
+def extract_options(text: str) -> tuple[str, list[str]]:
+    """The answer without its ```options block, and the choices it lists."""
+    blocks = list(OPTIONS.finditer(text))
+    if not blocks:
+        return text, []
+    lines = [x.strip() for x in blocks[-1].group(1).splitlines()]
+    labels = [x[1:].strip() for x in lines if x.startswith(("-", "*"))]
+    return OPTIONS.sub("", text).strip(), options(labels)
 
 
 def _proposals(raw) -> list[dict]:
@@ -99,13 +148,32 @@ async def converse(data: Data, turn: dict) -> Reply:
     out = await _call(fn, {**turn, "proposals": True}, cfg.model_dump())
     if isinstance(out, dict):
         conv = out.get("conversation")
+        covers = out.get("covers")
         return Reply(
             str(out.get("text", "")).strip(),
             str(conv) if conv else None,
             bool(out.get("kept", True)),
             _proposals(out.get("proposals")),
+            {int(i) for i in covers if isinstance(i, int)} if isinstance(covers, list) else set(),
+            options(out.get("options")),
         )
     return Reply(str(out).strip())
+
+
+async def answer(data: Data, request: dict, decision: dict) -> dict:
+    """Hand a person's answer to an ask back to the plugin; {"ok", "error"} from its answer()."""
+    fn = _optional(data, "answer") if data.settings.llm.provider == "plugin" else None
+    if fn is None:
+        raise NoAct("the provider asks for nothing")
+    out = await _call(fn, request, decision, data.settings.llm.model_dump())
+    out = out if isinstance(out, dict) else {}
+    ok = out.get("ok")
+    return {"ok": ok if isinstance(ok, bool) else None, "error": out.get("error")}
+
+
+def asks(data: Data) -> bool:
+    """The provider may ask a person for a yes while it works (it defines answer())."""
+    return data.settings.llm.provider == "plugin" and _optional(data, "answer") is not None
 
 
 async def act(data: Data, proposal: dict) -> Reply:
@@ -137,8 +205,8 @@ def _merge(messages: list[dict]) -> list[dict]:
     for m in messages:
         if out and out[-1]["role"] == m["role"]:
             out[-1] = {**out[-1], "content": out[-1]["content"] + "\n" + m["content"]}
-        else:
-            out.append(dict(m))
+        else:  # only what a chat API takes: the app's ids and times stay here
+            out.append({"role": m["role"], "content": m["content"]})
     return out
 
 

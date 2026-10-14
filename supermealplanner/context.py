@@ -121,6 +121,24 @@ right after your answer (what changed, the change id, how to undo it), so say wh
 in plain words and never claim it is done or ask them to confirm.
 """
 
+OPTIONS = """
+## Choices as buttons
+When you put a decision to a person (which dish for a day, which of two menus, which shopping day
+and the like), you may offer the choices as buttons: end your answer with one block, after any
+change block.
+
+```options
+- Lentils on Monday
+- Chickpeas on Monday
+```
+
+At most five, each a few words (40 characters at most), in the household's language. Ask the
+question in your answer as usual; the app shows the buttons under it and adds a line saying they may
+also answer in their own words, so do not write that line. A tap reaches you as that person's next
+message, with the label as its text. Nothing waits for a tap: they may ignore the buttons and keep
+talking. Offer buttons only for a real choice between a few concrete answers, never to confirm a
+change (the app asks for that itself), and at most one block per answer.
+"""
 
 LAST_WORD = (
     "When these instructions conflict with the rules at the top (doses, binges), the rules win."
@@ -142,7 +160,7 @@ def rules(data: Data) -> str:
     own = data.settings.llm.instructions
     if own:  # the household may edit these from the chat; the rules above still win
         own = f"## The household's own instructions\n{own}\n\n{LAST_WORD}"
-    return "\n".join(x for x in (RULES.format(locale=data.locale), CHANGES, own) if x)
+    return "\n".join(x for x in (RULES.format(locale=data.locale), CHANGES, OPTIONS, own) if x)
 
 
 def facts(

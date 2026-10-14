@@ -311,7 +311,7 @@ def test_a_change_nobody_asked_for_still_waits_for_a_yes(data_dir, tmp_path, mon
     for extra in ({}, {"asked": False}, {"asked": "true"}):  # only a plain true skips the round
         reply(data_dir, text=block({**extra, "plan": [pause]}))
         run(b.handle(None, msg("@chefbot ¿qué hay hoy?")))
-        assert "yes" in ChatBot.texts(b, -100)[-1] and len(b.pending(-100)) == 1
+        assert "Tap Yes or No" in ChatBot.texts(b, -100)[-1] and len(b.pending(-100)) == 1
         assert paused_days(b.state.data) == set()
     run(b.handle(None, msg("yes", **TO_BOT)))
     assert paused_days(b.state.data) == {D(i) for i in range(1, 7)}

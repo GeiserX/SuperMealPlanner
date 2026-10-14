@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS sent (
 );
 CREATE TABLE IF NOT EXISTS chat (
   id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL, ts TEXT NOT NULL,
-  role TEXT NOT NULL, who TEXT, text TEXT NOT NULL
+  role TEXT NOT NULL, who TEXT, text TEXT NOT NULL, mid INTEGER, asked INTEGER
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS baseline (
@@ -50,6 +50,10 @@ class DB:
             cols = {r["name"] for r in c.execute("PRAGMA table_info(daily)")}
             if "water" not in cols:  # databases from 0.1
                 c.execute("ALTER TABLE daily ADD COLUMN water INTEGER")
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(chat)")}
+            for col in ("mid", "asked"):  # databases before 0.6: the message id, addressed or not
+                if col not in cols:
+                    c.execute(f"ALTER TABLE chat ADD COLUMN {col} INTEGER")
 
     @contextmanager
     def conn(self):
@@ -161,16 +165,29 @@ class DB:
             return cur.rowcount == 1
 
     # bot conversation, for the AI's short memory
-    def add_chat(self, chat: int, role: str, who: str | None, text: str, keep: int = 200) -> None:
+    def add_chat(
+        self,
+        chat: int,
+        role: str,
+        who: str | None,
+        text: str,
+        keep: int = 1000,
+        mid: int | None = None,
+        asked: bool | None = None,
+    ) -> int:
+        """Store a message and return its row id. mid: its Telegram message id, so an edit finds
+        it; asked: whether it called the bot (None for the bot's own messages)."""
         with self.conn() as c:
-            c.execute(
-                "INSERT INTO chat(chat, ts, role, who, text) VALUES (?,?,?,?,?)",
+            cur = c.execute(
+                "INSERT INTO chat(chat, ts, role, who, text, mid, asked) VALUES (?,?,?,?,?,?,?)",
                 (
                     chat,
                     dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
                     role,
                     who,
                     text[:4000],
+                    mid,
+                    None if asked is None else int(asked),
                 ),
             )
             c.execute(
@@ -178,15 +195,67 @@ class DB:
                 "(SELECT id FROM chat WHERE chat=? ORDER BY id DESC LIMIT ?)",
                 (chat, chat, keep),
             )
+            return cur.lastrowid
 
-    def chat_rows(self, chat: int, n: int) -> list[dict]:
-        """The last n messages of a chat, oldest first, with their row id."""
+    def chat_rows(self, chat: int, n: int, days: int = 0) -> list[dict]:
+        """The last n messages of a chat, oldest first, with their row id; with days, also every
+        message of those last days."""
+        since = (dt.datetime.now(dt.UTC) - dt.timedelta(days=days)).isoformat(timespec="seconds")
         with self.conn() as c:
             rows = c.execute(
-                "SELECT id, role, who, text FROM chat WHERE chat=? ORDER BY id DESC LIMIT ?",
-                (chat, n),
+                "SELECT id, ts, role, who, text, mid, asked FROM chat WHERE chat=? AND (id IN "
+                "(SELECT id FROM chat WHERE chat=? ORDER BY id DESC LIMIT ?) OR (? AND ts >= ?)) "
+                "ORDER BY id",
+                (chat, chat, n, int(days > 0), since),
             ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        return [dict(r) for r in rows]
+
+    def chat_by_ids(self, chat: int, ids: list[int]) -> list[dict]:
+        """These messages of a chat, oldest first."""
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        with self.conn() as c:
+            rows = c.execute(
+                f"SELECT id, ts, role, who, text, mid, asked FROM chat WHERE chat=? AND id IN "
+                f"({marks}) ORDER BY id",
+                (chat, *ids),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def find_chat(self, chat: int, mid: int) -> dict | None:
+        """The stored message with this Telegram message id, or None."""
+        with self.conn() as c:
+            r = c.execute(
+                "SELECT id, ts, role, who, text, mid, asked FROM chat WHERE chat=? AND mid=? "
+                "ORDER BY id DESC LIMIT 1",
+                (chat, mid),
+            ).fetchone()
+        return dict(r) if r else None
+
+    def answer_after(self, chat: int, row: int) -> str | None:
+        """The first answer of the AI after this message, for an edit that questions it."""
+        with self.conn() as c:
+            r = c.execute(
+                "SELECT text FROM chat WHERE chat=? AND id>? AND role='assistant' AND who='ai' "
+                "ORDER BY id LIMIT 1",
+                (chat, row),
+            ).fetchone()
+        return r["text"] if r else None
+
+    def edit_chat(self, row: int, text: str, asked: bool | None = None) -> None:
+        """An edited message keeps its row: later turns and recaps see its final wording."""
+        with self.conn() as c:
+            if asked is None:
+                c.execute("UPDATE chat SET text=? WHERE id=?", (text[:4000], row))
+            else:
+                c.execute(
+                    "UPDATE chat SET text=?, asked=? WHERE id=?", (text[:4000], int(asked), row)
+                )
+
+    def delete_chat(self, row: int) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM chat WHERE id=?", (row,))
 
     def clear_chat(self, chat: int) -> None:
         with self.conn() as c:
