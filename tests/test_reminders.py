@@ -397,8 +397,8 @@ def test_a_group_line_not_to_the_bot_reaches_the_ai_marked(data_dir, tmp_path):
 
 def test_the_rules_say_who_is_answered_and_how_to_offer_reminders(data):
     rules = context.rules(data)
-    assert "[not to you]" in rules and "is not a\nrequest" in rules
-    assert "```reminders" in rules and "Be proactive with reminders" in rules
+    assert "[not to you]" in rules and "A remark between people about you is not an order" in rules
+    assert "```reminders" in rules and "offer it with buttons, once" in rules  # the principles
 
 
 def test_the_menu_lists_reminders_in_both_languages():
