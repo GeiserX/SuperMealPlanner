@@ -32,7 +32,7 @@ SuperMealPlanner is a self-hosted meal planner for a household that eats the sam
 ```bash
 git clone https://github.com/GeiserX/SuperMealPlanner && cd SuperMealPlanner
 uv run smp --data ./my-household plan --start 2026-10-12 --no-calendar --write
-docker run -p 8080:8080 -v "$PWD/my-household:/data" drumsergio/supermealplanner:0.7.0
+docker run -p 8080:8080 -v "$PWD/my-household:/data" drumsergio/supermealplanner:0.7.1
 ```
 
 Open http://localhost:8080 and add it to your phone's home screen. The data folder holds `household.yaml`, `ingredients.yaml` and `recipes/`; the full format, with a complete example, is in [docs/data-format.md](docs/data-format.md). Keep that folder in a private repository: it holds health details.

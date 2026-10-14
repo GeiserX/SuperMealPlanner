@@ -113,9 +113,9 @@ def test_steps_at_a_time_are_offered_as_reminders_with_buttons_and_the_no_answer
     # calendar off by default: here and nothing per reminder
     assert labels(offer) == [
         "1 · Reminder here",
-        "1 · Nothing",
+        "1 · No",
         "2 · Reminder here",
-        "2 · Nothing",
+        "2 · No",
     ]
     assert db.reminders(-100) == []  # nothing until a tap
 
@@ -141,7 +141,7 @@ def test_reminders_in_the_providers_dict_are_offered_and_past_or_bad_ones_droppe
     offer = offer_of(b)
     assert "Do the shopping" in offer["text"]
     assert "Too late" not in offer["text"] and "Too far" not in offer["text"]
-    assert labels(offer) == ["Reminder here", "In the calendar", "Nothing"]
+    assert labels(offer) == ["Reminder here", "In the calendar", "No"]
 
 
 def test_an_answer_without_steps_offers_nothing(data_dir, tmp_path):
@@ -226,11 +226,11 @@ def test_nothing_or_no_tap_does_nothing_and_the_buttons_say_so(data_dir, tmp_pat
     offer = offer_of(b)
     _h1, nothing1, h2, _n2 = buttons(offer)
     run(tap(b, nothing1["callback_data"], 7, mid_of(b, offer)))
-    assert labels(markups(b)[-1]) == ["✓ 1 · Nothing", "2 · Reminder here", "2 · Nothing"]
+    assert labels(markups(b)[-1]) == ["✓ 1 · No", "2 · Reminder here", "2 · No"]
     now = time.time()
     monkeypatch.setattr(botmod.time, "time", lambda: now + botmod.REMIND_TTL + 5)
     run(b.expire_offers(None))
-    assert labels(markups(b)[-1]) == ["✓ 1 · Nothing", "✓ 2 · No answer: nothing"]
+    assert labels(markups(b)[-1]) == ["✓ 1 · No", "✓ 2 · No answer: nothing"]
     run(tap(b, h2["callback_data"], 7, mid_of(b, offer)))  # too late
     assert toasts(b)[-1] == "This is no longer waiting for an answer."
     assert db.reminders(-100) == [] and db.get_kv(botmod.REMIND) is None
