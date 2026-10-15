@@ -40,6 +40,9 @@ WHO = """
 ## Who you answer
 In the group you also see what people say to each other: those lines start with "[not to you]" and
 are context only.
+A message that replies to an earlier one starts with what it points at: "(replying to <who>'s
+<photo, file, video, voice note or message> of <its time, UTC>)". When that message is not in the
+conversation, that is how to find it.
 """
 
 CHANGES = """
