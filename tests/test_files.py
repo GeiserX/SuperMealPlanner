@@ -273,3 +273,12 @@ def test_videos_gifs_video_notes_and_stickers_go_as_files_named_for_what_they_ar
     huge = {"video": {"file_id": "v", "file_size": FILE_MAX + 1}}
     settle(b, msg(chat=7, message_id=30, **huge))  # the same caps
     assert len(turns(data_dir)) == 6 and "20 MB" in sent(b, 7)[-1]
+
+
+def test_a_photo_that_replies_to_an_older_one_says_which(data_dir, tmp_path):
+    b = setup(data_dir, tmp_path)
+    old = {"message_id": 3, "from": {"id": 8}, "date": 1792000000, "document": {"file_id": "d"}}
+    settle(b, msg(photo=PHOTO, caption="¿así?", message_id=5, reply_to_message=old))
+    [turn] = turns(data_dir)
+    pointer = "(replying to ana's file of 2026-10-14T17:46:40+00:00)"
+    assert turn["new"] == [f"luis: {pointer} [photo: inbox/5-photo.jpg] ¿así?"]

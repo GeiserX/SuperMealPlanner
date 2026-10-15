@@ -160,6 +160,42 @@ def test_a_burst_from_two_people_names_the_one_who_started_it(data_dir, tmp_path
     assert turn["chat"] == {"id": -100, "user": 8}
 
 
+# ---------------------------------------------------------------- replies to older messages
+
+AT = 1792000000  # 2026-10-14T17:46:40Z
+OLD_PHOTO = {"message_id": 3, "from": {"id": 7}, "date": AT, "photo": [{"file_id": "p"}]}
+
+
+def test_a_reply_says_whose_message_it_points_at_what_it_was_and_when(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)
+    run(
+        b.handle(
+            None, msg("¿no has visto mi imagen?", chat=7, message_id=5, reply_to_message=OLD_PHOTO)
+        )
+    )
+    stranger = {"message_id": 4, "from": {"id": 55, "first_name": "Marta"}, "date": AT, "text": "x"}
+    run(b.handle(None, msg("¿y esto?", chat=7, message_id=6, reply_to_message=stranger)))
+    assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [
+        ["luis: (replying to luis's photo of 2026-10-14T17:46:40+00:00) ¿no has visto mi imagen?"],
+        ["luis: (replying to Marta's message of 2026-10-14T17:46:40+00:00) ¿y esto?"],
+    ]
+
+
+def test_a_reply_to_the_bots_own_message_needs_no_pointer(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)
+    run(b.handle(None, msg("vale", chat=-100, message_id=5, **TO_BOT)))
+    assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [["luis: vale"]]
+
+
+def test_an_unchanged_edit_of_a_reply_does_nothing(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    m = msg("¿la viste?", chat=7, message_id=5, reply_to_message=OLD_PHOTO)
+    run(b.handle(None, m))
+    run(b.edited(None, {**m, "text": " ¿la viste? "}))
+    assert len(lines(data_dir, "turns.jsonl")) == 1
+    assert db.find_chat(7, 5)["text"].startswith("(replying to luis's photo of")
+
+
 def test_one_message_gets_a_reply_to_it(data_dir, tmp_path):
     b, _ = setup(data_dir, tmp_path)
     run(b.handle(None, msg("hola", chat=7, user=7, message_id=5)))

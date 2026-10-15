@@ -141,6 +141,17 @@ FILE_MAX = 20 * 1024 * 1024  # the largest file the Bot API lets a bot download
 TURN_FILES_MAX = 25 * 1024 * 1024  # the photos and files one turn carries at most
 # what in a message is a file for the AI, document last: Telegram sets it on an animation too
 FILE_KEYS = ("photo", "video", "animation", "video_note", "sticker", "document")
+# what a replied-to message is, as its reply tag names it (anything else is a "message")
+REPLY_KINDS = {
+    "photo": "photo",
+    "video": "video",
+    "animation": "animation",
+    "video_note": "video note",
+    "sticker": "sticker",
+    "voice": "voice note",
+    "audio": "audio",
+    "document": "file",
+}
 OPTIONS = "bot.options.{}"  # choices offered as buttons under an answer, per chat
 OPTIONS_TTL = 12 * 3600  # a choice can be tapped this long
 OPTIONS_KEEP = 20
@@ -592,6 +603,30 @@ class Bot:
             return True
         return bool(self.username) and sender.get("username") == self.username
 
+    def reply_tag(self, msg: dict) -> str:
+        """What a reply points at, in front of its text: "(replying to luis's photo of <UTC
+        time>) ", so the AI can find an older message it cannot see. The time, not the message id:
+        an id the bot sees may not match the same message elsewhere. Nothing for a reply to the
+        bot's own message, which the AI already has."""
+        to = msg.get("reply_to_message")
+        if not isinstance(to, dict) or self.replied(msg) or to.get("forum_topic_created"):
+            return ""
+        sender = to.get("from") or {}
+        who = (
+            self.person_of(sender.get("id", 0))
+            or sender.get("first_name")
+            or (to.get("sender_chat") or {}).get("title")
+            or "someone"
+        )
+        kind = next((k for k in REPLY_KINDS if to.get(k)), "message")
+        when = to.get("date")
+        at = (
+            f" of {dt.datetime.fromtimestamp(when, dt.UTC).isoformat()}"
+            if isinstance(when, int)
+            else ""
+        )
+        return f"(replying to {who}'s {REPLY_KINDS.get(kind, kind)}{at}) "
+
     async def handle(self, client, msg: dict) -> None:
         chat, user = msg["chat"], msg.get("from", {})
         private = chat.get("type") == "private"
@@ -620,7 +655,8 @@ class Bot:
                     return
                 who = self.person_of(user.get("id", 0))
                 await self.send(client, chat["id"], f"🎤 {text}", msg["message_id"], record=False)
-                self.take(chat["id"], user, who, msg, f"🎤 {text}", asked=True)
+                tagged = f"{self.reply_tag(msg)}🎤 {text}"
+                self.take(chat["id"], user, who, msg, tagged, asked=True)
                 self.inbox(done=msg)  # queued now: QUEUED keeps it from here
             finally:
                 notes.remove(start)
@@ -664,7 +700,7 @@ class Bot:
             return
         asked = private or self.mentioned(text) or self.replied(msg)
         if asked or cfg.history_scope == "all":
-            self.take(chat["id"], user, who, msg, text, asked)
+            self.take(chat["id"], user, who, msg, self.reply_tag(msg) + text, asked)
             self.inbox(done=msg)  # logged, and queued when asked: QUEUED keeps it from here
         if asked:
             await self.drive(client, chat["id"])
@@ -704,7 +740,8 @@ class Bot:
             await note("bot_file_too_big")
             return
         file = {"file_id": file_id, "name": f"inbox/{mid}-{name}", "mime": mime, "size": size}
-        text = f"[{label}: {file['name']}] {(msg.get('caption') or '').strip()}".rstrip()
+        caption = (msg.get("caption") or "").strip()
+        text = f"{self.reply_tag(msg)}[{label}: {file['name']}] {caption}".rstrip()
         who = self.person_of(user.get("id", 0))
         self.take(chat["id"], user, who, msg, text, asked=True, file=file)
         self.inbox(done=msg)  # queued now: QUEUED keeps it from here
@@ -1418,6 +1455,7 @@ class Bot:
         who = self.person_of(user.get("id", 0))
         name = self.data.household.person(who).name if who else user.get("first_name") or "?"
         calls = chat.get("type") == "private" or self.mentioned(text) or self.replied(msg)
+        text = self.reply_tag(msg) + text  # as it was stored
         row = db.find_chat(chat_id, msg["message_id"])
         if row is None:  # never stored: a new message if it now calls the bot
             if calls:
