@@ -19,7 +19,14 @@ turn is {"conversation": the id it returned last time in this chat, or None,
          "rules": the stable instructions, "context": the household's data as of now,
          "new": the messages it has not seen yet (every recent message when conversation is None),
          "history": the earlier messages, a recap for when it has to start over,
-         "files": {"recipes/<id>.yaml": text, "ingredients.yaml": text}}.
+         "files": {"recipes/<id>.yaml": text, "ingredients.yaml": text},
+         "attachments": the photos and files sent with this turn's messages, each
+             {"name": "inbox/<message id>-<file name>", "mime": "image/jpeg" | "image/png" |
+              "image/webp" | "application/pdf", "data": bytes, "from": person id or None};
+             the message's text names the file as "[photo: <name>]" or "[file: <name>]"}.
+Only this provider gets photos and files (llm.sees_files): the bot tells the person any other one
+cannot look at them. A photo or a file that arrives while an answer is being written waits for the
+next turn, which carries it.
 It returns the answer, or {"text": answer, "conversation": id or None, "kept": bool}. The app keeps
 the id per chat and sends it back with the next message; None starts over with the full history next
 time, and kept False (the provider did not store this turn) sends these messages again.
@@ -229,6 +236,11 @@ async def answer(data: Data, request: dict, decision: dict) -> dict:
     out = out if isinstance(out, dict) else {}
     ok = out.get("ok")
     return {"ok": ok if isinstance(ok, bool) else None, "error": out.get("error")}
+
+
+def sees_files(data: Data) -> bool:
+    """The provider gets the photos and files people send (a plugin with converse())."""
+    return data.settings.llm.provider == "plugin" and _optional(data, "converse") is not None
 
 
 def asks(data: Data) -> bool:

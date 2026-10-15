@@ -5,8 +5,13 @@ token_env, add the bot to the household group, send /chatid there and copy the i
 Map each person to their Telegram user id in bot.people.
 
 In a private chat the bot always answers. A voice note is always answered, in the group too, because
-it cannot mention the bot. In the group it answers only a text message that mentions its
-@handle or replies to it.
+it cannot mention the bot, and so is a photo or an image or PDF sent as a file. In the group it
+answers only a text message that mentions its @handle or replies to it.
+
+A photo or a file goes to a provider that can look at it (llm.sees_files) as turn["attachments"],
+its caption as the message's text. It is queued like any message, by its Telegram file id, and its
+bytes are fetched when its turn starts: FILE_MAX each, TURN_FILES_MAX in all. A kind the bot cannot
+open, one too big, or one whose download fails gets a short note under it.
 
 One answer per burst: a chat's messages wait DEBOUNCE_S after the newest one (and up to VOICE_WAIT_S
 for a voice note still being transcribed) and go to the AI together; what arrives while it writes is
@@ -45,6 +50,7 @@ import re
 import secrets
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -130,6 +136,15 @@ ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft 
 # a chat's turn starts this long after its newest message, so a burst goes together
 DEBOUNCE_S = 2.5
 VOICE_WAIT_S = 30  # a turn waits this long at most for a voice note of its chat still transcribing
+FILE_MAX = 20 * 1024 * 1024  # the largest file the Bot API lets a bot download
+TURN_FILES_MAX = 25 * 1024 * 1024  # the photos and files one turn carries at most
+# what a photo or a file may be, with the extension its name gets when it has none
+FILE_KINDS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "application/pdf": ".pdf",
+}
 OPTIONS = "bot.options.{}"  # choices offered as buttons under an answer, per chat
 OPTIONS_TTL = 12 * 3600  # a choice can be tapped this long
 OPTIONS_KEEP = 20
@@ -151,6 +166,8 @@ class Item:
     # a tap on a reminder's "in the calendar": approves the turn's first ask when it adds the
     # event at that time {"by": user id, "at": epoch seconds, "used": bool}
     grant: dict | None = None
+    # a photo or a file it carries, fetched when its turn starts {"file_id", "name", "mime", "size"}
+    file: dict | None = None
 
 
 @dataclass
@@ -225,17 +242,24 @@ class Bot:
             return await self.call(client, method, _tries + 1, **params)
         raise err
 
-    async def transcribe(self, client, voice: dict) -> str:
-        f = await self.call(client, "getFile", file_id=voice["file_id"])
+    async def download(self, client, file_id: str) -> tuple[bytes, str]:
+        """A file Telegram holds for the bot, FILE_MAX at most, with its path on Telegram's side."""
+        f = await self.call(client, "getFile", file_id=file_id)
+        if (f.get("file_size") or 0) > FILE_MAX:
+            raise TelegramError("getFile", "file is too big", 413)
         url = f"https://api.telegram.org/file/bot{self.token}/{f['file_path']}"
         try:
             r = await client.get(url, timeout=120)
             r.raise_for_status()
         except httpx.HTTPError as e:
             raise TelegramError("getFile download", safe(e)) from None
-        name = f["file_path"].rsplit("/", 1)[-1] or "voice.ogg"
+        return r.content, f["file_path"]
+
+    async def transcribe(self, client, voice: dict) -> str:
+        audio, path = await self.download(client, voice["file_id"])
+        name = path.rsplit("/", 1)[-1] or "voice.ogg"
         return await asyncio.wait_for(
-            llm.transcribe(self.data, r.content, name),
+            llm.transcribe(self.data, audio, name),
             timeout=self.data.settings.transcription.timeout_s,
         )
 
@@ -404,7 +428,7 @@ class Bot:
                 continue
             for u in updates:
                 msg = u.get("message")
-                kept = bool(msg) and bool(msg.get("text") or msg.get("voice") or msg.get("audio"))
+                kept = bool(msg) and _for_handle(msg)
                 # stored before Telegram is told it arrived (the next getUpdates), in one write;
                 # a failed write leaves the offset where it was, so the update comes again
                 self.inbox(add=msg if kept else None, offset=u["update_id"] + 1)
@@ -425,7 +449,7 @@ class Bot:
                     self.state.db.set_kv("bot.migrated_chat", self.migration)
                     log.warning("the group became %s: set bot.chat_id to it", self.migration["to"])
                     continue
-                if msg.get("text") or msg.get("voice") or msg.get("audio"):
+                if _for_handle(msg):
                     task = asyncio.create_task(self.guarded(client, msg))
                     self.tasks.add(task)
                     task.add_done_callback(self.tasks.discard)
@@ -473,6 +497,7 @@ class Bot:
                         x.get("who"),
                         self.clock(),
                         x.get("grant"),
+                        x.get("file"),
                     )
                     for x in kept
                 ]
@@ -515,7 +540,14 @@ class Bot:
         kept = every.get(key) or []
         if add is not None:
             kept.append(
-                {"row": add.row, "mid": add.mid, "uid": add.uid, "who": add.who, "grant": add.grant}
+                {
+                    "row": add.row,
+                    "mid": add.mid,
+                    "uid": add.uid,
+                    "who": add.who,
+                    "grant": add.grant,
+                    "file": add.file,
+                }
             )
         else:
             left = {i.row for i in self.queues.get(chat_id) or []}
@@ -600,6 +632,9 @@ class Bot:
                     self.voicing.pop(chat["id"], None)
             await self.drive(client, chat["id"])
             return
+        if (msg.get("photo") or msg.get("document")) and not msg.get("text"):
+            await self.on_file(client, msg)
+            return
         text = msg["text"].strip()
         if text.startswith("/chatid"):  # setup: household members only, nothing stored
             if user.get("id") in cfg.people.values():
@@ -638,6 +673,71 @@ class Bot:
         if asked:
             await self.drive(client, chat["id"])
 
+    async def on_file(self, client, msg: dict) -> None:
+        """A photo, or an image or PDF sent as a file. Like a voice note it always calls the bot,
+        in the group too; its caption is the message. It is queued with its file id, and its bytes
+        are fetched when its turn starts (fetch_files)."""
+        chat, user = msg["chat"], msg.get("from", {})
+        if not self.allowed(chat, user.get("id", 0)):
+            return
+        mid = msg.get("message_id")
+
+        async def note(key: str) -> None:
+            await self.send(client, chat["id"], self.t(key), mid, record=False)
+
+        if not llm.sees_files(self.data):
+            await note("bot_file_unseen")
+            return
+        if msg.get("photo"):
+            sizes = [s for s in msg["photo"] if isinstance(s, dict) and s.get("file_id")]
+            if not sizes:
+                return
+            big = max(sizes, key=lambda s: (s.get("file_size") or 0, s.get("width") or 0))
+            label, mime, name = "photo", "image/jpeg", "photo.jpg"
+            file_id, size = big["file_id"], big.get("file_size")
+        else:
+            doc = msg["document"]
+            mime = str(doc.get("mime_type") or "").lower()
+            if mime not in FILE_KINDS or not doc.get("file_id"):
+                await note("bot_file_kind")
+                return
+            label, name = "file", _file_name(doc.get("file_name"), mime)
+            file_id, size = doc["file_id"], doc.get("file_size")
+        if isinstance(size, int) and size > FILE_MAX:
+            await note("bot_file_too_big")
+            return
+        file = {"file_id": file_id, "name": f"inbox/{mid}-{name}", "mime": mime, "size": size}
+        text = f"[{label}: {file['name']}] {(msg.get('caption') or '').strip()}".rstrip()
+        who = self.person_of(user.get("id", 0))
+        self.take(chat["id"], user, who, msg, text, asked=True, file=file)
+        self.inbox(done=msg)  # queued now: QUEUED keeps it from here
+        await self.drive(client, chat["id"])
+
+    async def fetch_files(self, client, chat_id: int, items: list[Item]) -> list[dict]:
+        """The photos and files of a turn's messages, as turn["attachments"]: FILE_MAX each and
+        TURN_FILES_MAX in all. One that cannot be fetched or does not fit gets a note under its
+        message, and the message still goes without it."""
+        out, total = [], 0
+        for i in items:
+            if not i.file:
+                continue
+            try:
+                data, _ = await self.download(client, i.file["file_id"])
+            except TelegramError as e:
+                log.warning("file not fetched: %s", safe(e))
+                big = e.code == 413 or "too big" in str(e).lower()
+                key = "bot_file_too_big" if big else "bot_file_failed"
+                await self.send(client, chat_id, self.t(key), i.mid, record=False)
+                continue
+            if len(data) > FILE_MAX or total + len(data) > TURN_FILES_MAX:
+                await self.send(client, chat_id, self.t("bot_file_too_big"), i.mid, record=False)
+                continue
+            total += len(data)
+            out.append(
+                {"name": i.file["name"], "mime": i.file["mime"], "data": data, "from": i.who}
+            )
+        return out
+
     def take(
         self,
         chat_id: int,
@@ -648,6 +748,7 @@ class Bot:
         asked: bool,
         log_mid: bool = True,
         grant: dict | None = None,
+        file: dict | None = None,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
@@ -663,7 +764,7 @@ class Bot:
         )
         if asked:
             mid = (msg or {}).get("message_id")
-            item = Item(row, mid, user.get("id"), who, self.clock(), grant)
+            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file)
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
@@ -771,6 +872,7 @@ class Bot:
                 await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
             except TelegramError as e:  # only a courtesy: the answer still goes
                 log.info("typing indicator failed: %s", e)
+            attachments = await self.fetch_files(client, chat_id, items)
             private = chat_id > 0
             last_item = items[-1]
             viewer = last_item.who if private else None
@@ -784,6 +886,7 @@ class Bot:
                 "new": _messages(fresh),
                 "history": _messages([r for r in rows if r not in fresh]),
                 "files": await asyncio.to_thread(_files, data.root),
+                "attachments": attachments,
                 "incoming": self._incoming(turn_state),
             }
             if llm.asks(data):
@@ -867,14 +970,17 @@ class Bot:
     def _incoming(self, turn_state: Turn):
         """turn["incoming"]: the chat's messages queued since the last call, for the provider's
         thread. Once the turn is over it hands over nothing, so a late call steals nothing from the
-        next turn."""
+        next turn. A photo or a file stays queued: the next turn carries its bytes."""
         db, chat_id = self.state.db, turn_state.chat
 
         def incoming() -> list[dict]:
             with self.qlock:
                 if turn_state.closed:
                     return []
-                got = self.queues.pop(chat_id, [])
+                queue = self.queues.pop(chat_id, [])
+                got = [i for i in queue if not i.file]
+                if len(got) < len(queue):
+                    self.queues[chat_id] = [i for i in queue if i.file]
                 turn_state.pulled.extend(got)
             rows = {r["id"]: r for r in db.chat_by_ids(chat_id, [i.row for i in got])}
             return [
@@ -1670,6 +1776,8 @@ class Bot:
         lines += ["", t("bot_about_log"), "", t("bot_about_ask")]
         if cfg.bot.voice and cfg.transcription.provider != "none":
             lines.append(t("bot_about_voice"))
+        if llm.sees_files(data):
+            lines.append(t("bot_about_files"))
         if cfg.llm.provider == "none":
             lines.append(t("bot_no_llm"))
         else:
@@ -2204,6 +2312,21 @@ class Bot:
             for row in (message.get("reply_markup") or {}).get("inline_keyboard") or []
         ]
         await self.rekey(client, chat_id, message.get("message_id"), rows)
+
+
+def _for_handle(msg: dict) -> bool:
+    """A message the bot handles: text, a voice note, a photo or a file."""
+    return any(msg.get(k) for k in ("text", "voice", "audio", "photo", "document"))
+
+
+def _file_name(name, mime: str) -> str:
+    """A file's name as one plain path segment, ending in the extension its kind has."""
+    folded = unicodedata.normalize("NFKD", str(name or ""))
+    plain = "".join(c for c in folded if not unicodedata.combining(c))
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", plain).strip("-.")[:60] or "file"
+    ext = FILE_KINDS[mime]
+    known = (ext, ".jpeg") if ext == ".jpg" else (ext,)
+    return stem if stem.lower().endswith(known) else stem + ext
 
 
 def _reply_to(items: list[Item]) -> int | None:
