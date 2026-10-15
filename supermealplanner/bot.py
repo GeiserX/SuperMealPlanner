@@ -884,6 +884,8 @@ class Bot:
                 "history": _messages([r for r in rows if r not in fresh]),
                 "files": await asyncio.to_thread(_files, data.root),
                 "attachments": attachments,
+                # the chat and the person whose message started the turn
+                "chat": {"id": chat_id, "user": items[0].uid},
                 "incoming": self._incoming(turn_state),
             }
             if llm.asks(data):

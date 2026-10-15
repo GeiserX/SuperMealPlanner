@@ -25,7 +25,10 @@ turn is {"conversation": the id it returned last time in this chat, or None,
               "data": bytes, "from": person id or None}; any kind of file;
              the message's text names the file as "[photo: <name>]", "[video: <name>]",
              "[animation: <name>]", "[video note: <name>]", "[sticker: <name>]" or
-             "[file: <name>]"}.
+             "[file: <name>]",
+         "chat": {"id": the Telegram chat id, "user": the Telegram user id of the person whose
+             message started this turn, or None}; a provider that can read the chat's earlier
+             messages elsewhere (an archive of the chat) uses it to look up only this chat}.
 Only this provider gets photos and files (llm.sees_files): the bot tells the person any other one
 cannot look at them. A photo or a file that arrives while an answer is being written waits for the
 next turn, which carries it.

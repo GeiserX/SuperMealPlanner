@@ -172,6 +172,7 @@ A plugin can also keep the conversation on its side, so each message sends only 
 | `history` | the earlier messages, a recap for when the plugin has to start over |
 | `files` | `ingredients.yaml` and every `recipes/*.yaml`, as text, for a model that can read files |
 | `attachments` | the photos and files sent with this turn's messages, each `{"name": "inbox/<message id>-<file name>", "mime", "data": bytes, "from": person id}` (below) |
+| `chat` | `{"id": the Telegram chat id, "user": the Telegram user id of the person whose message started the turn}` (`user` is `None` when Telegram did not say who); a plugin that can read the chat's earlier messages somewhere else, such as an archive of the chat, uses it to look up this chat only |
 | `incoming` | a function the plugin may call from its thread while it works: it returns the chat's messages that arrived since the last call, each `{"id", "role", "content", "ts"}` |
 | `ask` | given only when the plugin defines `answer()`: a function that asks a person for a yes (below) |
 
