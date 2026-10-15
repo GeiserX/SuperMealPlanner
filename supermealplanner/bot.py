@@ -5,8 +5,8 @@ token_env, add the bot to the household group, send /chatid there and copy the i
 Map each person to their Telegram user id in bot.people.
 
 In a private chat the bot always answers. A voice note is always answered, in the group too, because
-it cannot mention the bot, and so is a photo or any file. In the group it
-answers only a text message that mentions its @handle or replies to it.
+it cannot mention the bot, and so is a photo, a video, a GIF, a round video note, a sticker or any
+file. In the group it answers only a text message that mentions its @handle or replies to it.
 
 A photo or a file goes to a provider that can look at it (llm.sees_files) as turn["attachments"],
 its caption as the message's text. It is queued like any message, by its Telegram file id, and its
@@ -139,6 +139,8 @@ DEBOUNCE_S = 2.5
 VOICE_WAIT_S = 30  # a turn waits this long at most for a voice note of its chat still transcribing
 FILE_MAX = 20 * 1024 * 1024  # the largest file the Bot API lets a bot download
 TURN_FILES_MAX = 25 * 1024 * 1024  # the photos and files one turn carries at most
+# what in a message is a file for the AI, document last: Telegram sets it on an animation too
+FILE_KEYS = ("photo", "video", "animation", "video_note", "sticker", "document")
 OPTIONS = "bot.options.{}"  # choices offered as buttons under an answer, per chat
 OPTIONS_TTL = 12 * 3600  # a choice can be tapped this long
 OPTIONS_KEEP = 20
@@ -626,7 +628,7 @@ class Bot:
                     self.voicing.pop(chat["id"], None)
             await self.drive(client, chat["id"])
             return
-        if (msg.get("photo") or msg.get("document")) and not msg.get("text"):
+        if any(msg.get(k) for k in FILE_KEYS) and not msg.get("text"):
             await self.on_file(client, msg)
             return
         text = msg["text"].strip()
@@ -668,7 +670,8 @@ class Bot:
             await self.drive(client, chat["id"])
 
     async def on_file(self, client, msg: dict) -> None:
-        """A photo, or any file. Like a voice note it always calls the bot,
+        """A photo, a video, a GIF, a video note, a sticker or any file. Like a voice note it always
+        calls the bot,
         in the group too; its caption is the message. It is queued with its file id, and its bytes
         are fetched when its turn starts (fetch_files)."""
         chat, user = msg["chat"], msg.get("from", {})
@@ -690,12 +693,13 @@ class Bot:
             label, mime, name = "photo", "image/jpeg", "photo.jpg"
             file_id, size = big["file_id"], big.get("file_size")
         else:
-            doc = msg["document"]
-            if not doc.get("file_id"):
+            kind = next(k for k in FILE_KEYS if msg.get(k))
+            media = msg[kind]
+            if not isinstance(media, dict) or not media.get("file_id"):
                 return
-            mime = str(doc.get("mime_type") or "application/octet-stream").lower()
-            label, name = "file", _file_name(doc.get("file_name"), mime)
-            file_id, size = doc["file_id"], doc.get("file_size")
+            mime, name = _media(kind, media)
+            label = "file" if kind == "document" else kind.replace("_", " ")
+            file_id, size = media["file_id"], media.get("file_size")
         if isinstance(size, int) and size > FILE_MAX:
             await note("bot_file_too_big")
             return
@@ -2308,8 +2312,25 @@ class Bot:
 
 
 def _for_handle(msg: dict) -> bool:
-    """A message the bot handles: text, a voice note, a photo or a file."""
-    return any(msg.get(k) for k in ("text", "voice", "audio", "photo", "document"))
+    """A message the bot handles: text, a voice note, a photo or a file of any kind."""
+    return any(msg.get(k) for k in ("text", "voice", "audio", *FILE_KEYS))
+
+
+def _media(kind: str, media: dict) -> tuple[str, str]:
+    """A file's type and its name in inbox/. A document keeps its own name; a video, a GIF, a
+    round video note or a sticker is named for what it is."""
+    mime = str(media.get("mime_type") or "").lower()
+    if kind == "document":
+        mime = mime or "application/octet-stream"
+        return mime, _file_name(media.get("file_name"), mime)
+    if kind == "sticker":
+        if media.get("is_animated"):
+            return "application/x-tgsticker", "sticker.tgs"
+        if media.get("is_video"):
+            return "video/webm", "sticker.webm"
+        return "image/webp", "sticker.webp"
+    mime = mime or "video/mp4"
+    return mime, kind.replace("_", "-") + (mimetypes.guess_extension(mime) or ".mp4")
 
 
 def _file_name(name, mime: str) -> str:

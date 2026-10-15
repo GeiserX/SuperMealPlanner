@@ -235,3 +235,41 @@ def test_a_photo_queued_before_a_restart_still_carries_its_file(data_dir, tmp_pa
     [turn] = turns(data_dir)
     assert [a["name"] for a in turn["attachments"]] == ["inbox/5-photo.jpg"]
     assert ChatBot.texts(new, 7) == ["ok"]
+
+
+def test_videos_gifs_video_notes_and_stickers_go_as_files_named_for_what_they_are(
+    data_dir, tmp_path
+):
+    kinds = ("v", "g", "n", "s", "a", "w")
+    b = setup(data_dir, tmp_path, files={k: k.encode() * 3 for k in kinds})
+    gif = {"file_id": "g", "file_name": "giphy.mp4", "mime_type": "video/mp4"}
+    sent_as = [
+        {"video": {"file_id": "v", "mime_type": "video/quicktime", "file_size": 10}},
+        {"animation": gif, "document": gif},  # Telegram sets document on an animation too
+        {"video_note": {"file_id": "n", "length": 240}},
+        {"sticker": {"file_id": "s"}},
+        {"sticker": {"file_id": "a", "is_animated": True}},
+        {"sticker": {"file_id": "w", "is_video": True}},
+    ]
+    for mid, extra in enumerate(sent_as, start=20):
+        settle(b, msg(chat=7, message_id=mid, **extra))
+    got = [
+        (t["new"][0], t["attachments"][0]["name"], t["attachments"][0]["mime"])
+        for t in turns(data_dir)
+    ]
+    assert got == [
+        ("luis: [video: inbox/20-video.mov]", "inbox/20-video.mov", "video/quicktime"),
+        ("luis: [animation: inbox/21-animation.mp4]", "inbox/21-animation.mp4", "video/mp4"),
+        ("luis: [video note: inbox/22-video-note.mp4]", "inbox/22-video-note.mp4", "video/mp4"),
+        ("luis: [sticker: inbox/23-sticker.webp]", "inbox/23-sticker.webp", "image/webp"),
+        (
+            "luis: [sticker: inbox/24-sticker.tgs]",
+            "inbox/24-sticker.tgs",
+            "application/x-tgsticker",
+        ),
+        ("luis: [sticker: inbox/25-sticker.webm]", "inbox/25-sticker.webm", "video/webm"),
+    ]
+    assert b.fetched == list(kinds)
+    huge = {"video": {"file_id": "v", "file_size": FILE_MAX + 1}}
+    settle(b, msg(chat=7, message_id=30, **huge))  # the same caps
+    assert len(turns(data_dir)) == 6 and "20 MB" in sent(b, 7)[-1]

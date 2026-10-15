@@ -23,7 +23,9 @@ turn is {"conversation": the id it returned last time in this chat, or None,
          "attachments": the photos and files sent with this turn's messages, each
              {"name": "inbox/<message id>-<file name>", "mime": the type Telegram gives,
               "data": bytes, "from": person id or None}; any kind of file;
-             the message's text names the file as "[photo: <name>]" or "[file: <name>]"}.
+             the message's text names the file as "[photo: <name>]", "[video: <name>]",
+             "[animation: <name>]", "[video note: <name>]", "[sticker: <name>]" or
+             "[file: <name>]"}.
 Only this provider gets photos and files (llm.sees_files): the bot tells the person any other one
 cannot look at them. A photo or a file that arrives while an answer is being written waits for the
 next turn, which carries it.
