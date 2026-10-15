@@ -7,7 +7,7 @@ import time
 
 from supermealplanner.db import DB
 
-from .test_conversations import ChatBot, plugin_data
+from .test_conversations import TO_BOT, ChatBot, plugin_data
 from .test_settings_stores_bot import msg, run
 
 PLUGIN = """
@@ -21,7 +21,8 @@ def _cfg():
 
 def converse(turn, settings):
     cfg = _cfg()
-    log = {"new": [m["content"] for m in turn["new"]], "incoming": [], "ask": "ask" in turn}
+    log = {"new": [m["content"] for m in turn["new"]], "incoming": [], "ask": "ask" in turn,
+           "chat": turn.get("chat")}
     (HERE / "running").write_text("1")
     covers = []
     if cfg.get("ask"):
@@ -133,6 +134,30 @@ def test_a_burst_within_the_debounce_gets_one_plain_answer(data_dir, tmp_path):
     ]
     (answer,) = sends(b, 7)
     assert answer["text"] == "ok" and "reply_parameters" not in answer  # covers two: plain
+
+
+def test_the_turn_names_its_chat_and_who_asked(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)
+    run(b.handle(None, msg("hola", chat=7, user=7, message_id=5)))
+    assert [t["chat"] for t in lines(data_dir, "turns.jsonl")] == [{"id": 7, "user": 7}]
+
+
+def test_a_burst_from_two_people_names_the_one_who_started_it(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)
+    b.debounce = 0.3
+
+    async def go():
+        first = asyncio.create_task(
+            b.handle(None, msg("hola", chat=-100, user=8, message_id=1, **TO_BOT))
+        )
+        await asyncio.sleep(0.1)
+        await b.handle(None, msg("¿y la cena?", chat=-100, user=7, message_id=2, **TO_BOT))
+        await first
+
+    run(go())
+    [turn] = lines(data_dir, "turns.jsonl")
+    assert len(turn["new"]) == 1 and "ana: hola" in turn["new"][0]  # one turn for both
+    assert turn["chat"] == {"id": -100, "user": 8}
 
 
 def test_one_message_gets_a_reply_to_it(data_dir, tmp_path):
