@@ -102,33 +102,47 @@ def test_a_photo_in_the_group_reaches_the_ai_with_its_caption_and_its_largest_si
     assert sent(b, -100) == ["ok"]
 
 
-def test_an_image_or_pdf_sent_as_a_file_goes_under_a_plain_name(data_dir, tmp_path):
-    b = setup(data_dir, tmp_path)
+def test_a_file_of_any_kind_goes_under_its_own_plain_name(data_dir, tmp_path):
+    files = {"doc": PDF, "sheet": b"dia;plato\nlunes;lentejas\n", "word": b"PK\x03\x04 docx"}
+    b = setup(data_dir, tmp_path, files=files)
     doc = {"file_id": "doc", "file_name": "Receta de la abuela.PDF", "mime_type": "application/pdf"}
     settle(b, msg(document=doc, chat=7, message_id=6))
     [turn] = turns(data_dir)
-    assert turn["new"] == ["luis: [file: inbox/6-Receta-de-la-abuela.PDF]"]
+    assert turn["new"] == ["luis: [file: inbox/6-Receta-de-la-abuela.pdf]"]
     assert [(a["name"], a["mime"]) for a in turn["attachments"]] == [
-        ("inbox/6-Receta-de-la-abuela.PDF", "application/pdf")
+        ("inbox/6-Receta-de-la-abuela.pdf", "application/pdf")
+    ]
+    sheet = {"file_id": "sheet", "file_name": "menú semana.csv", "mime_type": "text/csv"}
+    word = {
+        "file_id": "word",
+        "file_name": "lista.docx",
+        "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    settle(b, msg(document=sheet, caption="¿Lo apuntas?", message_id=7))  # the group too
+    settle(b, msg(document=word, chat=7, message_id=8))
+    got = [
+        (a["name"], base64.b64decode(a["data"]))
+        for t in turns(data_dir)[1:]
+        for a in t["attachments"]
+    ]
+    assert got == [
+        ("inbox/7-menu-semana.csv", files["sheet"]),
+        ("inbox/8-lista.docx", files["word"]),
     ]
     nameless = {"file_id": "doc", "file_name": "ñ/..", "mime_type": "image/png"}
-    settle(b, msg(document=nameless, chat=7, message_id=7))
-    assert turns(data_dir)[-1]["attachments"][0]["name"] == "inbox/7-n.png"
+    settle(b, msg(document=nameless, chat=7, message_id=9))
+    assert turns(data_dir)[-1]["attachments"][0]["name"] == "inbox/9-n.png"
+    assert not [t for t in sent(b) if t != "ok"]  # nothing refused
 
 
-def test_a_file_the_bot_cannot_open_or_that_is_too_big_is_said_and_never_fetched(
-    data_dir, tmp_path
-):
+def test_a_file_too_big_is_said_and_never_fetched(data_dir, tmp_path):
     b = setup(data_dir, tmp_path)
-    es = load(data_dir).locale == "es"
-    zipped = {"file_id": "z", "file_name": "menu.zip", "mime_type": "application/zip"}
-    settle(b, msg(document=zipped, chat=7))
     huge = [{"file_id": "big", "file_size": FILE_MAX + 1}]
     settle(b, msg(photo=huge, chat=7))
+    big_doc = {"file_id": "doc", "file_name": "video.mp4", "file_size": FILE_MAX + 1}
+    settle(b, msg(document=big_doc, chat=7))
     assert b.fetched == [] and turns(data_dir) == []
-    kind, big = sent(b, 7)
-    assert ("Puedo abrir fotos" if es else "I can open photos") in kind
-    assert "20 MB" in big
+    assert all("20 MB" in t for t in sent(b, 7)) and len(sent(b, 7)) == 2
 
 
 def test_a_file_that_fails_to_download_is_said_and_its_message_still_goes(data_dir, tmp_path):

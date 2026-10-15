@@ -140,7 +140,6 @@ bot_logged_water: "💧 {name}: {n} glasses today."
 bot_bad_number: "I need a number, like /weight 82.4"
 bot_no_llm: I can only answer the commands; no AI is configured.
 bot_voice_failed: "I couldn't transcribe that voice note."
-bot_file_kind: "I can open photos, PDFs and JPEG, PNG or WebP images; not this kind of file."
 bot_file_too_big: "That one is too big for me: 20 MB per file, and 25 MB for everything sent together."
 bot_file_failed: "I couldn't download that file. Could you send it again?"
 bot_file_unseen: "I can't look at photos or files with the AI set up here. Tell me in words?"
@@ -187,7 +186,7 @@ bot_about_ask: "💬 Ask me\nIn a private chat I always answer; in the group, me
 bot_about_private: "🔒 You can also write to me privately. There I never share anyone else's weigh-ins, logs, goals or pills."
 bot_about_calendar: "Batch days move to free afternoons on your calendar."
 bot_about_voice: "Voice notes reach me in a private chat and in the group: I write down what I heard and answer."
-bot_about_files: "Photos, and images or PDFs sent as files, reach me in a private chat and in the group: I look at them and answer."
+bot_about_files: "Photos and files of any kind reach me in a private chat and in the group: I look at them and answer."
 
 # AI conversation and settings changes from the chat
 bot_new: "New conversation: I've forgotten what we talked about. Your plan and data are still here."

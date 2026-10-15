@@ -5,13 +5,13 @@ token_env, add the bot to the household group, send /chatid there and copy the i
 Map each person to their Telegram user id in bot.people.
 
 In a private chat the bot always answers. A voice note is always answered, in the group too, because
-it cannot mention the bot, and so is a photo or an image or PDF sent as a file. In the group it
+it cannot mention the bot, and so is a photo or any file. In the group it
 answers only a text message that mentions its @handle or replies to it.
 
 A photo or a file goes to a provider that can look at it (llm.sees_files) as turn["attachments"],
 its caption as the message's text. It is queued like any message, by its Telegram file id, and its
-bytes are fetched when its turn starts: FILE_MAX each, TURN_FILES_MAX in all. A kind the bot cannot
-open, one too big, or one whose download fails gets a short note under it.
+bytes are fetched when its turn starts: FILE_MAX each, TURN_FILES_MAX in all. One too big, or one
+whose download fails, gets a short note under it.
 
 One answer per burst: a chat's messages wait DEBOUNCE_S after the newest one (and up to VOICE_WAIT_S
 for a voice note still being transcribed) and go to the AI together; what arrives while it writes is
@@ -45,6 +45,7 @@ import asyncio
 import datetime as dt
 import html
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -138,13 +139,6 @@ DEBOUNCE_S = 2.5
 VOICE_WAIT_S = 30  # a turn waits this long at most for a voice note of its chat still transcribing
 FILE_MAX = 20 * 1024 * 1024  # the largest file the Bot API lets a bot download
 TURN_FILES_MAX = 25 * 1024 * 1024  # the photos and files one turn carries at most
-# what a photo or a file may be, with the extension its name gets when it has none
-FILE_KINDS = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "application/pdf": ".pdf",
-}
 OPTIONS = "bot.options.{}"  # choices offered as buttons under an answer, per chat
 OPTIONS_TTL = 12 * 3600  # a choice can be tapped this long
 OPTIONS_KEEP = 20
@@ -674,7 +668,7 @@ class Bot:
             await self.drive(client, chat["id"])
 
     async def on_file(self, client, msg: dict) -> None:
-        """A photo, or an image or PDF sent as a file. Like a voice note it always calls the bot,
+        """A photo, or any file. Like a voice note it always calls the bot,
         in the group too; its caption is the message. It is queued with its file id, and its bytes
         are fetched when its turn starts (fetch_files)."""
         chat, user = msg["chat"], msg.get("from", {})
@@ -697,10 +691,9 @@ class Bot:
             file_id, size = big["file_id"], big.get("file_size")
         else:
             doc = msg["document"]
-            mime = str(doc.get("mime_type") or "").lower()
-            if mime not in FILE_KINDS or not doc.get("file_id"):
-                await note("bot_file_kind")
+            if not doc.get("file_id"):
                 return
+            mime = str(doc.get("mime_type") or "application/octet-stream").lower()
             label, name = "file", _file_name(doc.get("file_name"), mime)
             file_id, size = doc["file_id"], doc.get("file_size")
         if isinstance(size, int) and size > FILE_MAX:
@@ -2320,13 +2313,18 @@ def _for_handle(msg: dict) -> bool:
 
 
 def _file_name(name, mime: str) -> str:
-    """A file's name as one plain path segment, ending in the extension its kind has."""
+    """A file's name as one plain path segment, keeping its extension; a name without one gets the
+    extension its kind has, when it has one."""
     folded = unicodedata.normalize("NFKD", str(name or ""))
     plain = "".join(c for c in folded if not unicodedata.combining(c))
-    stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", plain).strip("-.")[:60] or "file"
-    ext = FILE_KINDS[mime]
-    known = (ext, ".jpeg") if ext == ".jpg" else (ext,)
-    return stem if stem.lower().endswith(known) else stem + ext
+    stem, dot, ext = plain.rpartition(".")
+    if not dot:
+        stem, ext = plain, ""
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", stem).strip("-")[:60] or "file"
+    ext = re.sub(r"[^A-Za-z0-9]+", "", ext)[:10].lower()
+    if ext:
+        return f"{stem}.{ext}"
+    return stem + (mimetypes.guess_extension(mime) or "")
 
 
 def _reply_to(items: list[Item]) -> int | None:
