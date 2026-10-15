@@ -639,3 +639,33 @@ def test_a_voice_note_still_transcribing_at_a_restart_is_heard_after_it(data_dir
     assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [["luis: 🎤 me duele la tripa"]]
     assert ChatBot.texts(new, 7) == ["🎤 me duele la tripa", "ok"]
     assert (db.get_kv("bot.inbox") or {}).get("messages") in (None, [])
+
+
+def test_a_failed_inbox_write_leaves_the_offset_so_the_update_comes_again(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    feed(b, {"update_id": 41, "message": msg("¿qué cenamos?", chat=7, user=7, message_id=5)})
+    set_kv = db.set_kv
+
+    def full_disk(key, value):
+        if key == "bot.inbox":
+            raise OSError("disk full")
+        set_kv(key, value)
+
+    db.set_kv = full_disk
+    try:
+        run(b.poll(None))
+    except OSError:
+        pass
+    assert b.offset == 0 and db.get_kv("bot.inbox") is None
+
+
+def test_a_message_both_queued_and_in_the_inbox_is_answered_once(data_dir, tmp_path):
+    old, db = setup(data_dir, tmp_path)
+    note = msg("¿qué cenamos?", chat=7, user=7, message_id=5)
+    old.take(7, note["from"], "luis", note, note["text"], asked=True)
+    db.set_kv("bot.inbox", {"offset": 42, "messages": [note]})  # stopped before the inbox drop
+    new, start = restarted(old)
+    run(start())
+    assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [["luis: ¿qué cenamos?"]]
+    assert ChatBot.texts(new, 7) == ["ok"]
+    assert db.get_kv("bot.inbox")["messages"] == [] and db.get_kv("bot.queued") is None

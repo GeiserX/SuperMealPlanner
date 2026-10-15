@@ -359,9 +359,9 @@ class Bot:
                     await self.learn_usernames(client)
                     await self.check_group(client, me)
                     if not self.started:  # once per process: a loop restart cuts nothing off
-                        self.started = True
                         await self.interrupted(client)
                         await self.resume(client)
+                        self.started = True  # only now: a failed resume runs again on the retry
                     log.warning("bot @%s up", self.username)
                     backoff = 5
                     loops = [
@@ -405,9 +405,9 @@ class Bot:
             for u in updates:
                 msg = u.get("message")
                 kept = bool(msg) and bool(msg.get("text") or msg.get("voice") or msg.get("audio"))
-                # stored before Telegram is told it arrived (the next getUpdates), in one write
-                self.offset = u["update_id"] + 1
-                self.inbox(add=msg if kept else None)
+                # stored before Telegram is told it arrived (the next getUpdates), in one write;
+                # a failed write leaves the offset where it was, so the update comes again
+                self.inbox(add=msg if kept else None, offset=u["update_id"] + 1)
                 if u.get("edited_message") or u.get("callback_query"):
                     work = (
                         self.edited(client, u["edited_message"])
@@ -457,6 +457,12 @@ class Bot:
         over that the bot never took is handled again."""
         queued = self.state.db.get_kv(QUEUED) or {}
         inbox = (self.state.db.get_kv(INBOX) or {}).get("messages") or []
+        # a stop between queueing a message and dropping it from the inbox leaves it in both
+        taken = {(int(k), x.get("mid")) for k, kept in queued.items() for x in kept}
+        twice = [m for m in inbox if (m["chat"]["id"], m.get("message_id")) in taken]
+        for msg in twice:
+            self.inbox(done=msg)
+        inbox = [m for m in inbox if m not in twice]
         with self.qlock:
             for key, kept in queued.items():
                 items = [
@@ -478,9 +484,12 @@ class Bot:
         if queued or inbox:
             log.warning("resumed: chats=%d messages=%d", len(queued), len(inbox))
 
-    def inbox(self, add: dict | None = None, done: dict | None = None) -> None:
-        """INBOX: store the offset, with `add` (the message Telegram just handed over), in one
-        write; or drop `done`, a message the bot has taken (queued, answered or ignored)."""
+    def inbox(
+        self, add: dict | None = None, done: dict | None = None, offset: int | None = None
+    ) -> None:
+        """INBOX: store the next `offset`, with `add` (the message Telegram just handed over), in
+        one write, and move `self.offset` once it is stored; or drop `done`, a message the bot has
+        taken (queued, answered or ignored)."""
         db = self.state.db
         messages = (db.get_kv(INBOX) or {}).get("messages") or []
         if add is not None:
@@ -491,7 +500,11 @@ class Bot:
             if len(left) == len(messages):
                 return
             messages = left
-        db.set_kv(INBOX, {"offset": self.offset, "messages": messages})
+        db.set_kv(
+            INBOX, {"offset": offset if offset is not None else self.offset, "messages": messages}
+        )
+        if offset is not None:
+            self.offset = offset
 
     def queued(self, chat_id: int, add: Item | None = None) -> None:
         """QUEUED for one chat: with `add`, one more message to answer; without, what is left once
