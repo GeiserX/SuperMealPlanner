@@ -27,6 +27,10 @@ Telegram shows a bot with privacy mode on (the default) only commands and replie
 mentions (and edits of messages without one) make the bot a group admin or turn privacy off
 (BotFather, /setprivacy -> Disable). The bot logs a warning at start when it cannot see them.
 
+A restart loses no message: each one Telegram hands over is stored before its update is confirmed,
+and each one the bot takes stays stored until a turn that took it ends, so the next process answers
+what was waiting, being transcribed or being answered when the last one stopped (resume).
+
 Only the configured group and private chats with the people in bot.people are answered.
 """
 
@@ -117,6 +121,11 @@ PENDING_TTL = 3600  # a proposed change waits this long for its yes
 WAITING = "bot.waiting.{}"
 LEGACY_PENDING = "bot.pending.{}"
 RUNNING = "bot.running"  # proposals the plugin is carrying out now, across every chat
+# A restart (a redeploy replaces the container at any moment) loses no message. INBOX holds
+# Telegram's offset and each message it handed over until the bot has taken it; QUEUED holds, per
+# chat, each message taken for an answer until a turn that took it ends. resume() replays both.
+INBOX = "bot.inbox"  # {"offset": next update id, "messages": [Telegram message, ...]}
+QUEUED = "bot.queued"  # {"<chat id>": [{"row", "mid", "uid", "who", "grant"}, ...]}
 ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft takes minutes)
 # a chat's turn starts this long after its newest message, so a burst goes together
 DEBOUNCE_S = 2.5
@@ -170,7 +179,7 @@ class Bot:
         cfg = state.data.settings.bot
         self.token = os.environ.get(cfg.token_env, "")
         self.username = ""
-        self.offset = 0
+        self.offset = (state.db.get_kv(INBOX) or {}).get("offset", 0)
         # a group Telegram upgraded to a supergroup: {"from": old id, "to": new id}
         self.migration: dict | None = state.db.get_kv("bot.migrated_chat")
         self.ai = asyncio.Semaphore(1)  # one AI answer at a time, in arrival order
@@ -350,8 +359,9 @@ class Bot:
                     await self.learn_usernames(client)
                     await self.check_group(client, me)
                     if not self.started:  # once per process: a loop restart cuts nothing off
-                        self.started = True
                         await self.interrupted(client)
+                        await self.resume(client)
+                        self.started = True  # only now: a failed resume runs again on the retry
                     log.warning("bot @%s up", self.username)
                     backoff = 5
                     loops = [
@@ -393,7 +403,11 @@ class Bot:
                     await asyncio.sleep(10)
                 continue
             for u in updates:
-                self.offset = u["update_id"] + 1
+                msg = u.get("message")
+                kept = bool(msg) and bool(msg.get("text") or msg.get("voice") or msg.get("audio"))
+                # stored before Telegram is told it arrived (the next getUpdates), in one write;
+                # a failed write leaves the offset where it was, so the update comes again
+                self.inbox(add=msg if kept else None, offset=u["update_id"] + 1)
                 if u.get("edited_message") or u.get("callback_query"):
                     work = (
                         self.edited(client, u["edited_message"])
@@ -404,7 +418,6 @@ class Bot:
                     self.tasks.add(task)
                     task.add_done_callback(self.tasks.discard)
                     continue
-                msg = u.get("message")
                 if not msg:
                     continue
                 if msg.get("migrate_to_chat_id") and msg["chat"]["id"] == self.chat_id:
@@ -424,11 +437,94 @@ class Bot:
         try:
             await self.handle(client, msg)
         except Exception as e:  # noqa: BLE001
+            self.inbox(done=msg)
             log.warning("handling a message failed: %s", safe(e))
             try:
                 await self.send(client, msg["chat"]["id"], self.t("bot_error"), record=False)
             except Exception as e2:  # noqa: BLE001  the reply is best effort
                 log.warning("could not send the error reply: %s", safe(e2))
+        else:
+            self.inbox(done=msg)
+
+    def spawn(self, work) -> None:
+        task = asyncio.create_task(work)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    async def resume(self, client) -> None:
+        """Once at start: what the last process left goes on. Each chat's queued messages (still
+        waiting, or taken by a turn that never ended) get a turn, and each message Telegram handed
+        over that the bot never took is handled again."""
+        queued = self.state.db.get_kv(QUEUED) or {}
+        inbox = (self.state.db.get_kv(INBOX) or {}).get("messages") or []
+        # a stop between queueing a message and dropping it from the inbox leaves it in both
+        taken = {(int(k), x.get("mid")) for k, kept in queued.items() for x in kept}
+        twice = [m for m in inbox if (m["chat"]["id"], m.get("message_id")) in taken]
+        for msg in twice:
+            self.inbox(done=msg)
+        inbox = [m for m in inbox if m not in twice]
+        with self.qlock:
+            for key, kept in queued.items():
+                items = [
+                    Item(
+                        x["row"],
+                        x.get("mid"),
+                        x.get("uid"),
+                        x.get("who"),
+                        self.clock(),
+                        x.get("grant"),
+                    )
+                    for x in kept
+                ]
+                self.queues[int(key)] = [*items, *self.queues.get(int(key), [])]
+        for key in queued:
+            self.spawn(self.drive(client, int(key)))
+        for msg in inbox:
+            self.spawn(self.guarded(client, msg))
+        if queued or inbox:
+            log.warning("resumed: chats=%d messages=%d", len(queued), len(inbox))
+
+    def inbox(
+        self, add: dict | None = None, done: dict | None = None, offset: int | None = None
+    ) -> None:
+        """INBOX: store the next `offset`, with `add` (the message Telegram just handed over), in
+        one write, and move `self.offset` once it is stored; or drop `done`, a message the bot has
+        taken (queued, answered or ignored)."""
+        db = self.state.db
+        messages = (db.get_kv(INBOX) or {}).get("messages") or []
+        if add is not None:
+            messages.append(add)
+        if done is not None:
+            key = (done["chat"]["id"], done.get("message_id"))
+            left = [m for m in messages if (m["chat"]["id"], m.get("message_id")) != key]
+            if len(left) == len(messages):
+                return
+            messages = left
+        db.set_kv(
+            INBOX, {"offset": offset if offset is not None else self.offset, "messages": messages}
+        )
+        if offset is not None:
+            self.offset = offset
+
+    def queued(self, chat_id: int, add: Item | None = None) -> None:
+        """QUEUED for one chat: with `add`, one more message to answer; without, what is left once
+        a turn ended or /nuevo emptied the queue, which is what the chat's queue still holds (a
+        message handed to the turn and not covered went back to it). Called with `qlock` held."""
+        db, key = self.state.db, str(chat_id)
+        every = db.get_kv(QUEUED) or {}
+        kept = every.get(key) or []
+        if add is not None:
+            kept.append(
+                {"row": add.row, "mid": add.mid, "uid": add.uid, "who": add.who, "grant": add.grant}
+            )
+        else:
+            left = {i.row for i in self.queues.get(chat_id) or []}
+            kept = [x for x in kept if x["row"] in left]
+        if kept:
+            every[key] = kept
+        else:
+            every.pop(key, None)
+        db.set_kv(QUEUED, every or None)
 
     async def quietly(self, work) -> None:
         """An edit or a tap in its own task; a failure is logged, never posted."""
@@ -497,6 +593,7 @@ class Bot:
                 who = self.person_of(user.get("id", 0))
                 await self.send(client, chat["id"], f"🎤 {text}", msg["message_id"], record=False)
                 self.take(chat["id"], user, who, msg, f"🎤 {text}", asked=True)
+                self.inbox(done=msg)  # queued now: QUEUED keeps it from here
             finally:
                 notes.remove(start)
                 if not notes:
@@ -537,6 +634,7 @@ class Bot:
         asked = private or self.mentioned(text) or self.replied(msg)
         if asked or cfg.history_scope == "all":
             self.take(chat["id"], user, who, msg, text, asked)
+            self.inbox(done=msg)  # logged, and queued when asked: QUEUED keeps it from here
         if asked:
             await self.drive(client, chat["id"])
 
@@ -568,6 +666,7 @@ class Bot:
             item = Item(row, mid, user.get("id"), who, self.clock(), grant)
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
+                self.queued(chat_id, add=item)
         return row
 
     async def drive(self, client, chat_id: int) -> None:
@@ -605,6 +704,9 @@ class Bot:
                             )
                         except Exception as e2:  # noqa: BLE001
                             log.warning("could not send the error reply: %s", safe(e2))
+                    # the turn ended (a cancelled one did not: a stop keeps its messages queued)
+                    with self.qlock:
+                        self.queued(chat_id)
         finally:
             self.driving.discard(chat_id)
 
@@ -1595,6 +1697,7 @@ class Bot:
             self.state.db.set_kv(OPTIONS.format(chat_id), None)
             with self.qlock:
                 self.queues.pop(chat_id, None)
+                self.queued(chat_id)
         if conv.get("id"):
             try:
                 await llm.forget(self.data, conv["id"])

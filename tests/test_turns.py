@@ -537,3 +537,135 @@ def test_a_correction_whose_turn_ends_meanwhile_still_gets_its_turn(data_dir, tm
 
 def posted_ask(b):
     return next(p for p in sends(b, -100) if "do you approve" in p["text"])
+
+
+# ---------------------------------------------------------------- restarts
+
+
+def feed(b, *updates):
+    """getUpdates hands `updates` over once, then waits as a long poll does."""
+    sent, batches = b.call, [list(updates)]
+
+    async def call(client, method, _tries=0, **params):
+        if method == "getUpdates":
+            b.calls.append((method, params))
+            if batches:
+                return batches.pop(0)
+            await asyncio.Event().wait()
+        return await sent(client, method, **params)
+
+    b.call = call
+
+
+def restarted(old):
+    """A new process on the same database: the old one's memory and tasks are gone. It starts
+    as run() does, then answers what the old one left."""
+    new = ChatBot(old.data, old.state.db)
+
+    async def start():
+        await new.resume(None)
+        await drain(new)
+
+    return new, start
+
+
+def test_a_message_queued_before_a_restart_is_answered_after_it(data_dir, tmp_path):
+    old, db = setup(data_dir, tmp_path)
+    feed(old, {"update_id": 41, "message": msg("¿qué cenamos?", chat=7, user=7, message_id=5)})
+
+    async def dies_before_the_turn():
+        await old.ai.acquire()  # the one AI slot is taken: the message waits in the queue
+        poll = asyncio.create_task(old.poll(None))
+        await until(lambda: old.queues.get(7))
+        poll.cancel()  # the process stops; asyncio.run cancels the message's task as well
+
+    run(dies_before_the_turn())
+    assert lines(data_dir, "turns.jsonl") == []
+    new, start = restarted(old)
+    assert new.offset == 42  # never handed over again: the message was stored first
+    run(start())
+    assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [["luis: ¿qué cenamos?"]]
+    assert ChatBot.texts(new, 7) == ["ok"]
+    assert db.get_kv("bot.queued") is None
+
+
+def test_a_turn_killed_mid_flight_is_replayed_after_a_restart(data_dir, tmp_path):
+    old, db = setup(data_dir, tmp_path)
+    cfg(data_dir, listen=0.3)  # the old turn is still thinking when the process stops
+    feed(old, {"update_id": 41, "message": msg("¿qué cenamos?", chat=7, user=7, message_id=5)})
+
+    async def dies_mid_turn():
+        poll = asyncio.create_task(old.poll(None))
+        await until(lambda: running(data_dir))
+        poll.cancel()
+
+    run(dies_mid_turn())
+    assert ChatBot.texts(old, 7) == []  # its answer never went out
+    cfg(data_dir)
+    new, start = restarted(old)
+    run(start())
+    assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [
+        ["luis: ¿qué cenamos?"],  # the turn the old process died in
+        ["luis: ¿qué cenamos?"],  # and its replay
+    ]
+    assert ChatBot.texts(new, 7) == ["ok"]
+    assert db.get_kv("bot.queued") is None
+
+
+def test_a_voice_note_still_transcribing_at_a_restart_is_heard_after_it(data_dir, tmp_path):
+    old, db = setup(data_dir, tmp_path)
+
+    async def hangs(client, voice):
+        await asyncio.Event().wait()
+
+    old.transcribe = hangs
+    note = msg(chat=7, user=7, message_id=5, voice={"file_id": "f"})
+    feed(old, {"update_id": 41, "message": note})
+
+    async def dies_while_hearing():
+        poll = asyncio.create_task(old.poll(None))
+        await until(lambda: old.voicing.get(7))
+        poll.cancel()
+
+    run(dies_while_hearing())
+    new, start = restarted(old)
+    assert new.offset == 42
+
+    async def heard(client, voice):
+        return "me duele la tripa"
+
+    new.transcribe = heard
+    run(start())
+    assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [["luis: 🎤 me duele la tripa"]]
+    assert ChatBot.texts(new, 7) == ["🎤 me duele la tripa", "ok"]
+    assert (db.get_kv("bot.inbox") or {}).get("messages") in (None, [])
+
+
+def test_a_failed_inbox_write_leaves_the_offset_so_the_update_comes_again(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    feed(b, {"update_id": 41, "message": msg("¿qué cenamos?", chat=7, user=7, message_id=5)})
+    set_kv = db.set_kv
+
+    def full_disk(key, value):
+        if key == "bot.inbox":
+            raise OSError("disk full")
+        set_kv(key, value)
+
+    db.set_kv = full_disk
+    try:
+        run(b.poll(None))
+    except OSError:
+        pass
+    assert b.offset == 0 and db.get_kv("bot.inbox") is None
+
+
+def test_a_message_both_queued_and_in_the_inbox_is_answered_once(data_dir, tmp_path):
+    old, db = setup(data_dir, tmp_path)
+    note = msg("¿qué cenamos?", chat=7, user=7, message_id=5)
+    old.take(7, note["from"], "luis", note, note["text"], asked=True)
+    db.set_kv("bot.inbox", {"offset": 42, "messages": [note]})  # stopped before the inbox drop
+    new, start = restarted(old)
+    run(start())
+    assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [["luis: ¿qué cenamos?"]]
+    assert ChatBot.texts(new, 7) == ["ok"]
+    assert db.get_kv("bot.inbox")["messages"] == [] and db.get_kv("bot.queued") is None
