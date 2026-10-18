@@ -137,6 +137,9 @@ ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft 
 # a chat's turn starts this long after its newest message, so a burst goes together
 DEBOUNCE_S = 2.5
 VOICE_WAIT_S = 30  # a turn waits this long at most for a voice note of its chat still transcribing
+# A provider that is out of capacity raises an error with `retry_after` (seconds): the chat's messages
+# wait that long, at least BUSY_MIN_S, and are answered then, with nobody writing again.
+BUSY_MIN_S = 60
 FILE_MAX = 20 * 1024 * 1024  # the largest file the Bot API lets a bot download
 TURN_FILES_MAX = 25 * 1024 * 1024  # the photos and files one turn carries at most
 # what in a message is a file for the AI, document last: Telegram sets it on an animation too
@@ -221,6 +224,8 @@ class Bot:
         self.voicing: dict[int, list[float]] = {}  # chat -> start of each note being transcribed
         self.running: dict[int, Turn] = {}
         self.asks: dict[str, dict] = {}  # open asks of the provider, by key
+        self.resting: dict[int, float] = {}  # chat -> clock() its answer waits for (busy provider)
+        self.told_busy: set[int] = set()  # chats told of the wait, until an answer goes out
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -812,6 +817,8 @@ class Bot:
         self.driving.add(chat_id)
         try:
             while True:
+                if self.resting.get(chat_id, 0) > self.clock():
+                    return  # the provider is busy: wake() runs the chat's turn when it is back
                 await self.settle(chat_id)
                 async with self.ai:
                     with self.qlock:
@@ -900,7 +907,7 @@ class Bot:
             return  # an earlier turn already took these messages
         turn_state = Turn(chat_id, items)
         self.running[chat_id] = turn_state
-        reply = None
+        reply, deferred = None, False
         try:
             try:
                 await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
@@ -933,6 +940,11 @@ class Bot:
                 )
             except Exception as e:  # noqa: BLE001
                 log.warning("AI call failed: %s", safe(e))
+                later = _retry_after(e)
+                if later is not None:  # out of capacity: the same messages go again by themselves
+                    deferred = True
+                    await self.rest(client, chat_id, items, later)
+                    return
                 # never recorded: the unanswered messages go again with the next one
                 await self.send(
                     client, chat_id, self.t("bot_error"), _reply_to(items), record=False
@@ -944,10 +956,13 @@ class Bot:
                 missed = [
                     i for i in turn_state.pulled if reply is None or i.row not in reply.covers
                 ]
-                if reply is not None and missed:  # the next turn sends them, at the head
+                if deferred:  # the whole turn waits for the provider, in its order
+                    self.queues[chat_id] = [*items, *missed, *self.queues.get(chat_id, [])]
+                elif reply is not None and missed:  # the next turn sends them, at the head
                     self.queues[chat_id] = [*missed, *self.queues.get(chat_id, [])]
             self.running.pop(chat_id, None)
             await self.close_asks(client, turn_state)
+        self.told_busy.discard(chat_id)  # answered: a later busy spell is told again
         covered = [*items, *(i for i in turn_state.pulled if i.row in reply.covers)]
         reply_to = _reply_to(covered)
         anchor = covered[-1]  # changes and proposals act for the newest message's sender
@@ -977,6 +992,31 @@ class Bot:
             await self.offer(client, chat_id, anchor.mid, anchor.who, anchor.uid, proposal)
         if listed:
             await self.offer_reminders(client, chat_id, listed, covered, reply_to)
+
+    async def rest(self, client, chat_id: int, items: list[Item], seconds: float) -> None:
+        """The provider is out of capacity for `seconds`: say so once, with the wait, and answer
+        the chat's messages by itself when it is back. A message that arrives meanwhile waits too."""
+        seconds = max(float(seconds), BUSY_MIN_S)
+        self.resting[chat_id] = self.clock() + seconds
+        if chat_id not in self.told_busy:
+            self.told_busy.add(chat_id)
+            minutes = max(1, round(seconds / 60))
+            wait = (
+                self.t("busy_minutes", n=minutes)
+                if minutes < 90
+                else self.t("busy_hours", n=round(minutes / 60))
+            )
+            await self.send(
+                client, chat_id, self.t("bot_busy", wait=wait), _reply_to(items), record=False
+            )
+        self.spawn(self.wake(client, chat_id, seconds))
+
+    async def wake(self, client, chat_id: int, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+        if self.resting.get(chat_id, 0) > self.clock():
+            return  # a later rest set a later time and woke itself
+        self.resting.pop(chat_id, None)
+        await self.drive(client, chat_id)
 
     async def answer_text(self, client, chat_id, text, reply_to, offered, covered) -> None:
         """The answer, with the choices it offers as buttons under it."""
@@ -2403,6 +2443,14 @@ def _file_name(name, mime: str) -> str:
     if ext:
         return f"{stem}.{ext}"
     return stem + (mimetypes.guess_extension(mime) or "")
+
+
+def _retry_after(e: BaseException) -> float | None:
+    """The seconds a busy provider asks to wait (its error's `retry_after`), or None."""
+    later = getattr(e, "retry_after", None)
+    if isinstance(later, bool) or not isinstance(later, (int, float)) or later <= 0:
+        return None
+    return float(later)
 
 
 def _reply_to(items: list[Item]) -> int | None:
