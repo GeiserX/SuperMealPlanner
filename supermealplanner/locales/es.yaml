@@ -147,6 +147,7 @@ bot_error: Algo ha fallado. Prueba otra vez en un minuto.
 bot_chat_id: "El id de este chat es {id}."
 reminder_defrost: "🧊 Esta noche: pasa {dish} del congelador a la nevera para la comida de mañana."
 reminder_batch: "🍲 Esta tarde toca batch: {dishes}. Hoja: {url}"
+reminder_batch_morning: "🍲 Mañana por la mañana toca batch: {dishes}. Hoja: {url}"
 reminder_meal: "🍽️ {meal} de hoy: {dish}. {where}\n{url}"
 reminder_shopping: "🛒 Hoy toca compra. Lista: {url}"
 reminder_pills_lunch: "💊 {name}, ¿te has tomado las pastillas de la comida? Responde /pastillas cuando lo hagas."
