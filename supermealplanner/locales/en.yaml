@@ -149,12 +149,14 @@ bot_busy: "I can't answer right now: I have no capacity left for {wait}. I'll an
 busy_minutes: "about {n} minutes"
 busy_hours: "about {n} hours"
 bot_chat_id: "This chat's id is {id}."
-reminder_defrost: "🧊 Tonight: move {dish} from the freezer to the fridge for tomorrow's lunch."
+reminder_defrost: "🧊 Tonight: move {dish} from the freezer to the fridge for tomorrow's lunch. Recipe: {url}"
 reminder_batch: "🍲 Batch cooking this afternoon: {dishes}. Sheet: {url}"
 reminder_batch_morning: "🍲 Batch cooking tomorrow morning: {dishes}. Sheet: {url}"
 reminder_meal: "🍽️ {meal} today: {dish}. {where}\n{url}"
 reminder_shopping: "🛒 Shopping day. List: {url}"
 reminder_pills_lunch: "💊 {name}, have you taken the lunch pills? Reply /pills when done."
+plan_ready: "🗓️ The next menu is ready: {first} to {last}."
+plan_ready_week: "\n{date}\n🗓️ {week}\n🛒 {list}\n🍲 {batch}"
 bot_pills_logged: "Saved: lunch pills taken, {name}."
 
 # bot profile and presentation (/about)

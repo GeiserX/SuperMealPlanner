@@ -883,3 +883,43 @@ def test_handles_for_unknown_people_are_rejected(data_dir):
     write(data_dir, "settings.yaml", {"bot": {"handles": {"nadie": "@nadie_x"}}})
     with pytest.raises(DataError, match="bot.handles: unknown person nadie"):
         load(data_dir)
+
+
+def test_a_new_plan_is_announced_once_with_links_to_every_week(data_dir, tmp_path):
+    from supermealplanner.scheduler import ANNOUNCE, tick
+
+    data = bot_data(data_dir)
+    for old in plans_dir(data).glob("*.yaml"):
+        old.unlink()
+    db = DB(tmp_path / "b.db")
+    b = FakeBot(data, db, MONDAY)
+    run(b.tick_announce(None))
+    assert b.sent == []  # nothing drawn, nothing to say
+
+    class S(FakeState):
+        def reload(self):
+            pass
+
+    state = S(data, db, MONDAY)
+    tick(state)
+    assert db.get_kv(ANNOUNCE) == MONDAY.isoformat()
+    run(b.tick_announce(None))
+    run(b.tick_announce(None))
+    assert len(b.sent) == 1
+    text = b.sent[0][1]
+    for week in range(4):
+        d = (MONDAY + dt.timedelta(days=7 * week)).isoformat()
+        for page in ("week", "list", "batch"):
+            assert f"https://meals.example/{page}?d={d}" in text
+
+
+def test_the_defrost_reminder_links_the_recipe(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    r = next(x for x in data.settings.reminders if x.id == "defrost")
+    from supermealplanner.planner import plan_for
+
+    plan = plan_for(data, MONDAY)
+    texts = [b.reminder_text(r, d.date) for d in plan.days[:-1]]
+    texts = [x for x in texts if x]
+    assert texts and all("https://meals.example/recipe/" in x for x in texts)
