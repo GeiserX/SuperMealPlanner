@@ -148,6 +148,7 @@ bot_error: Something went wrong. Try again in a minute.
 bot_chat_id: "This chat's id is {id}."
 reminder_defrost: "🧊 Tonight: move {dish} from the freezer to the fridge for tomorrow's lunch."
 reminder_batch: "🍲 Batch cooking this afternoon: {dishes}. Sheet: {url}"
+reminder_batch_morning: "🍲 Batch cooking tomorrow morning: {dishes}. Sheet: {url}"
 reminder_meal: "🍽️ {meal} today: {dish}. {where}\n{url}"
 reminder_shopping: "🛒 Shopping day. List: {url}"
 reminder_pills_lunch: "💊 {name}, have you taken the lunch pills? Reply /pills when done."

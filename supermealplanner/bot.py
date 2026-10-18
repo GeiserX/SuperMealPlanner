@@ -2060,6 +2060,23 @@ class Bot:
                     return t(
                         "reminder_batch", dishes=dishes, url=self.url(f"/batch?d={day.isoformat()}")
                     )
+            tomorrow = day + dt.timedelta(days=1)
+            if day in paused_days(
+                data
+            ):  # the first day back cooks that morning: say so the day before
+                for s in plan.sessions:
+                    if s.date == tomorrow and s.morning:
+                        dishes = ", ".join(
+                            data.recipes[x.recipe].name
+                            for x in s.dishes
+                            if x.recipe in data.recipes
+                        )
+                        if dishes:
+                            return t(
+                                "reminder_batch_morning",
+                                dishes=dishes,
+                                url=self.url(f"/batch?d={tomorrow.isoformat()}"),
+                            )
             return None
         if r.kind == "meal":
             d = plan.day(day)

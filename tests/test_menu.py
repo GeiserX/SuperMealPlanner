@@ -210,6 +210,22 @@ def test_plan_reminders_stay_silent_on_paused_days(data_dir, tmp_path):
         assert b.reminder_text(by[rid], day), rid
 
 
+def test_the_batch_reminder_sounds_the_eve_of_the_first_day_back_from_a_pause(data_dir, tmp_path):
+    data = bot_data(data_dir)
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["reminders"].append({"id": "batch", "kind": "batch", "at": ["16:30"]})
+    (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    data = load(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    batch = next(r for r in data.settings.reminders if r.id == "batch")
+    change(data, {"pause": {"from": str(D(1)), "to": str(D(6))}})
+    said = b.reminder_text(batch, D(6))  # the eve is paused, the day after has a menu
+    assert said and said.startswith("🍲 Batch cooking tomorrow morning")
+    assert b.reminder_text(batch, D(5)) is None  # nothing cooks on D(6)
+    change(data, {"resume": {"from": str(D(1)), "to": str(D(6))}})
+    assert b.reminder_text(batch, D(6)) is None
+
+
 def test_the_shopping_reminder_goes_when_part_of_the_week_is_still_planned(data_dir, tmp_path):
     data = bot_data(data_dir)
     raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
