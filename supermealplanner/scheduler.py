@@ -5,6 +5,7 @@
    SMP_GIT_TOKEN, if set, authenticates an https pull (Gitea or GitHub token, read-only).
 2. Keep a plan ready: when no plan covers the next 7 days, generate the next 4 weeks from the
    Monday after the newest plan (or this Monday), reading busy afternoons from the calendar.
+   The bot then tells the chat, with the links to each week's menu, list and batch sheet.
 3. Run the weekly target check for each person. It only changes a target when the rules allow it.
 """
 
@@ -22,6 +23,8 @@ from .planner import PLAN_LOCK, PlanError, generate, load_plan, plans_dir, repai
 from .targets import evaluate, sync_start
 
 log = logging.getLogger("supermealplanner")
+
+ANNOUNCE = "plan.announce"  # start of a plan drawn and not yet told to the chat
 
 
 def pull(state) -> None:
@@ -113,7 +116,9 @@ def _ensure_plan(state, today: dt.date | None = None):
 
 def tick(state) -> None:
     pull(state)
-    ensure_plan(state)
+    plan = ensure_plan(state)
+    if plan:  # the bot, if there is one, tells the chat on its next round
+        state.db.set_kv(ANNOUNCE, plan.start.isoformat())
     today = state.today()
     for p in state.data.household.people:
         sync_start(state.db, p, today)

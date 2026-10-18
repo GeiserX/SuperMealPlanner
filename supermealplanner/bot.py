@@ -584,6 +584,10 @@ class Bot:
             except Exception as e:  # noqa: BLE001
                 log.warning("reminder tick failed: %s", safe(e))
             try:
+                await self.tick_announce(client)
+            except Exception as e:  # noqa: BLE001
+                log.warning("new menu announcement failed: %s", safe(e))
+            try:
                 await self.tick_once(client)
             except Exception as e:  # noqa: BLE001
                 log.warning("one-off reminder tick failed: %s", safe(e))
@@ -2087,7 +2091,11 @@ class Bot:
                 and (tomorrow.date - tomorrow.lunch_cook).days
                 > data.recipes[tomorrow.lunch].fridge_days
             ):
-                return t("reminder_defrost", dish=data.recipes[tomorrow.lunch].name)
+                return t(
+                    "reminder_defrost",
+                    dish=data.recipes[tomorrow.lunch].name,
+                    url=self.url(f"/recipe/{tomorrow.lunch}?d={tomorrow.date.isoformat()}"),
+                )
             return None
         if r.kind == "batch":
             for s in plan.sessions:
@@ -2169,6 +2177,40 @@ class Bot:
             if text:
                 await self.send(client, chat, text)
             self.state.db.mark_sent(r.id, now.date(), at)  # only after Telegram took it
+
+    def announcement(self, start: dt.date) -> str | None:
+        """The new menu in a few lines: the links to each week's menu, list and batch sheet."""
+        t = self.t
+        plan = plan_for(self.data, start)
+        if not plan:
+            return None
+        lines = [t("plan_ready", first=t.date(plan.start), last=t.date(plan.end - dt.timedelta(1)))]
+        monday = plan.start
+        while monday < plan.end:
+            d = monday.isoformat()
+            lines.append(
+                t(
+                    "plan_ready_week",
+                    date=t.date(monday, False),
+                    week=self.url(f"/week?d={d}"),
+                    list=self.url(f"/list?d={d}"),
+                    batch=self.url(f"/batch?d={d}"),
+                )
+            )
+            monday += dt.timedelta(days=7)
+        return "\n".join(lines)
+
+    async def tick_announce(self, client) -> None:
+        from .scheduler import ANNOUNCE
+
+        chat, db = self.chat_id, self.state.db
+        raw = db.get_kv(ANNOUNCE)
+        if chat is None or not raw:
+            return
+        text = self.announcement(dt.date.fromisoformat(raw))
+        if text:
+            await self.send(client, chat, text)
+        db.set_kv(ANNOUNCE, None)  # only after Telegram took it
 
     # ------------------------------------------------------------- one-off reminders
     def _zone(self) -> ZoneInfo:
