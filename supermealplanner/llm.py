@@ -32,6 +32,8 @@ turn is {"conversation": the id it returned last time in this chat, or None,
 Only this provider gets photos and files (llm.sees_files): the bot tells the person any other one
 cannot look at them. A photo or a file that arrives while an answer is being written waits for the
 next turn, which carries it.
+A provider that is out of capacity raises an error with a `retry_after` attribute (seconds): the
+app tells the chat how long the wait is, once, and answers the waiting messages by itself then.
 It returns the answer, or {"text": answer, "conversation": id or None, "kept": bool}. The app keeps
 the id per chat and sends it back with the next message; None starts over with the full history next
 time, and kept False (the provider did not store this turn) sends these messages again.

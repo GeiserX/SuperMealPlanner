@@ -29,6 +29,10 @@ def converse(turn, settings):
     cfg = json.loads((HERE / "reply.json").read_text()) if (HERE / "reply.json").exists() else {}
     if cfg.get("fail"):
         raise RuntimeError("provider down")
+    if cfg.get("busy"):
+        e = RuntimeError("no capacity")
+        e.retry_after = cfg["busy"]
+        raise e
     return {"text": cfg.get("text", "ok"),
             "conversation": cfg.get("conversation", turn["conversation"] or "c1"),
             "kept": cfg.get("kept", True),
@@ -168,6 +172,57 @@ def test_a_failed_answer_is_not_recorded_and_the_message_goes_again(data_dir, tm
     reply(data_dir)
     run(b.handle(None, msg("segunda", chat=7, user=7)))
     assert [m["content"] for m in turns(data_dir)[-1]["new"]] == ["luis: primera\nluis: segunda"]
+
+
+def test_a_busy_provider_is_told_once_and_the_messages_are_answered_when_it_is_back(
+    data_dir, tmp_path
+):
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    now = [1000.0]
+    b.clock = lambda: now[0]
+    run(b.handle(None, msg("hola", chat=7, user=7)))
+    reply(data_dir, busy=3960)
+    run(b.handle(None, msg("primera", chat=7, user=7)))
+    assert ChatBot.texts(b)[-1] == b.t("bot_busy", wait=b.t("busy_minutes", n=66))
+    asked = len(turns(data_dir))
+    run(b.handle(None, msg("segunda", chat=7, user=7)))
+    assert len(turns(data_dir)) == asked  # it waits: no call while the provider is busy
+    assert ChatBot.texts(b).count(ChatBot.texts(b)[-1]) == 1  # told once
+    assert [x["row"] for x in db.get_kv("bot.queued")["7"]]  # a restart still answers them
+    now[0] += 3960
+    reply(data_dir, text="ya está")
+    run(b.wake(None, 7, 0))
+    assert [m["content"] for m in turns(data_dir)[-1]["new"]] == ["luis: primera\nluis: segunda"]
+    assert ChatBot.texts(b)[-1] == "ya está"
+    assert not (db.get_kv("bot.queued") or {}).get("7")
+
+
+def test_a_busy_turn_is_answered_when_nobody_writes_again(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    now = [1000.0]
+    b.clock = lambda: now[0]
+    run(b.handle(None, msg("hola", chat=7, user=7)))
+    reply(data_dir, busy=600)
+    run(b.handle(None, msg("primera", chat=7, user=7)))
+    assert [x["row"] for x in (db.get_kv("bot.queued") or {}).get("7") or []]
+    now[0] += 600
+    reply(data_dir, text="ya está")
+    run(b.wake(None, 7, 0))
+    assert [m["content"] for m in turns(data_dir)[-1]["new"]] == ["luis: primera"]
+    assert ChatBot.texts(b)[-1] == "ya está"
+
+
+def test_a_busy_spell_of_hours_says_hours(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    run(b.handle(None, msg("hola", chat=7, user=7)))
+    reply(data_dir, busy=3 * 3600)
+    run(b.handle(None, msg("otra", chat=7, user=7)))
+    assert ChatBot.texts(b)[-1] == b.t("bot_busy", wait=b.t("busy_hours", n=3))
 
 
 def test_a_provider_that_drops_the_conversation_gets_the_whole_history(data_dir, tmp_path):

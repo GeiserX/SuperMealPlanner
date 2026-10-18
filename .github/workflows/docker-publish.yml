@@ -1,27 +1,56 @@
 name: Docker
+# A release is a merge to main that changes `__version__`: this publishes that version's image and
+# tags the commit. A tag pushed by hand still publishes, as before.
 on:
   push:
+    branches: [main]
     tags: ['v*']
 permissions:
   contents: read
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # to tag the released commit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "PUBLISH=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          v=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' supermealplanner/__init__.py)
+          [ -n "$v" ] || { echo "no __version__ in supermealplanner/__init__.py"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null; then
+            echo "v$v is released already: nothing to publish"
+            echo "PUBLISH=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "PUBLISH=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check the tag matches the package version
+        if: steps.version.outputs.PUBLISH == 'true'
+        run: grep -q "__version__ = \"${{ steps.version.outputs.VERSION }}\"" supermealplanner/__init__.py
+      - if: steps.version.outputs.PUBLISH == 'true'
+        uses: docker/setup-qemu-action@v4
+      - if: steps.version.outputs.PUBLISH == 'true'
+        uses: docker/setup-buildx-action@v4
+      - if: steps.version.outputs.PUBLISH == 'true'
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      - name: Check the tag matches the package version
-        run: grep -q "__version__ = \"${{ steps.version.outputs.VERSION }}\"" supermealplanner/__init__.py
-      - uses: docker/build-push-action@v7
+      - if: steps.version.outputs.PUBLISH == 'true'
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: drumsergio/supermealplanner:${{ steps.version.outputs.VERSION }}
+      - name: Tag the released commit
+        if: steps.version.outputs.PUBLISH == 'true' && github.ref_type == 'branch'
+        run: |
+          git tag "v${{ steps.version.outputs.VERSION }}" "$GITHUB_SHA"
+          git push origin "v${{ steps.version.outputs.VERSION }}"
