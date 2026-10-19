@@ -60,6 +60,12 @@ batch_morning: por la mañana
 batch_afternoon: por la tarde
 batch_busy: "Ojo, la agenda tiene: {events}. No quedaba otra tarde libre."
 servings: "{n} raciones"
+servings_one: "1 ración"
+batch_cook: "Se cocina el {date} {when}"
+batch_for: "Para la comida {days}"
+batch_day_item: "del {weekday}"
+batch_and: " y "
+batch_per_person: "Reparto por persona: {split}"
 th_container: Táper
 th_servings: Raciones
 th_where: Dónde
@@ -149,8 +155,8 @@ busy_minutes: "unos {n} minutos"
 busy_hours: "unas {n} horas"
 bot_chat_id: "El id de este chat es {id}."
 reminder_defrost: "🧊 Esta noche: pasa {dish} del congelador a la nevera para la comida de mañana. Receta: {url}"
-reminder_batch: "🍲 Esta tarde toca cocinar por adelantado: {dishes}. Hoja: {url}"
-reminder_batch_morning: "🍲 Mañana por la mañana toca cocinar por adelantado: {dishes}. Hoja: {url}"
+reminder_batch: "🍲 Esta tarde toca cocinar por adelantado:\n\n{dishes}\n\nHoja: {url}"
+reminder_batch_morning: "🍲 Mañana por la mañana toca cocinar por adelantado:\n\n{dishes}\n\nHoja: {url}"
 reminder_meal: "🍽️ {meal} de hoy: {dish}. {where}\n{url}"
 reminder_shopping: "🛒 Hoy toca compra. Lista: {url}"
 reminder_pills_lunch: "💊 {name}, ¿te has tomado las pastillas de la comida? Responde /pastillas cuando lo hagas."

@@ -21,7 +21,15 @@ from .db import DB
 from .i18n import Translator
 from .model import Data, load
 from .planner import ICONS, day_menu, paused_days, plan_for
-from .portions import MEAL_ORDER, batch_sheet, person_days, plate, shopping_list
+from .portions import (
+    MEAL_ORDER,
+    batch_for_text,
+    batch_sheet,
+    batch_split_text,
+    person_days,
+    plate,
+    shopping_list,
+)
 from .scheduler import tick
 from .targets import current_kcal, day_factor, evaluate, reason_text, trend
 
@@ -83,6 +91,8 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 s, s.replace("-", " ").capitalize()
             ),
             "reason_text": lambda raw: reason_text(t, raw),
+            "batch_for_text": batch_for_text,
+            "batch_split_text": batch_split_text,
             **kw,
         }
 
