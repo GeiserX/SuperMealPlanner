@@ -123,12 +123,27 @@ def test_the_tasks_page_shows_what_the_reminders_send_and_the_chat_set(data_dir,
     assert "Agua" not in page  # a plain message is not a kitchen task
 
 
-def test_today_shows_the_batch_sheet_itself(data_dir, data, monkeypatch):
+def test_today_shows_only_the_meals_with_portions_and_steps_and_no_batch_sheet_or_pills(
+    data_dir, data, monkeypatch
+):
+    from supermealplanner.planner import day_menu
+
     c, plan = _app(data_dir, data, monkeypatch)
     s = next(s for s in plan.sessions if not s.morning)
+    day = next(d for d in plan.days if d.date == s.date)
     with c:
         page = c.get(f"/?d={s.date}").text
-    assert "Batch today" in page and 'class="containers"' in page
+        batch = c.get(f"/batch?d={s.date}").text
+    assert 'class="containers"' not in page and "💊" not in page
+    assert 'class="containers"' in batch  # the batch tab keeps the whole sheet
+    menu = day_menu(data, day)
+    links = [page.index(f'class="dish" href="/recipe/{r.id}?d={s.date}"') for _, r in menu]
+    assert links == sorted(links)  # in eating order, the snacks to nibble on last
+    assert page.count('class="steps"') == sum(1 for _, r in menu if r.steps)
+    for _, r in menu:
+        part = page.split(f'class="dish" href="/recipe/{r.id}?d={s.date}"', 1)[1]
+        part = part.split('class="dish"', 1)[0]
+        assert "Ana" in part and "Luis" in part, r.id  # each dish with each person's portion
 
 
 def test_a_day_with_a_morning_and_an_afternoon_batch_shows_each_with_its_own_dishes(
@@ -147,7 +162,7 @@ def test_a_day_with_a_morning_and_an_afternoon_batch_shows_each_with_its_own_dis
     from supermealplanner.web import create_app
 
     with TestClient(create_app(data_dir)) as c:
-        for path in (f"/?d={MONDAY}", f"/batch?d={MONDAY}"):
+        for path in (f"/batch?d={MONDAY}",):
             page = c.get(path).text
             parts = {
                 "morning": page.split("in the morning", 1)[1].split("<section", 1)[0],
@@ -167,9 +182,8 @@ def test_today_and_the_week_show_every_meal_and_snack_of_each_day(data_dir, data
     with c:
         today = c.get(f"/?d={MONDAY}").text
         week = c.get(f"/week?d={MONDAY}").text
-    top = today.split("The whole day", 1)[1].split("</section>", 1)[0]
     for _, rec in day_menu(data, plan.days[0]):
-        assert f"/recipe/{rec.id}?d={MONDAY}" in top, rec.id
+        assert f"/recipe/{rec.id}?d={MONDAY}" in today, rec.id
     for d in plan.days[:7]:
         for _, rec in day_menu(data, d):
             assert f"/recipe/{rec.id}?d={d.date}" in week, (d.date, rec.id)

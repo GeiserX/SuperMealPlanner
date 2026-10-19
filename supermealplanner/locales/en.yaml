@@ -308,7 +308,6 @@ tab_tasks: Tasks
 tasks_title: "Tasks · week of {date}"
 tasks_none_day: Nothing to do.
 tasks_note: The same reminders the chat sends, at their time, and the ones set from the chat.
-batch_today_title: "Batch today, {when}"
 see_recipe: Recipe
 vote_like: I like it
 vote_dislike: I don't like it
@@ -319,5 +318,4 @@ vote_note: "👍 makes a dish come up more often in the next menus; 👎 takes i
 shopping_have: I have it
 shopping_have_title: At home, left off the list
 shopping_have_back: Put back on the list
-day_summary: The whole day
 reminder_day: "📅 Today, {date}:"

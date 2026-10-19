@@ -105,7 +105,7 @@ def test_web_pages(data_dir, data, monkeypatch):
         ):
             r = c.get(path)
             assert r.status_code == 200, (path, r.text[:500])
-        assert "Vitamin D" in c.get(f"/?d={MONDAY}").text
+        assert "Vitamin D" not in c.get(f"/?d={MONDAY}").text  # no pills on the day page
         assert "Today" in c.get(f"/?d={MONDAY}").text
         assert c.post("/api/weight", json={"person": "luis", "kg": 90}).status_code == 401
         r = c.post(
