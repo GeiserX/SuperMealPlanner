@@ -129,3 +129,32 @@ def test_today_shows_the_batch_sheet_itself(data_dir, data, monkeypatch):
     with c:
         page = c.get(f"/?d={s.date}").text
     assert "Batch today" in page and 'class="containers"' in page
+
+
+def test_a_day_with_a_morning_and_an_afternoon_batch_shows_each_with_its_own_dishes(
+    data_dir, data, monkeypatch
+):
+    monkeypatch.setenv("SMP_SCHEDULER", "0")
+    monkeypatch.setenv("SMP_BOT", "0")
+    plan = generate(data, MONDAY, 4)
+    morning = next(s for s in plan.sessions if s.morning and s.date == MONDAY)
+    evening = next(s for s in plan.sessions if not s.morning)
+    evening.date = MONDAY  # both on the same day
+    mine = {x.recipe for x in morning.dishes}
+    theirs = {x.recipe for x in evening.dishes} - mine
+    assert mine and theirs
+    plan.save(plans_dir(data) / f"{MONDAY}.yaml")
+    from supermealplanner.web import create_app
+
+    with TestClient(create_app(data_dir)) as c:
+        for path in (f"/?d={MONDAY}", f"/batch?d={MONDAY}"):
+            page = c.get(path).text
+            parts = {
+                "morning": page.split("in the morning", 1)[1].split("<section", 1)[0],
+                "afternoon": page.split("in the afternoon", 1)[1].split("<section", 1)[0],
+            }
+            for rid in theirs:
+                assert f"/recipe/{rid}?" not in parts["morning"], (path, rid)
+                assert f"/recipe/{rid}?" in parts["afternoon"], (path, rid)
+            for rid in mine - theirs:
+                assert f"/recipe/{rid}?" not in parts["afternoon"], (path, rid)
