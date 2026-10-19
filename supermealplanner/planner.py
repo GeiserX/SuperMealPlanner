@@ -27,6 +27,7 @@ from .model import WEEKDAYS, Data, Recipe
 
 ATTEMPTS = 400
 VARIETY_DAYS = 6  # the same recipe is not cooked again within this many days
+LIKED = 0.5  # score per net 👍 a dish has (two at most): it beats a random draw more often
 PLAN_LOCK = threading.Lock()  # one writer at a time for the plan files and the paused days
 
 log = logging.getLogger(__name__)
@@ -347,7 +348,10 @@ def generate(
     busy: dict[dt.date, list[str]] | None = None,
     previous: Plan | None = None,
     seed: int | None = None,
+    ratings: dict[str, int] | None = None,
 ) -> Plan:
+    """ratings: recipe -> the household's summed 👍/👎 votes. A liked dish comes up more often; a
+    disliked one only fills a slot nothing else can."""
     if start.weekday() != 0:
         raise ValueError(f"{start} is not a Monday")
     busy = busy or {}
@@ -356,7 +360,7 @@ def generate(
         log.warning(warning)
     last_err: list[str] = []
     for attempt in range(ATTEMPTS):
-        plan = _draft(data, start, weeks, busy, previous, base_seed + attempt)
+        plan = _draft(data, start, weeks, busy, previous, base_seed + attempt, ratings or {})
         errs = validate(data, plan)
         if not errs:
             return plan
@@ -368,7 +372,7 @@ class PlanError(Exception):
     pass
 
 
-def _draft(data, start, weeks, busy, previous, seed) -> Plan:
+def _draft(data, start, weeks, busy, previous, seed, ratings) -> Plan:
     rng = random.Random(seed)
     hh = data.household
     rules = hh.rules
@@ -435,6 +439,8 @@ def _draft(data, start, weeks, busy, previous, seed) -> Plan:
                 continue
             if r.has("side"):  # a side salad is never the main dish
                 continue
+            if ratings.get(r.id, 0) < 0:
+                continue
             if slot.meal == "lunch" and gap_max > r.fridge_days and not r.freezes:
                 continue
             if count.get(r.id, 0) >= rules.max_repeats_per_4_weeks:
@@ -453,11 +459,12 @@ def _draft(data, start, weeks, busy, previous, seed) -> Plan:
                 score += 0.4 * r.has("hearty")
             if any(x.weekday() == 6 for x in slot.dates):
                 score += 0.6 * r.has("guests")
+            score += LIKED * min(ratings.get(r.id, 0), 2)
             cands.append((score, r.id))
         if not cands:
-            # relax variety for this slot rather than fail the whole plan
+            # relax variety for this slot rather than fail the whole plan; a disliked dish last
             cands = [
-                (rng.random(), r.id)
+                (rng.random() - (ratings.get(r.id, 0) < 0), r.id)
                 for r in data.recipes.values()
                 if r.kind in need_kind
                 and not r.has("side")

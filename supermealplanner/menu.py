@@ -296,7 +296,12 @@ def _regenerate(data: Data, plans, op: Op) -> set[Path]:
         log.warning("calendar unavailable, planning without it: %s", type(e).__name__)
         busy = {}
     try:
-        plans[path] = generate(data, start, 4, busy=busy, previous=previous, seed=seed)
+        from .db import DB
+
+        ratings = DB(data.state / "supermealplanner.db").ratings()
+        plans[path] = generate(
+            data, start, 4, busy=busy, previous=previous, seed=seed, ratings=ratings
+        )
     except PlanError as e:
         raise MenuError(str(e)[:300]) from None
     return touched

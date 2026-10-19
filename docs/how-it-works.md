@@ -13,7 +13,11 @@ The planner is plain code: the same data and the same start date always give the
 
 The app keeps a plan ready on its own: once an hour it checks that a plan covers the next seven days and makes the next four weeks when it does not.
 
-The week page and the day page show the whole day: breakfast, lunch with its side salad, the afternoon snack and dinner. Each day also lists up to three other snacks to nibble on. They are the snack recipes that are not a `treat`, use no avoided ingredient and are not that day's own snack, in a fixed rotation by date, so a day always shows the same ones.
+The week page and the day page show the whole day: breakfast, lunch with its side salad, the afternoon snack and dinner. Each day also lists up to three other snacks to nibble on. They are the snack recipes that are not a `treat`, use no avoided ingredient and are not that day's own snack, in a fixed rotation by date, so a day always shows the same ones. On a day with a batch session, the day page also carries that session's whole sheet (amounts, containers and the steps), and the steps of the dishes cooked that day.
+
+The tasks page (`/tasks`) lists, for each day of a week, the texts the defrost, batch and shopping reminders send that day, at their times, plus the one-off reminders set from the chat.
+
+Each lunch and dinner has 👍 and 👎, one vote per person (the person the page was opened as). Tapping the same one again takes the vote back. The next plans use the household's summed votes: a liked dish scores higher in each draw (two votes at most count), and a disliked one is left out unless nothing else fits that slot. A plan already made does not change.
 
 ## Changing the menu
 
@@ -39,6 +43,8 @@ A plan is never redone when the data changes, because lunches may already be coo
 ## Shopping
 
 The list adds up every plate of the week, each with its eater's swaps, so a swapped ingredient is bought only for the person who eats it. The batch sheet splits the pot the same way. Batch dishes are bought in the week they are cooked. With store catalogues, each line shows the first clean product, how many packs, and the price, plus the same at an alternative store. `/list?store=<id>` writes the whole list for one store, which is handy for an online order.
+
+Ticks on the list are saved by the app, so every phone sees the same ones. «I have it» takes an ingredient off every week's list and puts it in a short "at home" part at the bottom, until someone puts it back.
 
 ## The bot
 

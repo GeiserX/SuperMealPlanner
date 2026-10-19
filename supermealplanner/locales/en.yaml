@@ -303,3 +303,19 @@ ask_preapproved: "Approved with the «In the calendar» button:\n{summary}"
 bot_about_once: "⏰ Reminders\nWhen I tell you to do something at a time, I offer a reminder with buttons; if you do not answer, I do nothing. /reminders shows the ones set and cancels them."
 bot_cmd_reminders: "The reminders to come, to cancel one"
 reminder_not_yours: "Only the household or whoever set it can cancel a reminder."
+
+tab_tasks: Tasks
+tasks_title: "Tasks · week of {date}"
+tasks_none_day: Nothing to do.
+tasks_note: The same reminders the chat sends, at their time, and the ones set from the chat.
+batch_today_title: "Batch today, {when}"
+see_recipe: Recipe
+vote_like: I like it
+vote_dislike: I don't like it
+vote_as: "Rate as:"
+vote_score_up: "👍 {n}"
+vote_score_down: "👎 {n}"
+vote_note: "👍 makes a dish come up more often in the next menus; 👎 takes it out of them. The same tap again takes your vote back."
+shopping_have: I have it
+shopping_have_title: At home, left off the list
+shopping_have_back: Put back on the list

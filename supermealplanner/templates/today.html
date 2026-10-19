@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_sheet.html" import sheet, vote with context %}
 {% block main %}
 <header class="bar">
   <a href="/?d={{ prev }}" aria-label="previous day">‹</a>
@@ -9,8 +10,13 @@
   <p class="empty">{{ t('paused_day') if paused else t('no_plan_day') }}</p>
 {% else %}
   {% if pday.busy %}<p class="note">{{ t('calendar_busy', events=pday.busy | join(', ')) }}</p>{% endif %}
-  {% if session %}<p class="note batch">{{ t('batch_today') }} <a href="/batch?d={{ day }}">{{ t('see_sheet') }}</a></p>{% endif %}
-  {% for r in defrost %}<p class="note cold">{{ t('defrost_tonight', dish=r.name) }}</p>{% endfor %}
+  {% for r in defrost %}<p class="note cold">{{ t('defrost_tonight', dish=r.name) }} <a href="/recipe/{{ r.id }}">{{ t('see_recipe') }}</a></p>{% endfor %}
+  {% if cooks %}
+  <section class="meal batch">
+    <h2>{{ t('batch_today_title', when=(t('batch_morning') if cooks[0].morning else t('batch_afternoon'))) }}</h2>
+    {{ sheet(sheet_rows, day, steps=True) }}
+  </section>
+  {% endif %}
 
   {% for meal in meals %}
     {% set rid = pday[meal] %}
@@ -18,9 +24,13 @@
     <section class="meal">
       <h2>{{ t('meal_' + meal) }}{% if meal == 'lunch' %}<small> · {{ hh.lunch_time }}</small>{% endif %}</h2>
       <a class="dish" href="/recipe/{{ rid }}?d={{ day }}">{{ recipes[rid].name }}</a>
+      {% if meal in ('lunch', 'dinner') %}{{ vote(rid) }}{% endif %}
       {% if meal == 'lunch' %}
         {% set gap = (day - pday.lunch_cook).days %}
         <p class="sub">{% if gap == 0 %}{{ t('lunch_fresh') }}{% elif gap <= recipes[rid].fridge_days %}{{ t('lunch_fridge', date=t.date(pday.lunch_cook)) }}{% else %}{{ t('lunch_freezer', date=t.date(pday.lunch_cook)) }}{% endif %}</p>
+      {% endif %}
+      {% if meal == 'dinner' or (meal == 'lunch' and day == pday.lunch_cook) %}
+      <details class="steps"><summary>{{ t('recipe_steps') }}</summary><ol>{% for s in recipes[rid].steps %}<li>{{ s }}</li>{% endfor %}</ol></details>
       {% endif %}
       <div class="people">
       {% for pd in people %}

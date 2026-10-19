@@ -302,3 +302,19 @@ ask_preapproved: "Aprobado al pulsar «En el calendario»:\n{summary}"
 bot_about_once: "⏰ Recordatorios\nCuando os digo que hagáis algo a una hora, os ofrezco un recordatorio con botones; si no respondéis, no hago nada. /recordatorios enseña los que hay y deja cancelarlos."
 bot_cmd_reminders: "Los recordatorios pendientes, para cancelarlos"
 reminder_not_yours: "Solo la casa o quien lo puso puede cancelar un recordatorio."
+
+tab_tasks: Tareas
+tasks_title: "Tareas · semana del {date}"
+tasks_none_day: Nada que hacer.
+tasks_note: Son los mismos avisos que llegan al chat, a su hora, y los que se ponen desde el chat.
+batch_today_title: "Batch de hoy, {when}"
+see_recipe: Receta
+vote_like: Me gusta
+vote_dislike: No me gusta
+vote_as: "Valorar como:"
+vote_score_up: "👍 {n}"
+vote_score_down: "👎 {n}"
+vote_note: "Con 👍 el plato sale más en los próximos menús; con 👎 deja de salir. Pulsar otra vez el mismo quita el voto."
+shopping_have: Ya tengo
+shopping_have_title: Ya lo tenéis en casa (fuera de la lista)
+shopping_have_back: Volver a la lista

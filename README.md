@@ -17,7 +17,8 @@ SuperMealPlanner is a self-hosted meal planner for a household that eats the sam
 - One recipe, one pot, a plate per person: quantities scale to each person's calorie target.
 - A 4-week plan, batch-cooked on free afternoons read from a private iCal address.
 - Weekly rules: legumes, fish, oily fish, a salad every day, no dish repeated too often.
-- Shopping list per store, with the real product, packs to buy and an estimated total.
+- Shopping list per store, with the real product, packs to buy and an estimated total. Ticks are shared by every phone, and «I have it» leaves an ingredient off until you put it back.
+- A tasks page with each day's defrost, batch and shopping jobs, and 👍/👎 on every dish that the next menus follow.
 - Targets that follow each person's weight trend, with floors and doctor flags.
 - GLP-1 aware: lighter dishes and smaller plates in the days after a weekly injection.
 - Telegram bot: today's plates, the week, the list, logging, reminders, voice notes, photos, videos and any file. Always answers in private, and in the group when you mention it or reply to it. A voice note, a photo or a file is always answered.
