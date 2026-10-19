@@ -2188,7 +2188,7 @@ class Bot:
                         date=t.date(d.lunch_cook),
                     )
                 )
-                line += f" ({where.lower()})"
+                line += f" · {where.lower()}"
             lines.append(line)
         if picks:
             lines.append(f"{ICONS['nibble']} {t('nibble_title')}: {', '.join(picks)}")
