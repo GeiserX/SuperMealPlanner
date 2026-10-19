@@ -104,7 +104,7 @@ def _ensure_plan(state, today: dt.date | None = None):
         log.warning("calendar unavailable, planning without it: %s", safe(e))
         busy = {}
     try:
-        plan = generate(data, start, 4, busy=busy, previous=prev)
+        plan = generate(data, start, 4, busy=busy, previous=prev, ratings=state.db.ratings())
     except PlanError as e:  # the data cannot make a plan: say so, keep the rest of the tick running
         log.warning("cannot make the next plan: %s", str(e)[:500])
         return None

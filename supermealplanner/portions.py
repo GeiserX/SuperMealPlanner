@@ -224,6 +224,7 @@ class Shopping:
     stores: list[StoreList]
     views: list[tuple[str, str]]  # (store id, label) the user can switch to
     labels: dict[str, str] = field(default_factory=dict)
+    have: list[Ingredient] = field(default_factory=list)  # needed, but already at home
 
 
 def servings_by_eater(
@@ -300,10 +301,15 @@ def shopping_list(data: Data, db: DB, plan: Plan, monday: dt.date, t=None, view:
     alt_ids = [a for a in cfg.alternatives if a != primary and a in cats]
 
     groups: dict[str, dict[str, list[ShopLine]]] = {}
+    at_home = db.have()
+    have: list[Ingredient] = []
     for iid, q in sorted(
         needs(data, db, plan, monday).items(), key=lambda kv: data.ingredients[kv[0]].name
     ):
         ing = data.ingredients[iid]
+        if iid in at_home:
+            have.append(ing)
+            continue
         store = view or ing.store
         line = ShopLine(ing, q, data.locale)
         if store in cats:
@@ -326,7 +332,7 @@ def shopping_list(data: Data, db: DB, plan: Plan, monday: dt.date, t=None, view:
         sl.total = round(sl.total, 2)
         stores.append(sl)
     views = [(sid, labels.get(sid, sid)) for sid in cats]
-    return Shopping(view=view, stores=stores, views=views, labels=labels)
+    return Shopping(view=view, stores=stores, views=views, labels=labels, have=have)
 
 
 # ---------------------------------------------------------------- batch sheets

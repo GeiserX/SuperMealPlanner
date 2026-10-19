@@ -1,0 +1,31 @@
+{% macro sheet(dishes, day, steps=False) %}
+  {% for b in dishes %}
+    <h3><a href="/recipe/{{ b.recipe.id }}?d={{ day }}">{{ b.recipe.name }}</a> <small>{{ t('servings', n='%.1f' | format(b.total)) }}</small></h3>
+    <ul>{% for line in b.lines %}<li>{{ line }}</li>{% endfor %}</ul>
+    <table class="containers">
+      <tr><th>{{ t('th_container') }}</th><th>{{ t('th_servings') }}</th><th>{{ t('th_where') }}</th></tr>
+      {% for c in b.containers %}
+      <tr>
+        <td>{{ t.date(c.eat) }}</td>
+        <td>{% for who, f in c.servings.items() %}{{ names.get(who, who) }} {{ '%.2f' | format(f) }}{% if not loop.last %} · {% endif %}{% endfor %}</td>
+        <td>{{ t('storage_' + c.storage) }}{% if c.defrost_on %}<br><small>{{ t('defrost_on', date=t.date(c.defrost_on)) }}</small>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% if steps %}<details class="steps"><summary>{{ t('recipe_steps') }}</summary><ol>{% for s in b.recipe.steps %}<li>{{ s }}</li>{% endfor %}</ol></details>{% endif %}
+  {% endfor %}
+{% endmacro %}
+
+{% macro vote(rid) %}
+  {% set here = request.url.path ~ ('?' ~ request.url.query if request.url.query else '') %}
+  {% if who %}
+  <form method="post" action="/rate" class="vote">
+    <input type="hidden" name="recipe" value="{{ rid }}">
+    <input type="hidden" name="back" value="{{ here }}">
+    <button name="vote" value="1" class="{{ 'on' if votes.get(rid) == 1 }}" aria-label="{{ t('vote_like') }}" title="{{ t('vote_like') }}">👍</button>
+    <button name="vote" value="-1" class="{{ 'on' if votes.get(rid) == -1 }}" aria-label="{{ t('vote_dislike') }}" title="{{ t('vote_dislike') }}">👎</button>
+  </form>
+  {% else %}
+  <p class="sub vote">{{ t('vote_as') }} {% for p in hh.people %}<a href="/who/{{ p.id }}?back={{ here | urlencode }}">{{ p.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% endif %}
+{% endmacro %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_sheet.html" import sheet with context %}
 {% block main %}
 <header class="bar">
   <a href="/batch?d={{ prev }}">‹</a>
@@ -10,20 +11,7 @@
 <section class="meal">
   <h2>{{ t.date(s.date) | capitalize }} · {{ t('batch_morning') if s.morning else t('batch_afternoon') }}</h2>
   {% if s.busy %}<p class="note">{{ t('batch_busy', events=s.busy | join(', ')) }}</p>{% endif %}
-  {% for b in dishes %}
-    <h3><a href="/recipe/{{ b.recipe.id }}?d={{ s.date }}">{{ b.recipe.name }}</a> <small>{{ t('servings', n='%.1f' | format(b.total)) }}</small></h3>
-    <ul>{% for line in b.lines %}<li>{{ line }}</li>{% endfor %}</ul>
-    <table class="containers">
-      <tr><th>{{ t('th_container') }}</th><th>{{ t('th_servings') }}</th><th>{{ t('th_where') }}</th></tr>
-      {% for c in b.containers %}
-      <tr>
-        <td>{{ t.date(c.eat) }}</td>
-        <td>{% for who, f in c.servings.items() %}{{ names.get(who, who) }} {{ '%.2f' | format(f) }}{% if not loop.last %} · {% endif %}{% endfor %}</td>
-        <td>{{ t('storage_' + c.storage) }}{% if c.defrost_on %}<br><small>{{ t('defrost_on', date=t.date(c.defrost_on)) }}</small>{% endif %}</td>
-      </tr>
-      {% endfor %}
-    </table>
-  {% endfor %}
+  {{ sheet(dishes, s.date) }}
 </section>
 {% endfor %}
 <p class="sub">{{ t('batch_safety') }}</p>

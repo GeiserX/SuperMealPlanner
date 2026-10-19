@@ -1,9 +1,12 @@
 {% extends "base.html" %}
+{% from "_sheet.html" import vote with context %}
 {% block title %}{{ r.name }}{% endblock %}
 {% block main %}
 <header class="bar"><a href="javascript:history.back()">‹</a><h1>{{ r.name }}</h1><span></span></header>
 <p class="sub">{{ t('recipe_minutes', n=r.minutes) }} · {% if r.kind == 'batch' %}{{ t('recipe_batch', n=r.fridge_days) }}{% if r.freezes %}{{ t('recipe_freezes') }}{% endif %}{% else %}{{ t('recipe_' + r.kind) }}{% endif %}
  · {{ t('recipe_reference', kcal=r.nutrition.kcal | int, protein=r.nutrition.protein_g | int) }}</p>
+{{ vote(r.id) }}
+{% if score %}<p class="sub">{{ t('vote_score_up', n=score) if score > 0 else t('vote_score_down', n=-score) }}</p>{% endif %}
 <div class="people">
 {% for p, pl in plates %}
   <div class="who">
@@ -14,5 +17,6 @@
 </div>
 {% if r.video %}<p><a class="video" href="{{ r.video }}" target="_blank" rel="noopener">▶ {{ t('recipe_video') }}</a></p>{% endif %}
 <section class="steps"><h2>{{ t('recipe_steps') }}</h2><ol>{% for s in r.steps %}<li>{{ s }}</li>{% endfor %}</ol></section>
+<p class="sub">{{ t('vote_note') }}</p>
 {% if r.tags %}<p class="sub">{% for tag in r.tags %}<span class="tag">{{ tag }}</span>{% endfor %}</p>{% endif %}
 {% endblock %}

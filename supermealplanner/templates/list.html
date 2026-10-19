@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block main %}
+{% set here = request.url.path ~ ('?' ~ request.url.query if request.url.query else '') %}
 <header class="bar">
   <a href="/list?d={{ prev }}{% if store %}&store={{ store }}{% endif %}">‹</a>
   <h1>{{ t('shopping_title', date=t.date(monday, False)) }}</h1>
@@ -19,21 +20,37 @@
     <h3>{{ section_label(section) }}</h3>
     <ul class="check">
     {% for line in lines %}
-      <li><label><input type="checkbox" data-k="{{ monday }}:{{ line.ingredient.id }}">
+      <li><label><input type="checkbox" data-item="{{ line.ingredient.id }}"{{ ' checked' if line.ingredient.id in ticked }}>
         <span class="name">{% if line.pick %}{% if line.pick.product.url %}<a href="{{ line.pick.product.url }}" target="_blank" rel="noopener">{{ line.pick.text(t) }}</a>{% else %}{{ line.pick.text(t) }}{% endif %}<br><small>{{ line.ingredient.name }} · {{ line.amount }}</small>{% else %}{{ line.ingredient.name }}{% endif %}
         {% if line.alternative %}<br><small class="alt">{{ t('shopping_alt', store=shop.labels.get(line.alternative.store, line.alternative.store), product=line.alternative.text(t)) }}</small>{% endif %}</span>
-        {% if not line.pick %}<span class="qty">{{ line.amount }}</span>{% endif %}</label></li>
+        {% if not line.pick %}<span class="qty">{{ line.amount }}</span>{% endif %}</label>
+        <form method="post" action="/list/have" class="have"><input type="hidden" name="item" value="{{ line.ingredient.id }}"><input type="hidden" name="back" value="{{ here }}"><button>{{ t('shopping_have') }}</button></form></li>
     {% endfor %}
     </ul>
   {% endfor %}
 </section>
 {% endfor %}
+{% if shop.have %}
+<section class="shop have">
+  <h2>{{ t('shopping_have_title') }}</h2>
+  <ul class="check">
+  {% for ing in shop.have %}
+    <li><span class="name">{{ ing.name }}</span>
+      <form method="post" action="/list/have" class="have"><input type="hidden" name="item" value="{{ ing.id }}"><input type="hidden" name="on" value="0"><input type="hidden" name="back" value="{{ here }}"><button>{{ t('shopping_have_back') }}</button></form></li>
+  {% endfor %}
+  </ul>
+</section>
+{% endif %}
 <p class="sub">{{ t('shopping_note') }}</p>
 {% endif %}
 <script>
-document.querySelectorAll('input[data-k]').forEach(function (b) {
-  b.checked = localStorage.getItem(b.dataset.k) === '1';
-  b.addEventListener('change', function () { localStorage.setItem(b.dataset.k, b.checked ? '1' : '0'); });
+document.querySelectorAll('input[data-item]').forEach(function (b) {
+  b.addEventListener('change', function () {
+    var f = new FormData();
+    f.append('week', '{{ monday }}'); f.append('item', b.dataset.item); f.append('on', b.checked ? '1' : '0');
+    fetch('/list/tick', {method: 'POST', body: f}).then(function (r) { if (!r.ok) b.checked = !b.checked; })
+      .catch(function () { b.checked = !b.checked; });
+  });
 });
 </script>
 {% endblock %}

@@ -1,5 +1,5 @@
 """SQLite store for what people log: weight, waist, the daily line, calorie target changes, and the
-one-off reminders the chat sets."""
+one-off reminders the chat sets, the dish ratings and the shared shopping ticks."""
 
 from __future__ import annotations
 
@@ -44,7 +44,15 @@ CREATE TABLE IF NOT EXISTS reminder (
   id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL, person TEXT, at REAL NOT NULL,
   text TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', by INTEGER, created TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rating (
+  recipe TEXT NOT NULL, person TEXT NOT NULL, vote INTEGER NOT NULL, day TEXT NOT NULL,
+  PRIMARY KEY (recipe, person)
+);
 """
+
+HAVE = "shop.have"  # ingredient ids the household has at home: left off every list until re-added
+TICKED = "shop.ticked"  # {monday: [ingredient ids]} ticked that week, the same on every phone
+TICKED_WEEKS = 8
 
 
 class DB:
@@ -340,6 +348,46 @@ class DB:
                 "UPDATE reminder SET state=? WHERE id=? AND state='pending'", (state, rid)
             )
             return cur.rowcount == 1
+
+    # dish ratings: one vote per person and recipe, +1 or -1; 0 takes the vote back
+    def rate(self, recipe: str, person: str, vote: int, day: dt.date) -> None:
+        with self.conn() as c:
+            if vote == 0:
+                c.execute("DELETE FROM rating WHERE recipe=? AND person=?", (recipe, person))
+                return
+            c.execute(
+                "INSERT INTO rating(recipe, person, vote, day) VALUES (?,?,?,?) "
+                "ON CONFLICT(recipe, person) DO UPDATE SET vote=excluded.vote, day=excluded.day",
+                (recipe, person, 1 if vote > 0 else -1, day.isoformat()),
+            )
+
+    def ratings(self, person: str | None = None) -> dict[str, int]:
+        """recipe -> the sum of its votes (everyone's), or that person's own vote."""
+        q, args = "SELECT recipe, SUM(vote) v FROM rating GROUP BY recipe", []
+        if person:
+            q, args = "SELECT recipe, vote v FROM rating WHERE person=?", [person]
+        with self.conn() as c:
+            return {r["recipe"]: int(r["v"]) for r in c.execute(q, args).fetchall()}
+
+    # the shopping list: what is at home, and what each week's list has ticked
+    def have(self) -> set[str]:
+        return set(self.get_kv(HAVE) or [])
+
+    def set_have(self, ingredient: str, on: bool) -> None:
+        have = self.have()
+        have = have | {ingredient} if on else have - {ingredient}
+        self.set_kv(HAVE, sorted(have))
+
+    def ticked(self, monday: dt.date) -> set[str]:
+        return set((self.get_kv(TICKED) or {}).get(monday.isoformat(), []))
+
+    def tick(self, monday: dt.date, ingredient: str, on: bool) -> None:
+        weeks = self.get_kv(TICKED) or {}
+        now = set(weeks.get(monday.isoformat(), []))
+        now = now | {ingredient} if on else now - {ingredient}
+        weeks[monday.isoformat()] = sorted(now)
+        keep = sorted(weeks)[-TICKED_WEEKS:]  # old weeks are never looked at again
+        self.set_kv(TICKED, {k: weeks[k] for k in keep})
 
     # small values the app learns at run time (e.g. a group's new id after an upgrade)
     def get_kv(self, key: str):

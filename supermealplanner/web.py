@@ -1,4 +1,4 @@
-"""The web app: Today, Week, List, Batch, Log, Progress. Server-rendered, installable as a PWA."""
+"""The web app: Today, Week, Tasks, List, Batch, Log, Progress. Server-rendered, a PWA."""
 
 from __future__ import annotations
 
@@ -113,11 +113,11 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         people = person_days(state.data, state.db, plan, day) if plan else []
         pday = plan.day(day) if plan else None
         tomorrow = day + dt.timedelta(days=1)
-        defrost, session = [], None
+        defrost = []
+        cooks = [s for s in plan.sessions if s.date == day] if plan else []
+        sheet_rows = batch_sheet(state.data, state.db, plan, day) if cooks else []
         if plan:
             for s in plan.sessions:
-                if s.date == day and not s.morning:
-                    session = s
                 for x in s.dishes:
                     r = state.data.recipes.get(x.recipe)
                     if r and any(
@@ -136,10 +136,13 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 paused=day in paused_days(state.data),
                 nibbles=nibbles(state.data, pday) if pday else [],
                 people=people,
-                session=session,
+                cooks=cooks,
+                sheet_rows=sheet_rows,
+                names={p.id: p.name for p in state.data.household.people},
                 defrost=defrost,
                 recipes=state.data.recipes,
                 meals=MEAL_ORDER,
+                votes=state.db.ratings(request.cookies.get("who") or "-"),
                 prev=day - dt.timedelta(days=1),
                 next=tomorrow,
             ),
@@ -169,6 +172,23 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             ),
         )
 
+    @app.get("/tasks", response_class=HTMLResponse)
+    def tasks(request: Request, d: str | None = None):
+        m = monday(parse_day(d))
+        return tpl.TemplateResponse(
+            request,
+            "tasks.html",
+            ctx(
+                request,
+                tab="tasks",
+                monday=m,
+                today=state.today(),
+                rows=week_tasks(state, m),
+                prev=m - dt.timedelta(days=7),
+                next=m + dt.timedelta(days=7),
+            ),
+        )
+
     @app.get("/list", response_class=HTMLResponse)
     def shopping(request: Request, d: str | None = None, store: str | None = None):
         m = monday(parse_day(d))
@@ -184,10 +204,64 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 monday=m,
                 shop=shop,
                 store=store,
+                ticked=state.db.ticked(m),
                 prev=m - dt.timedelta(days=7),
                 next=m + dt.timedelta(days=7),
             ),
         )
+
+    @app.post("/list/tick")
+    def list_tick(
+        request: Request, week: str = Form(...), item: str = Form(...), on: str = Form("1")
+    ):
+        """Tick or untick a line of a week's list: every phone sees the same ticks."""
+        if not same_site(request):
+            raise HTTPException(403, "cross-site form post")
+        if item not in state.data.ingredients:
+            raise HTTPException(400, "unknown ingredient")
+        try:
+            m = monday(dt.date.fromisoformat(week))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        state.db.tick(m, item, on == "1")
+        return JSONResponse({"ok": True})
+
+    @app.post("/list/have")
+    def list_have(
+        request: Request,
+        item: str = Form(...),
+        on: str = Form("1"),
+        back: str = Form("/list"),
+    ):
+        """«Ya tengo»: the item leaves every list until someone puts it back."""
+        if not same_site(request):
+            raise HTTPException(403, "cross-site form post")
+        if item not in state.data.ingredients:
+            raise HTTPException(400, "unknown ingredient")
+        state.db.set_have(item, on == "1")
+        return RedirectResponse(back if _local(back) else "/list", status_code=303)
+
+    @app.post("/rate")
+    def rate(
+        request: Request,
+        recipe: str = Form(...),
+        vote: str = Form(...),
+        back: str = Form("/"),
+    ):
+        """👍/👎 on a dish, one vote per person (the «who» cookie); the same vote again takes it
+        back. The next menus use them."""
+        if not same_site(request):
+            raise HTTPException(403, "cross-site form post")
+        who = request.cookies.get("who")
+        if who not in {p.id for p in state.data.household.people}:
+            raise HTTPException(400, "choose who you are first")
+        if recipe not in state.data.recipes or vote not in ("1", "-1"):
+            raise HTTPException(400, "unknown recipe or vote")
+        v = int(vote)
+        if state.db.ratings(who).get(recipe) == v:
+            v = 0
+        state.db.rate(recipe, who, v, state.today())
+        return RedirectResponse(back if _local(back) else "/", status_code=303)
 
     @app.get("/batch", response_class=HTMLResponse)
     def batch(request: Request, d: str | None = None):
@@ -224,7 +298,16 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             f = day_factor(state.data.household, p, current_kcal(state.db, p), day)
             plates.append((p, plate(state.data, r, f, p.swaps)))
         return tpl.TemplateResponse(
-            request, "recipe.html", ctx(request, r=r, day=day, plates=plates)
+            request,
+            "recipe.html",
+            ctx(
+                request,
+                r=r,
+                day=day,
+                plates=plates,
+                votes=state.db.ratings(request.cookies.get("who") or "-"),
+                score=state.db.ratings().get(rid, 0),
+            ),
         )
 
     @app.get("/receta/{rid}")
@@ -242,8 +325,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
 
     @app.get("/who/{pid}")
     def who(pid: str, back: str = "/log"):
-        local = back.startswith("/") and not back.startswith(("//", "/\\"))
-        resp = RedirectResponse(back if local else "/", status_code=303)
+        resp = RedirectResponse(back if _local(back) else "/", status_code=303)
         resp.set_cookie("who", pid, max_age=3600 * 24 * 400, samesite="lax")
         return resp
 
@@ -374,6 +456,42 @@ def create_app(root: str | Path | None = None) -> FastAPI:
 
     app.state.smp = state
     return app
+
+
+def _local(path: str) -> bool:
+    """A path on this site, never another one (a redirect after a form)."""
+    return path.startswith("/") and not path.startswith(("//", "/\\"))
+
+
+TASK_KINDS = ("defrost", "batch", "shopping")
+
+
+def week_tasks(state: App, monday: dt.date) -> list[tuple[dt.date, list[tuple[str, str]]]]:
+    """Each day of the week with its kitchen tasks as (time, text): the very texts the chat's
+    automatic reminders send that day, and the one-off reminders the chat set for it."""
+    from .bot import Bot
+    from .model import WEEKDAYS
+
+    data = state.data
+    bot = Bot(state)
+    tz = ZoneInfo(data.household.timezone)
+    days = [monday + dt.timedelta(days=i) for i in range(7)]
+    out: dict[dt.date, list[tuple[str, str]]] = {d: [] for d in days}
+    for d in days:
+        for r in data.settings.reminders:
+            if not r.enabled or r.kind not in TASK_KINDS:
+                continue
+            if r.days != "daily" and WEEKDAYS[d.weekday()] not in r.days:
+                continue
+            text = bot.reminder_text(r, d)
+            if text:
+                out[d] += [(at, text) for at in r.at]
+    for st in ("pending", "sent"):
+        for r in state.db.reminders(state=st):
+            when = dt.datetime.fromtimestamp(r["at"], tz)
+            if when.date() in out:
+                out[when.date()].append((f"{when:%H:%M}", "⏰ " + r["text"]))
+    return [(d, sorted(out[d])) for d in days]
 
 
 def _spark(points, w: int = 280, h: int = 60) -> str:
