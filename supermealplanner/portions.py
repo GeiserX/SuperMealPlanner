@@ -351,6 +351,14 @@ class BatchDish:
     total: float
     containers: list[Container]
     lines: list[str]
+    cook: dt.date | None = None
+    morning: bool = False
+    eaters: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def servings(self) -> int:
+        """The dish's total as a whole number of servings (at least one)."""
+        return max(1, math.floor(self.total + 0.5))
 
 
 def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[BatchDish]:
@@ -386,6 +394,35 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
                     total=total,
                     containers=conts,
                     lines=_lines(data, amounts(data, r, eaters)),
+                    cook=s.date,
+                    morning=s.morning,
+                    eaters=eaters,
                 )
             )
     return out
+
+
+def batch_dish_text(t, b: BatchDish, names: dict[str, str]) -> str:
+    """A batch dish for the chat: whole servings, when it is cooked, which lunches it is for, and
+    the split by person (the only place with decimals)."""
+    total = t("servings_one") if b.servings == 1 else t("servings", n=b.servings)
+    when = t("batch_morning" if b.morning else "batch_afternoon")
+    return "\n".join(
+        [
+            f"• {b.recipe.name}: {total}",
+            t("batch_cook", date=t.date(b.cook), when=when),
+            batch_for_text(t, [c.eat for c in b.containers]),
+            t("batch_per_person", split=batch_split_text(b, names)),
+        ]
+    )
+
+
+def batch_split_text(b: BatchDish, names: dict[str, str]) -> str:
+    return " · ".join(f"{names.get(who, who)} {n:.2f}" for who, n in b.eaters.items())
+
+
+def batch_for_text(t, days: list[dt.date]) -> str:
+    """ "For the lunch of Tuesday and Wednesday"."""
+    items = [t("batch_day_item", weekday=t.raw("days")[d.weekday()].lower()) for d in days]
+    joined = items[0] if len(items) == 1 else ", ".join(items[:-1]) + t("batch_and") + items[-1]
+    return t("batch_for", days=joined)

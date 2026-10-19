@@ -60,6 +60,12 @@ batch_morning: in the morning
 batch_afternoon: in the afternoon
 batch_busy: "Heads up, the calendar has: {events}. No other free afternoon was left."
 servings: "{n} servings"
+servings_one: "1 serving"
+batch_cook: "Cook on {date}, {when}"
+batch_for: "For the lunch of {days}"
+batch_day_item: "{weekday}"
+batch_and: " and "
+batch_per_person: "Per person: {split}"
 th_container: Container
 th_servings: Servings
 th_where: Where
@@ -150,8 +156,8 @@ busy_minutes: "about {n} minutes"
 busy_hours: "about {n} hours"
 bot_chat_id: "This chat's id is {id}."
 reminder_defrost: "🧊 Tonight: move {dish} from the freezer to the fridge for tomorrow's lunch. Recipe: {url}"
-reminder_batch: "🍲 Batch cooking this afternoon: {dishes}. Sheet: {url}"
-reminder_batch_morning: "🍲 Batch cooking tomorrow morning: {dishes}. Sheet: {url}"
+reminder_batch: "🍲 Batch cooking this afternoon:\n\n{dishes}\n\nSheet: {url}"
+reminder_batch_morning: "🍲 Batch cooking tomorrow morning:\n\n{dishes}\n\nSheet: {url}"
 reminder_meal: "🍽️ {meal} today: {dish}. {where}\n{url}"
 reminder_shopping: "🛒 Shopping day. List: {url}"
 reminder_pills_lunch: "💊 {name}, have you taken the lunch pills? Reply /pills when done."

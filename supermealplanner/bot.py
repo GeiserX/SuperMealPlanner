@@ -63,7 +63,7 @@ from . import __version__, changes, context, llm, menu
 from .i18n import Translator
 from .model import WEEKDAYS
 from .planner import ICONS, day_menu, paused_days, plan_for
-from .portions import person_days, shopping_list
+from .portions import batch_dish_text, batch_sheet, person_days, shopping_list
 
 log = logging.getLogger("supermealplanner.bot")
 API = "https://api.telegram.org/bot{token}/{method}"
@@ -2135,9 +2135,7 @@ class Bot:
         if r.kind == "batch":
             for s in plan.sessions:
                 if s.date == day and not s.morning:
-                    dishes = ", ".join(
-                        data.recipes[x.recipe].name for x in s.dishes if x.recipe in data.recipes
-                    )
+                    dishes = self.batch_text(data, plan, day, s)
                     if not dishes:  # every dish was deleted: nothing to remind about yet
                         continue
                     return t(
@@ -2149,11 +2147,7 @@ class Bot:
             ):  # the first day back cooks that morning: say so the day before
                 for s in plan.sessions:
                     if s.date == tomorrow and s.morning:
-                        dishes = ", ".join(
-                            data.recipes[x.recipe].name
-                            for x in s.dishes
-                            if x.recipe in data.recipes
-                        )
+                        dishes = self.batch_text(data, plan, tomorrow, s)
                         if dishes:
                             return t(
                                 "reminder_batch_morning",
@@ -2199,6 +2193,13 @@ class Bot:
                     todo.append(t("reminder_pills_lunch", name=self.mention(p.id)))
             return "\n".join(todo) or None
         return None
+
+    def batch_text(self, data, plan, day: dt.date, session) -> str:
+        """The session's dishes, one block each: servings, cooking time, lunches, split by person."""
+        ids = {x.recipe for x in session.dishes}
+        names = {p.id: p.name for p in data.household.people}
+        sheet = batch_sheet(data, self.state.db, plan, day)
+        return "\n\n".join(batch_dish_text(self.t, b, names) for b in sheet if b.recipe.id in ids)
 
     def menu_text(self, plan, day: dt.date) -> str | None:
         """The whole day's menu in a few lines, with where lunch comes from and the day's page."""
