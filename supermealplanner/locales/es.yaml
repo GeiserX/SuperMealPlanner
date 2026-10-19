@@ -10,7 +10,7 @@ date_short: "{day} {month}"
 tab_today: Hoy
 tab_week: Semana
 tab_list: Lista
-tab_batch: Batch
+tab_batch: Cocinar
 tab_log: Registro
 
 meal_breakfast: Desayuno
@@ -22,7 +22,7 @@ meal_dinner: Cena
 no_plan_day: "No hay plan para este día todavía. Se genera solo cada hora; también con: supermealplanner plan --start <lunes> --write"
 no_plan_week: No hay plan para esta semana.
 calendar_busy: "Agenda: {events}"
-batch_today: "Hoy toca batch por la tarde."
+batch_today: "Hoy toca cocinar por adelantado por la tarde."
 see_sheet: Ver hoja
 defrost_tonight: "Esta noche: pasa {dish} del congelador a la nevera."
 lunch_fresh: Recién hecho
@@ -37,7 +37,7 @@ pills_bedtime: Al acostarse
 week_of: "Semana del {date}"
 th_lunch: Comida
 th_dinner: Cena
-tag_batch: batch
+tag_batch: cocinar
 tag_busy: agenda
 no_plan_short: sin plan
 paused_day: "El menú está en pausa este día: coméis lo que tenéis en casa. Pedidle al asistente en el chat que lo vuelva a poner."
@@ -46,7 +46,7 @@ nibble_title: Para picar
 nibble: "Para picar: {items}"
 
 shopping_title: "Compra · semana del {date}"
-shopping_note: Para todos, ya ajustado a las raciones de cada uno. Los platos de batch se compran la semana en que se cocinan.
+shopping_note: Para todos, ya ajustado a las raciones de cada uno. Los platos para cocinar por adelantado se compran la semana en que se cocinan.
 shopping_store: "Ver como:"
 shopping_total: "Total estimado: {total}"
 shopping_alt: "o en {store}: {product}"
@@ -54,8 +54,8 @@ shopping_no_product: sin producto asignado
 shopping_loose: a granel
 packs: "{n} × {name}"
 
-batch_title: "Batch · semana del {date}"
-batch_none: No hay sesiones de batch esta semana.
+batch_title: "Cocinar · semana del {date}"
+batch_none: No hay sesiones de cocina esta semana.
 batch_morning: por la mañana
 batch_afternoon: por la tarde
 batch_busy: "Ojo, la agenda tiene: {events}. No quedaba otra tarde libre."
@@ -70,7 +70,7 @@ defrost_on: "pasar a la nevera el {date}"
 batch_safety: Enfriar en recipientes bajos y meter en la nevera antes de 2 horas. Recalentar hasta que humee, una sola vez.
 
 recipe_minutes: "{n} min"
-recipe_batch: "batch, nevera {n} días"
+recipe_batch: "para cocinar por adelantado, nevera {n} días"
 recipe_freezes: ", se congela"
 recipe_quick: rápida
 recipe_assemble: sin cocinar
@@ -149,8 +149,8 @@ busy_minutes: "unos {n} minutos"
 busy_hours: "unas {n} horas"
 bot_chat_id: "El id de este chat es {id}."
 reminder_defrost: "🧊 Esta noche: pasa {dish} del congelador a la nevera para la comida de mañana. Receta: {url}"
-reminder_batch: "🍲 Esta tarde toca batch: {dishes}. Hoja: {url}"
-reminder_batch_morning: "🍲 Mañana por la mañana toca batch: {dishes}. Hoja: {url}"
+reminder_batch: "🍲 Esta tarde toca cocinar por adelantado: {dishes}. Hoja: {url}"
+reminder_batch_morning: "🍲 Mañana por la mañana toca cocinar por adelantado: {dishes}. Hoja: {url}"
 reminder_meal: "🍽️ {meal} de hoy: {dish}. {where}\n{url}"
 reminder_shopping: "🛒 Hoy toca compra. Lista: {url}"
 reminder_pills_lunch: "💊 {name}, ¿te has tomado las pastillas de la comida? Responde /pastillas cuando lo hagas."
@@ -172,15 +172,15 @@ bot_cmd_pills: Marcar las pastillas de la comida
 bot_cmd_about: Todo lo que hago por vosotros
 bot_cmd_help: Los comandos
 bot_short: "Vuestro planificador de comidas: menú, compra, recordatorios y dudas de cocina."
-bot_about_intro: "Soy el asistente de cocina de casa: qué se come hoy y cuánto le toca a cada uno, la lista de la compra, cuándo toca batch y descongelar, y los recordatorios. Mencionadme o respondedme y os contesto; también entiendo notas de voz."
+bot_about_intro: "Soy el asistente de cocina de casa: qué se come hoy y cuánto le toca a cada uno, la lista de la compra, cuándo toca cocinar por adelantado y descongelar, y los recordatorios. Mencionadme o respondedme y os contesto; también entiendo notas de voz."
 bot_about_title: "👨‍🍳 Esto es lo que hago por vosotros"
-bot_about_menu: "🗓️ El menú\nCada 4 semanas preparo un menú nuevo yo solo. Coméis lo mismo, pero cada plato va ajustado a lo que necesita cada uno. Las comidas se cocinan en batch dos veces por semana."
+bot_about_menu: "🗓️ El menú\nCada 4 semanas preparo un menú nuevo yo solo. Coméis lo mismo, pero cada plato va ajustado a lo que necesita cada uno. Las comidas se cocinan por adelantado dos veces por semana."
 bot_about_daily: "🍽️ Cada día\n/hoy y /manana: qué toca en cada comida, cuánto le toca a cada uno y qué pastillas van con ella.\n/semana: el menú de la semana."
 bot_about_list: "🛒 La compra\n/lista: la lista de la semana con el producto exacto, cuántos paquetes y el precio, en las tiendas que tengáis configuradas."
 bot_about_reminders: "⏰ Recordatorios"
 bot_about_daily_days: todos los días
 bot_about_kind_meal: "🍽️ El plato del día ({meal}), con el enlace a la receta"
-bot_about_kind_batch: "🍲 Tarde de batch (solo los días que toca)"
+bot_about_kind_batch: "🍲 Tarde de cocina por adelantado (solo los días que toca)"
 bot_about_kind_shopping: "🛒 Día de compra"
 bot_about_kind_defrost: "🧊 Descongelar (solo si la comida de mañana sale del congelador)"
 bot_about_kind_pills_lunch: "💊 Pastillas de la comida (solo si no están marcadas)"
@@ -189,14 +189,14 @@ bot_about_reminder: "• {label}: {times} ({days})"
 bot_about_reminder_for: "• {label}: {times} ({days}) · {people}"
 bot_about_ask: "💬 Preguntarme\nPor privado os contesto siempre; en el grupo, mencionadme o respondedme. Contesto con vuestro plan y vuestros datos y recuerdo la conversación hasta /nuevo. Nunca cambio una dosis: eso es cosa de vuestros médicos."
 bot_about_private: "🔒 También me podéis escribir por privado. Ahí nunca comparto los pesos, registros, objetivos ni pastillas de nadie más."
-bot_about_calendar: "Los días de batch se mueven a las tardes libres de vuestro calendario."
+bot_about_calendar: "Los días de cocina se mueven a las tardes libres de vuestro calendario."
 bot_about_voice: "Las notas de voz me llegan por privado y en el grupo: escribo lo que he oído y contesto."
 bot_about_files: "Las fotos, los vídeos, los GIF, los stickers y los archivos de cualquier tipo me llegan por privado y en el grupo: los miro y contesto."
 
 # conversación con la IA y cambios de ajustes desde el chat
 bot_new: "Conversación nueva: he olvidado lo que hablamos. Vuestro plan y vuestros datos siguen aquí."
 bot_cmd_new: Empezar una conversación nueva conmigo
-bot_about_changes: "⚙️ Cambios\nPedidme cambiar el menú: otro plato para un día, intercambiar dos días, una pausa mientras coméis lo que tenéis en casa, o un menú nuevo a partir de un lunes. Pedidme también un recordatorio, los días de batch, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, las tiendas de la compra, cómo os respondo, una receta nueva o un cambio en una que ya tenéis (por ejemplo, quitarla del desayuno). Contadme cosas de cada uno que deba tener en cuenta y las apunto. Lo que me pedís lo hago al momento y os digo qué ha cambiado; se puede deshacer. Cuando la idea es mía, os la enseño y espero vuestro sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
+bot_about_changes: "⚙️ Cambios\nPedidme cambiar el menú: otro plato para un día, intercambiar dos días, una pausa mientras coméis lo que tenéis en casa, o un menú nuevo a partir de un lunes. Pedidme también un recordatorio, los días de cocina, la hora de comer, las reglas de la semana, los invitados, los alimentos que evitáis, las tiendas de la compra, cómo os respondo, una receta nueva o un cambio en una que ya tenéis (por ejemplo, quitarla del desayuno). Contadme cosas de cada uno que deba tener en cuenta y las apunto. Lo que me pedís lo hago al momento y os digo qué ha cambiado; se puede deshacer. Cuando la idea es mía, os la enseño y espero vuestro sí. Las pastillas, las calorías y los objetivos nunca se cambian desde el chat."
 change_confirm: "{name}, ¿hago este cambio?\n{lines}\nToca Sí o No. Si quieres otra cosa, responde a este mensaje."
 change_yes_words: ["sí", "si", "vale", "ok", "okay", "claro", "dale", "adelante", "venga", "yes"]
 change_no_words: ["no", "nop", "cancela", "cancelar"]
@@ -221,11 +221,11 @@ change_daily: todos los días
 change_lunch_time: Hora de comer
 change_shopping_day: Día de compra
 change_guests: "Invitados ({name})"
-change_batch_days: Días de batch
-change_batch_sessions: Sesiones de batch por semana
+change_batch_days: Días de cocina
+change_batch_sessions: Sesiones de cocina por semana
 change_rule: "Regla semanal {name}"
 change_avoid: "Alimentos que evita {name}"
-change_batch_avoid_days: Días sin batch
+change_batch_avoid_days: Días sin cocina
 change_swaps: "Ingredientes que {name} cambia"
 change_training_days: "Días de entrenamiento de {name}"
 change_shopping_primary: Tienda principal de la lista
@@ -252,7 +252,7 @@ recipe_replanned: "{n} días ya planificados, de mañana en adelante, pasan a te
 change_plan_set: "{day}, {meal}: {old} → {new}"
 change_plan_swap: "{a} y {b} intercambian todas sus comidas"
 change_plan_swap_meal: "{a} y {b} intercambian su {meal}"
-change_plan_pause: "Menú en pausa del {first} al {last}: esos días no hay platos ni recordatorios de comida, batch, descongelar o compra"
+change_plan_pause: "Menú en pausa del {first} al {last}: esos días no hay platos ni recordatorios de comida, sesión de cocina, descongelar o compra"
 change_plan_resume: "Menú otra vez en marcha del {first} al {last}"
 change_plan_regenerate: "Menú nuevo a partir del {day}; los días anteriores se quedan como están"
 change_plan_shift: "El menú a partir del {day} se retrasa y vuelve a empezar el {back}; los días de en medio quedan en pausa"
