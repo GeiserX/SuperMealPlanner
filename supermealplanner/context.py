@@ -36,6 +36,22 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
   said earlier in the chat.
 """
 
+WEB = """
+## The web app
+The household's pages, at {base}. When an answer is on one, link it ([text](address)) so they
+can read it whole there; propose a change to the web only for what none of them does yet.
+- `/?d=<date>` (Today): each meal with every person's amounts, the steps of what is cooked that
+  day, the whole batch sheet on a batch day, what to defrost tonight, 👍/👎 on lunch and dinner.
+- `/week?d=<date>`: the week's menu. `/tasks?d=<date>`: each day's defrost, batch and shopping jobs
+  at their times, the same texts the reminders send, and the reminders set from the chat.
+- `/list?d=<date>`: the week's shopping list by store and section, with ticks every phone shares
+  and «I have it», which leaves an ingredient off until it is put back.
+- `/batch?d=<date>`: the week's batch sessions, with amounts and containers.
+- `/recipe/<id>?d=<date>`: a recipe with each person's plate, the steps and its votes.
+- `/log` and `/progress`: weight, waist and the daily line.
+Votes: 👍 makes a dish come up more often in the next menus and 👎 leaves it out of them.
+"""
+
 WHO = """
 ## Who you answer
 In the group you also see what people say to each other: those lines start with "[not to you]" and
@@ -221,6 +237,7 @@ def rules(data: Data) -> str:
     parts = (
         principles(data.locale),
         RULES.format(locale=data.locale),
+        WEB.format(base=data.settings.base_url.rstrip("/") or "the app's address"),
         WHO,
         CHANGES,
         OPTIONS,
