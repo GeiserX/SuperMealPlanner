@@ -241,6 +241,8 @@ def test_the_daily_menu_reminder_names_every_meal_and_snack_of_the_day(data_dir,
         assert rec.name in said, (meal, rec.name)
     assert said.splitlines()[-1].endswith(f"/?d={D(2).isoformat()}")
     assert said.index(data.recipes[d.breakfast].name) < said.index(data.recipes[d.dinner].name)
+    lunch = next(x for x in said.splitlines() if data.recipes[d.lunch].name in x)
+    assert lunch.count("(") <= 1  # where lunch comes from reads as one note, never (a (b))
 
 
 def test_the_batch_reminder_sounds_the_eve_of_the_first_day_back_from_a_pause(data_dir, tmp_path):
