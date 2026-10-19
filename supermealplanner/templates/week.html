@@ -5,26 +5,19 @@
   <h1>{{ t('week_of', date=t.date(monday, False)) }}</h1>
   <a href="/week?d={{ next }}">›</a>
 </header>
-<table class="week">
-  <tr><th></th><th>{{ t('th_lunch') }}</th><th>{{ t('th_dinner') }}</th></tr>
-  {% for d, pd in rows %}
-  <tr>
-    <th{% if pd %} rowspan="2"{% endif %}><a href="/?d={{ d }}">{{ t.date(d) }}</a>
-      {% if plan %}{% for s in plan.sessions %}{% if s.date == d and not s.morning %}<span class="tag">{{ t('tag_batch') }}</span>{% endif %}{% endfor %}{% endif %}
-      {% if pd and pd.busy %}<span class="tag busy" title="{{ pd.busy | join(', ') }}">{{ t('tag_busy') }}</span>{% endif %}</th>
-    {% if pd %}
-      <td><a href="/recipe/{{ pd.lunch }}?d={{ d }}">{{ recipes[pd.lunch].name if pd.lunch in recipes else '?' }}</a>{% if pd.side %}<br><small>+ {{ recipes[pd.side].name if pd.side in recipes else '?' }}</small>{% endif %}</td>
-      <td><a href="/recipe/{{ pd.dinner }}?d={{ d }}">{{ recipes[pd.dinner].name if pd.dinner in recipes else '?' }}</a></td>
-    {% else %}<td colspan="2" class="empty">{{ t('paused_short') if d in paused else t('no_plan_short') }}</td>{% endif %}
-  </tr>
+{% for d, pd in rows %}
+<section class="meal day{{ ' today' if d == today }}">
+  <h2><a href="/?d={{ d }}">{{ t.date(d) | capitalize }}</a>
+    {% if plan %}{% for s in plan.sessions %}{% if s.date == d %}<span class="tag">{{ t('tag_batch') }}</span>{% endif %}{% endfor %}{% endif %}
+    {% if pd and pd.busy %}<span class="tag busy" title="{{ pd.busy | join(', ') }}">{{ t('tag_busy') }}</span>{% endif %}</h2>
   {% if pd %}
-  <tr class="extras">
-    <td colspan="2"><small>
-      {% for meal in ('breakfast', 'snack') %}{% set rid = pd[meal] %}{% if rid %}{{ t('meal_' + meal) }}: <a href="/recipe/{{ rid }}?d={{ d }}">{{ recipes[rid].name if rid in recipes else '?' }}</a>{% if not loop.last %} · {% endif %}{% endif %}{% endfor %}
-      {% if picks.get(d) %}<br>{{ t('nibble_title') }}: {% for r in picks[d] %}<a href="/recipe/{{ r.id }}?d={{ d }}">{{ r.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
-    </small></td>
-  </tr>
-  {% endif %}
-  {% endfor %}
-</table>
+  {% set m = menus[d] %}
+  {% set picks = m | selectattr(0, 'equalto', 'nibble') | map(attribute=1) | list %}
+  <ul class="menu">
+  {% for meal, r in m if meal != 'nibble' %}<li>{{ icons[meal] }} <small>{{ t('meal_' + meal) }}</small> <a href="/recipe/{{ r.id }}?d={{ d }}">{{ r.name }}</a></li>{% endfor %}
+  {% if picks %}<li>{{ icons['nibble'] }} <small>{{ t('nibble_title') }}</small> {% for r in picks %}<a href="/recipe/{{ r.id }}?d={{ d }}">{{ r.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</li>{% endif %}
+  </ul>
+  {% else %}<p class="sub">{{ t('paused_short') if d in paused else t('no_plan_short') }}</p>{% endif %}
+</section>
+{% endfor %}
 {% endblock %}

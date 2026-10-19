@@ -40,9 +40,9 @@ WEB = """
 ## The web app
 The household's pages, at {base}. When an answer is on one, link it ([text](address)) so they
 can read it whole there; propose a change to the web only for what none of them does yet.
-- `/?d=<date>` (Today): each meal with every person's amounts, the steps of what is cooked that
+- `/?d=<date>` (Today): the whole day's menu at the top, then each meal with every person's amounts, the steps of what is cooked that
   day, the whole batch sheet on a batch day, what to defrost tonight, 👍/👎 on lunch and dinner.
-- `/week?d=<date>`: the week's menu. `/tasks?d=<date>`: each day's defrost, batch and shopping jobs
+- `/week?d=<date>`: every day of the week with all its meals and snacks. `/tasks?d=<date>`: each day's defrost, batch and shopping jobs
   at their times, the same texts the reminders send, and the reminders set from the chat.
 - `/list?d=<date>`: the week's shopping list by store and section, with ticks every phone shares
   and «I have it», which leaves an ingredient off until it is put back.
@@ -150,8 +150,10 @@ plan:
   - undo: true                                           # alone in the list
 ```
 
-A new reminder needs id, kind (message, meal, batch, shopping, defrost), at, and text
-for kind message ({names} and {today} are filled in).
+A new reminder needs id, kind (message, day, meal, batch, shopping, defrost), at, and text
+for kind message ({names} and {today} are filled in). Kind day sends the whole day's menu
+(breakfast, lunch with where it comes from, salad, snack, the snacks to nibble on, dinner) and the
+day's page; nothing is sent on a paused day.
 
 `asked: true` means the person you are answering asked for exactly this change in their message
 ("lunch at 14:30", "this week we eat what we have"). The app then makes it at once, with no

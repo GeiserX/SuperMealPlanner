@@ -158,3 +158,18 @@ def test_a_day_with_a_morning_and_an_afternoon_batch_shows_each_with_its_own_dis
                 assert f"/recipe/{rid}?" in parts["afternoon"], (path, rid)
             for rid in mine - theirs:
                 assert f"/recipe/{rid}?" not in parts["afternoon"], (path, rid)
+
+
+def test_today_and_the_week_show_every_meal_and_snack_of_each_day(data_dir, data, monkeypatch):
+    from supermealplanner.planner import day_menu
+
+    c, plan = _app(data_dir, data, monkeypatch)
+    with c:
+        today = c.get(f"/?d={MONDAY}").text
+        week = c.get(f"/week?d={MONDAY}").text
+    top = today.split("The whole day", 1)[1].split("</section>", 1)[0]
+    for _, rec in day_menu(data, plan.days[0]):
+        assert f"/recipe/{rec.id}?d={MONDAY}" in top, rec.id
+    for d in plan.days[:7]:
+        for _, rec in day_menu(data, d):
+            assert f"/recipe/{rec.id}?d={d.date}" in week, (d.date, rec.id)

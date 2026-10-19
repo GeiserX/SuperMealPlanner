@@ -20,7 +20,7 @@ from . import __version__
 from .db import DB
 from .i18n import Translator
 from .model import Data, load
-from .planner import nibbles, paused_days, plan_for
+from .planner import ICONS, day_menu, paused_days, plan_for
 from .portions import MEAL_ORDER, batch_sheet, person_days, plate, shopping_list
 from .scheduler import tick
 from .targets import current_kcal, day_factor, evaluate, reason_text, trend
@@ -134,7 +134,8 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 plan=plan,
                 pday=pday,
                 paused=day in paused_days(state.data),
-                nibbles=nibbles(state.data, pday) if pday else [],
+                menu=day_menu(state.data, pday) if pday else [],
+                icons=ICONS,
                 people=people,
                 sheets=sheets,
                 names={p.id: p.name for p in state.data.household.people},
@@ -153,7 +154,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         days = [m + dt.timedelta(days=i) for i in range(7)]
         plan = plan_for(state.data, m) or plan_for(state.data, days[-1])
         rows = [(x, plan.day(x) if plan else None) for x in days]
-        picks = {x: nibbles(state.data, pd) for x, pd in rows if pd}
+        menus = {x: day_menu(state.data, pd) for x, pd in rows if pd}
         return tpl.TemplateResponse(
             request,
             "week.html",
@@ -162,7 +163,9 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 tab="week",
                 monday=m,
                 rows=rows,
-                picks=picks,
+                menus=menus,
+                icons=ICONS,
+                today=state.today(),
                 paused=paused_days(state.data),
                 plan=plan,
                 recipes=state.data.recipes,

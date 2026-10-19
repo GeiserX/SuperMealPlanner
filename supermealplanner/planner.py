@@ -232,6 +232,29 @@ def without(plan: Plan, hidden: set[dt.date]) -> Plan:
     return Plan(start=plan.start, weeks=plan.weeks, seed=plan.seed, days=days, sessions=ordered)
 
 
+MEALS = ("breakfast", "lunch", "side", "snack", "dinner")  # in eating order
+ICONS = {
+    "breakfast": "☕",
+    "lunch": "🍲",
+    "side": "🥗",
+    "snack": "🍎",
+    "dinner": "🌙",
+    "nibble": "🥜",
+}
+
+
+def day_menu(data: Data, day: Day) -> list[tuple[str, Recipe]]:
+    """The whole day in eating order: (meal, recipe) for breakfast, lunch, its side salad, the
+    afternoon snack and dinner, then each snack to nibble on as ("nibble", recipe). The one list the
+    web pages, the bot and the daily reminder all read, so none of them leaves a meal out."""
+    out = [
+        (meal, data.recipes[rid])
+        for meal in MEALS
+        if (rid := getattr(day, meal)) and rid in data.recipes
+    ]
+    return out + [("nibble", r) for r in nibbles(data, day)]
+
+
 def nibbles(data: Data, day: Day, n: int = 3) -> list[Recipe]:
     """Up to `n` other snacks to pick at between meals that day: never a treat, never with an
     avoided ingredient, never the day's own snack. The same day always gets the same list."""
