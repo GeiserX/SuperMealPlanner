@@ -184,6 +184,7 @@ def test_plan_reminders_stay_silent_on_paused_days(data_dir, tmp_path):
         {"id": "lunch", "kind": "meal", "meal": "lunch", "at": ["13:00"]},
         {"id": "batch", "kind": "batch", "at": ["16:30"]},
         {"id": "shop", "kind": "shopping", "at": ["09:00"]},
+        {"id": "day", "kind": "day", "at": ["08:00"]},
     ]
     (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
     data = load(data_dir)
@@ -196,7 +197,14 @@ def test_plan_reminders_stay_silent_on_paused_days(data_dir, tmp_path):
         for d in plan.days
         if (d.date - d.lunch_cook).days > data.recipes[d.lunch].fridge_days and d.date > D(1)
     )
-    days = {"lunch": D(2), "batch": cook, "shop": D(2), "defrost": frozen, "water": D(2)}
+    days = {
+        "lunch": D(2),
+        "batch": cook,
+        "shop": D(2),
+        "defrost": frozen,
+        "water": D(2),
+        "day": D(2),
+    }
     for rid, day in days.items():
         assert b.reminder_text(by[rid], day), rid  # they all speak while the plan runs
     change(data, {"pause": {"from": str(D(1)), "to": str(D(27))}})
@@ -208,6 +216,31 @@ def test_plan_reminders_stay_silent_on_paused_days(data_dir, tmp_path):
     change(data, {"resume": {"from": str(D(1)), "to": str(D(27))}})
     for rid, day in days.items():
         assert b.reminder_text(by[rid], day), rid
+
+
+def test_the_daily_menu_reminder_names_every_meal_and_snack_of_the_day(data_dir, tmp_path):
+    from supermealplanner.planner import day_menu
+
+    data = bot_data(data_dir)
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["reminders"].append({"id": "day", "kind": "day", "at": ["08:00"]})
+    (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    for rid in ("fruta", "frutos-secos"):  # snacks to pick at besides the day's own
+        r = recipe(rid, ["snack"], "fixed", "mixed", [], None, kcal=150, prot=5)
+        (data_dir / "recipes" / f"{rid}.yaml").write_text(yaml.safe_dump(r, allow_unicode=True))
+    data = load(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    r = next(r for r in data.settings.reminders if r.id == "day")
+    d = plan_for(data, D(2)).day(D(2))
+    rows = day_menu(data, d)
+    meals = [m for m, _ in rows]
+    assert meals[:2] == ["breakfast", "lunch"] and "snack" in meals and "dinner" in meals
+    assert "nibble" in meals  # the snacks to pick at are part of the day too
+    said = b.reminder_text(r, D(2))
+    for meal, rec in rows:
+        assert rec.name in said, (meal, rec.name)
+    assert said.splitlines()[-1].endswith(f"/?d={D(2).isoformat()}")
+    assert said.index(data.recipes[d.breakfast].name) < said.index(data.recipes[d.dinner].name)
 
 
 def test_the_batch_reminder_sounds_the_eve_of_the_first_day_back_from_a_pause(data_dir, tmp_path):
@@ -456,7 +489,7 @@ def test_the_week_and_the_day_show_breakfast_snack_and_nibbles(data_dir, monkeyp
         week = c.get(f"/week?d={MONDAY}").text
         today = c.get(f"/?d={D(2)}").text
     row = week[week.index(f'href="/?d={D(2)}"') : week.index(f'href="/?d={D(3)}"')]
-    for name in (*names, *picks, "Breakfast:", "Snack:", "To nibble:"):
+    for name in (*names, *picks, "Breakfast", "Snack", "To nibble"):
         assert name in row, name
     assert "To nibble:" in today and all(p in today for p in picks)
     b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)

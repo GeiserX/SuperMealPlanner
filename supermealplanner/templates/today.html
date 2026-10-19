@@ -9,6 +9,14 @@
 {% if not plan or not pday %}
   <p class="empty">{{ t('paused_day') if paused else t('no_plan_day') }}</p>
 {% else %}
+  {% set picks = menu | selectattr(0, 'equalto', 'nibble') | map(attribute=1) | list %}
+  <section class="meal summary">
+    <h2>{{ t('day_summary') }}</h2>
+    <ul class="menu">
+    {% for meal, r in menu if meal != 'nibble' %}<li>{{ icons[meal] }} <small>{{ t('meal_' + meal) }}</small> <a href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a></li>{% endfor %}
+    {% if picks %}<li>{{ icons['nibble'] }} <small>{{ t('nibble_title') }}</small> {% for r in picks %}<a href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</li>{% endif %}
+    </ul>
+  </section>
   {% if pday.busy %}<p class="note">{{ t('calendar_busy', events=pday.busy | join(', ')) }}</p>{% endif %}
   {% for r in defrost %}<p class="note cold">{{ t('defrost_tonight', dish=r.name) }} <a href="/recipe/{{ r.id }}">{{ t('see_recipe') }}</a></p>{% endfor %}
   {% for s, dishes in sheets %}
@@ -45,8 +53,8 @@
       </div>
     </section>
     {% endif %}
-    {% if meal == 'snack' and nibbles %}
-    <p class="note nibble">{{ t('nibble_title') }}: {% for r in nibbles %}<a href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+    {% if meal == 'snack' and picks %}
+    <p class="note nibble">{{ t('nibble_title') }}: {% for r in picks %}<a href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
     {% endif %}
   {% endfor %}
 

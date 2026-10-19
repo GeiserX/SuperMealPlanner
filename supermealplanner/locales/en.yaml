@@ -319,3 +319,5 @@ vote_note: "👍 makes a dish come up more often in the next menus; 👎 takes i
 shopping_have: I have it
 shopping_have_title: At home, left off the list
 shopping_have_back: Put back on the list
+day_summary: The whole day
+reminder_day: "📅 Today, {date}:"

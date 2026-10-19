@@ -62,8 +62,8 @@ import httpx
 from . import changes, context, llm, menu
 from .i18n import Translator
 from .model import WEEKDAYS
-from .planner import nibbles, paused_days, plan_for
-from .portions import MEAL_ORDER, person_days, shopping_list
+from .planner import ICONS, day_menu, paused_days, plan_for
+from .portions import person_days, shopping_list
 
 log = logging.getLogger("supermealplanner.bot")
 API = "https://api.telegram.org/bot{token}/{method}"
@@ -1914,11 +1914,11 @@ class Bot:
         # pills are household data: never for people outside it (bot.group_open)
         show_pills = not self.data.settings.bot.group_open
         lines = [t.date(day).capitalize()]
-        for meal in MEAL_ORDER:
-            rid = getattr(plan.day(day), meal)
-            if not rid or rid not in self.data.recipes:
+        menu_rows = day_menu(self.data, plan.day(day))
+        for meal, rec in menu_rows:
+            if meal == "nibble":
                 continue
-            lines.append(f"\n{t('meal_' + meal)}: {self.data.recipes[rid].name}")
+            lines.append(f"\n{ICONS[meal]} {t('meal_' + meal)}: {rec.name}")
             for pd in pds:
                 pl = pd.plates.get(meal)
                 if pl:
@@ -1935,7 +1935,7 @@ class Bot:
                     if pd.pills.get(slot):
                         names = " · ".join(f"{x.name} {x.dose}".strip() for x in pd.pills[slot])
                         lines.append(f"💊 {pd.name}, {t('pills_' + slot).lower()}: {names}")
-        picks = nibbles(self.data, plan.day(day))
+        picks = [rec for meal, rec in menu_rows if meal == "nibble"]
         if picks:
             lines.append("\n" + t("nibble", items=", ".join(r.name for r in picks)))
         lines.append("")
@@ -1968,11 +1968,9 @@ class Bot:
                 lines.append(f"{t.raw('days_short')[i]}: {t('paused_short')}")
             if d:
                 dishes = " · ".join(
-                    f"{icon} {self.data.recipes[rid].name if rid in self.data.recipes else '?'}"
-                    for icon, rid in zip(
-                        "☕🍲🍎🌙", (d.breakfast, d.lunch, d.snack, d.dinner), strict=True
-                    )
-                    if rid
+                    f"{ICONS[meal]} {rec.name}"
+                    for meal, rec in day_menu(self.data, d)
+                    if meal not in ("side", "nibble")
                 )
                 lines.append(f"{t.raw('days_short')[i]}: {dishes}")
         lines.append(self.url(f"/week?d={monday.isoformat()}"))
@@ -2083,6 +2081,8 @@ class Bot:
             return t("reminder_shopping", url=self.url(f"/list?d={day.isoformat()}"))
         if not plan:
             return None
+        if r.kind == "day":
+            return self.menu_text(plan, day)
         if r.kind == "defrost":
             tomorrow = plan.day(day + dt.timedelta(days=1))
             if (
@@ -2164,6 +2164,36 @@ class Bot:
                     todo.append(t("reminder_pills_lunch", name=self.mention(p.id)))
             return "\n".join(todo) or None
         return None
+
+    def menu_text(self, plan, day: dt.date) -> str | None:
+        """The whole day's menu in a few lines, with where lunch comes from and the day's page."""
+        t, data = self.t, self.data
+        d = plan.day(day)
+        if not d:
+            return None
+        lines = [t("reminder_day", date=t.date(day))]
+        picks = []
+        for meal, rec in day_menu(data, d):
+            if meal == "nibble":
+                picks.append(rec.name)
+                continue
+            line = f"{ICONS[meal]} {t('meal_' + meal)}: {rec.name}"
+            if meal == "lunch":
+                gap = (day - d.lunch_cook).days
+                where = (
+                    t("lunch_fresh")
+                    if gap == 0
+                    else t(
+                        "lunch_fridge" if gap <= rec.fridge_days else "lunch_freezer",
+                        date=t.date(d.lunch_cook),
+                    )
+                )
+                line += f" ({where.lower()})"
+            lines.append(line)
+        if picks:
+            lines.append(f"{ICONS['nibble']} {t('nibble_title')}: {', '.join(picks)}")
+        lines.append(self.url(f"/?d={day.isoformat()}"))
+        return "\n".join(lines)
 
     async def tick_reminders(self, client) -> None:
         chat = self.chat_id

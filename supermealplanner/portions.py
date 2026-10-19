@@ -12,11 +12,10 @@ from dataclasses import dataclass, field
 
 from .db import DB
 from .model import Data, Ingredient, Recipe
-from .planner import Plan
+from .planner import MEALS, Plan
 from .targets import current_kcal, day_factor
 
-MEAL_ORDER = ("breakfast", "lunch", "side", "snack", "dinner")
-MEALS = MEAL_ORDER
+MEAL_ORDER = MEALS
 
 
 def factors(data: Data, db: DB, day: dt.date) -> dict[str, float]:

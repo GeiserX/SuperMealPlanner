@@ -61,3 +61,7 @@ ul.tasks { padding-left: 1.1em; }
 ul.tasks small { color: var(--mut); }
 section.today h2 a { color: var(--acc); }
 .tabs a { font-size: .78rem; }
+ul.menu { list-style: none; padding: 0; margin: 6px 0; }
+ul.menu li { padding: 3px 0; }
+ul.menu small { color: var(--mut); display: inline-block; min-width: 5.5em; }
+section.day.today { border-color: var(--acc); }
