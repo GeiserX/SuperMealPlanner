@@ -460,7 +460,9 @@ def create_app(root: str | Path | None = None) -> FastAPI:
 
 def _per_session(sessions: list, sheet: list) -> list:
     """A day's batch sheet split by session (morning, afternoon): (session, its dishes)."""
-    return [(s, [b for b in sheet if b.recipe.id in {x.recipe for x in s.dishes}]) for s in sessions]
+    return [
+        (s, [b for b in sheet if b.recipe.id in {x.recipe for x in s.dishes}]) for s in sessions
+    ]
 
 
 def _local(path: str) -> bool:
