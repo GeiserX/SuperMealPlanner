@@ -1220,3 +1220,68 @@ def test_a_proposal_cut_off_by_a_restart_is_said_on_the_next_start(data_dir, tmp
     assert db.get_kv("bot.running") is None
     run(after.interrupted(None))  # said once
     assert len(ChatBot.texts(after, -100)) == 1
+
+
+def test_a_new_version_is_told_once_to_the_admins_and_again_only_when_it_changes(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as botmod
+
+    data = plugin_data(data_dir, admins=["luis"])
+    db = DB(tmp_path / "b.db")
+    monkeypatch.setattr(botmod, "__version__", "1.0.0")
+    b = ChatBot(data, db)
+    run(b.announce_version(None))
+    assert ChatBot.texts(b) == ["Now running version 1.0.0."]
+    assert [p["chat_id"] for m, p in b.calls if m == "sendMessage"] == [7]  # luis, privately
+    again = ChatBot(data, db)  # a restart on the same version
+    run(again.announce_version(None))
+    assert ChatBot.texts(again) == []
+    monkeypatch.setattr(botmod, "__version__", "1.1.0")
+    up = ChatBot(data, db)
+    run(up.announce_version(None))
+    assert ChatBot.texts(up) == ["Now running version 1.1.0 (was 1.0.0)."]
+    assert db.get_kv(botmod.ANNOUNCED) == "1.1.0"
+
+
+def test_the_new_version_goes_to_the_group_when_no_admin_can_be_written_to(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as botmod
+
+    data = plugin_data(data_dir, admins=["luis"])
+    db = DB(tmp_path / "b.db")
+    monkeypatch.setattr(botmod, "__version__", "2.0.0")
+    b = ChatBot(data, db)
+    sent = b.call
+
+    async def no_private(client, method, _tries=0, **params):
+        if method == "sendMessage" and params.get("chat_id") == 7:
+            raise TelegramError(method, "Forbidden: bot can't initiate conversation", 403)
+        return await sent(client, method, _tries, **params)
+
+    b.call = no_private
+    run(b.announce_version(None))
+    assert ChatBot.texts(b, -100) == ["Now running version 2.0.0."]
+    assert db.get_kv(botmod.ANNOUNCED) == "2.0.0"
+
+
+def test_a_version_nobody_was_told_about_is_tried_again_at_the_next_start(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as botmod
+
+    data = plugin_data(data_dir, admins=["luis"])
+    db = DB(tmp_path / "b.db")
+    monkeypatch.setattr(botmod, "__version__", "3.0.0")
+    b = ChatBot(data, db)
+
+    async def down(client, method, _tries=0, **params):
+        raise TelegramError(method, "Bad Gateway", 502)
+
+    b.call = down
+    run(b.announce_version(None))
+    assert db.get_kv(botmod.ANNOUNCED) is None
+    later = ChatBot(data, db)
+    run(later.announce_version(None))
+    assert ChatBot.texts(later) == ["Now running version 3.0.0."]

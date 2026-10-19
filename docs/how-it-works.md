@@ -50,6 +50,8 @@ Ticks on the list are saved by the app, so every phone sees the same ones. «I h
 
 The bot answers private chats with the people in `bot.people`, and the configured group; in the group only those people unless `bot.group_open` is set.
 
+When the bot starts on a version it has not announced yet, it says so once ("Now running version X (was Y)") privately to each person in `bot.admins`, or in the group when none of them can be written to. A restart on the same version says nothing, and a version nobody was told about is announced at the next start.
+
 - `/week` lists breakfast, lunch, snack and dinner for each day on one line.
 - Commands: `/today`, `/tomorrow`, `/week`, `/list`, `/weight 82.4`, `/waist 95`, `/craving 7`, `/water`, `/pills`, `/about`, `/new`, `/chatid` (Spanish aliases: `/hoy`, `/manana`, `/semana`, `/lista`, `/peso`, `/cintura`, `/antojo`, `/agua`, `/pastillas`, `/presentacion`, `/nuevo`).
 - `/about` presents everything the bot does for this household, built from the settings: the reminders with their real times, whether private chats are on.
