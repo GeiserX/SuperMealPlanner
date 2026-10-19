@@ -493,7 +493,7 @@ def test_the_week_and_the_day_show_breakfast_snack_and_nibbles(data_dir, monkeyp
     row = week[week.index(f'href="/?d={D(2)}"') : week.index(f'href="/?d={D(3)}"')]
     for name in (*names, *picks, "Breakfast", "Snack", "To nibble"):
         assert name in row, name
-    assert "To nibble:" in today and all(p in today for p in picks)
+    assert "To nibble</h2>" in today and all(p in today for p in picks)
     b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
     assert "To nibble: " + ", ".join(picks) in b.day_text(D(2))
     assert "Para picar" == Translator("es")("nibble_title")

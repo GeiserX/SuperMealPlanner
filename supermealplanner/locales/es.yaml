@@ -307,7 +307,6 @@ tab_tasks: Tareas
 tasks_title: "Tareas · semana del {date}"
 tasks_none_day: Nada que hacer.
 tasks_note: Son los mismos avisos que llegan al chat, a su hora, y los que se ponen desde el chat.
-batch_today_title: "Batch de hoy, {when}"
 see_recipe: Receta
 vote_like: Me gusta
 vote_dislike: No me gusta
@@ -318,5 +317,4 @@ vote_note: "Con 👍 el plato sale más en los próximos menús; con 👎 deja d
 shopping_have: Ya tengo
 shopping_have_title: Ya lo tenéis en casa (fuera de la lista)
 shopping_have_back: Volver a la lista
-day_summary: El día entero
 reminder_day: "📅 Hoy, {date}:"

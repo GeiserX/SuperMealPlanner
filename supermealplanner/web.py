@@ -114,8 +114,13 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         pday = plan.day(day) if plan else None
         tomorrow = day + dt.timedelta(days=1)
         defrost = []
-        cooks = [s for s in plan.sessions if s.date == day] if plan else []
-        sheets = _per_session(cooks, batch_sheet(state.data, state.db, plan, day) if cooks else [])
+        menu = day_menu(state.data, pday) if pday else []
+        swaps = {p.id: p.swaps for p in state.data.household.people}
+        picks = [
+            (r, [plate(state.data, r, pd.factor, swaps.get(pd.person_id)) for pd in people])
+            for meal, r in menu
+            if meal == "nibble"
+        ]
         if plan:
             for s in plan.sessions:
                 for x in s.dishes:
@@ -134,10 +139,8 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 plan=plan,
                 pday=pday,
                 paused=day in paused_days(state.data),
-                menu=day_menu(state.data, pday) if pday else [],
-                icons=ICONS,
+                picks=picks,
                 people=people,
-                sheets=sheets,
                 names={p.id: p.name for p in state.data.household.people},
                 defrost=defrost,
                 recipes=state.data.recipes,

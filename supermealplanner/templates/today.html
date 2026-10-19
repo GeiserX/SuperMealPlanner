@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_sheet.html" import sheet, vote with context %}
+{% from "_sheet.html" import vote with context %}
 {% block main %}
 <header class="bar">
   <a href="/?d={{ prev }}" aria-label="previous day">‹</a>
@@ -9,23 +9,8 @@
 {% if not plan or not pday %}
   <p class="empty">{{ t('paused_day') if paused else t('no_plan_day') }}</p>
 {% else %}
-  {% set picks = menu | selectattr(0, 'equalto', 'nibble') | map(attribute=1) | list %}
-  <section class="meal summary">
-    <h2>{{ t('day_summary') }}</h2>
-    <ul class="menu">
-    {% for meal, r in menu if meal != 'nibble' %}<li>{{ icons[meal] }} <small>{{ t('meal_' + meal) }}</small> <a href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a></li>{% endfor %}
-    {% if picks %}<li>{{ icons['nibble'] }} <small>{{ t('nibble_title') }}</small> {% for r in picks %}<a href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</li>{% endif %}
-    </ul>
-  </section>
   {% if pday.busy %}<p class="note">{{ t('calendar_busy', events=pday.busy | join(', ')) }}</p>{% endif %}
   {% for r in defrost %}<p class="note cold">{{ t('defrost_tonight', dish=r.name) }} <a href="/recipe/{{ r.id }}">{{ t('see_recipe') }}</a></p>{% endfor %}
-  {% for s, dishes in sheets %}
-  <section class="meal batch">
-    <h2>{{ t('batch_today_title', when=(t('batch_morning') if s.morning else t('batch_afternoon'))) }}</h2>
-    {{ sheet(dishes, day, steps=True) }}
-  </section>
-  {% endfor %}
-
   {% for meal in meals %}
     {% set rid = pday[meal] %}
     {% if rid and rid in recipes %}
@@ -37,26 +22,35 @@
         {% set gap = (day - pday.lunch_cook).days %}
         <p class="sub">{% if gap == 0 %}{{ t('lunch_fresh') }}{% elif gap <= recipes[rid].fridge_days %}{{ t('lunch_fridge', date=t.date(pday.lunch_cook)) }}{% else %}{{ t('lunch_freezer', date=t.date(pday.lunch_cook)) }}{% endif %}</p>
       {% endif %}
-      {% if meal == 'dinner' or (meal == 'lunch' and day == pday.lunch_cook) %}
-      <details class="steps"><summary>{{ t('recipe_steps') }}</summary><ol>{% for s in recipes[rid].steps %}<li>{{ s }}</li>{% endfor %}</ol></details>
-      {% endif %}
+      {% if recipes[rid].steps %}<details class="steps"><summary>{{ t('recipe_steps') }}</summary><ol>{% for s in recipes[rid].steps %}<li>{{ s }}</li>{% endfor %}</ol></details>{% endif %}
       <div class="people">
       {% for pd in people %}
         <div class="who">
           <h3>{{ pd.name }} <small>×{{ '%.2f' | format(pd.factor) }}</small></h3>
           <ul>{% for line in pd.plates[meal].lines %}<li>{{ line }}</li>{% endfor %}</ul>
-          {% if meal in ('breakfast', 'lunch', 'dinner') and pd.pills.get(meal) %}
-            <p class="pills">💊 {% for pill in pd.pills[meal] %}{{ pill.name }}{% if pill.dose %} {{ pill.dose }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>
-          {% endif %}
         </div>
       {% endfor %}
       </div>
     </section>
     {% endif %}
-    {% if meal == 'snack' and picks %}
-    <p class="note nibble">{{ t('nibble_title') }}: {% for r in picks %}<a href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
-    {% endif %}
   {% endfor %}
+  {% if picks %}
+  <section class="meal nibble">
+    <h2>{{ t('nibble_title') }}</h2>
+    {% for r, plates in picks %}
+    <a class="dish" href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a>
+    {% if r.steps %}<details class="steps"><summary>{{ t('recipe_steps') }}</summary><ol>{% for s in r.steps %}<li>{{ s }}</li>{% endfor %}</ol></details>{% endif %}
+    <div class="people">
+    {% for pd in people %}
+      <div class="who">
+        <h3>{{ pd.name }} <small>×{{ '%.2f' | format(pd.factor) }}</small></h3>
+        <ul>{% for line in plates[loop.index0].lines %}<li>{{ line }}</li>{% endfor %}</ul>
+      </div>
+    {% endfor %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
 
   <section class="totals">
     {% for pd in people %}
@@ -65,9 +59,6 @@
       <p>{{ t('kcal_protein', kcal=pd.kcal | round | int, kcal_target=pd.kcal_target, protein=pd.protein | round | int, protein_target=pd.protein_target | int) }}</p>
       {% if pd.days_since_injection is not none %}<p class="sub">{{ t('days_since_injection', n=pd.days_since_injection) }}</p>{% endif %}
       {% if pd.toppers %}<p class="sub">{{ t('protein_toppers', items=pd.toppers | join(', ')) }}</p>{% endif %}
-      {% for slot in ['waking', 'bedtime'] %}{% if pd.pills.get(slot) %}
-        <p class="pills">💊 {{ t('pills_' + slot) }}: {% for pill in pd.pills[slot] %}{{ pill.name }}{% if pill.dose %} {{ pill.dose }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>
-      {% endif %}{% endfor %}
     </div>
     {% endfor %}
   </section>
