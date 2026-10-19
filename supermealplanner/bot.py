@@ -59,7 +59,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import changes, context, llm, menu
+from . import __version__, changes, context, llm, menu
 from .i18n import Translator
 from .model import WEEKDAYS
 from .planner import ICONS, day_menu, paused_days, plan_for
@@ -78,6 +78,9 @@ class TelegramError(Exception):
         super().__init__(f"telegram {method}: {code} {description}")
         self.code = code
         self.params = params or {}
+
+
+ANNOUNCED = "bot.announced_version"  # the last version the bot told its admins about
 
 
 def safe(e: BaseException) -> str:
@@ -320,6 +323,37 @@ class Bot:
             self.state.db.add_chat(chat_id, "assistant", who, text)
         return sent.get("message_id") if isinstance(sent, dict) else None
 
+    async def announce_version(self, client) -> None:
+        """A new version says so once: privately to each admin, or in the group when no admin can
+        be written to. The version is kept only once a message went out, so a failed send retries
+        at the next start; a restart on the same version says nothing."""
+        before = self.state.db.get_kv(ANNOUNCED)
+        if not __version__ or before == __version__:
+            return
+        t = self.t
+        text = (
+            t("bot_upgraded", version=__version__, previous=before)
+            if before
+            else t("bot_upgraded_first", version=__version__)
+        )
+        cfg = self.data.settings.bot
+        targets = [cfg.people[p] for p in cfg.admins if p in cfg.people]
+        sent = False
+        for uid in targets:
+            try:
+                await self.send(client, uid, text, record=False)
+                sent = True
+            except Exception as e:  # noqa: BLE001  an admin who never opened a private chat
+                log.info("could not tell admin about the new version: %s", safe(e))
+        if not sent and self.chat_id is not None:
+            try:
+                await self.send(client, self.chat_id, text, record=False)
+                sent = True
+            except Exception as e:  # noqa: BLE001  the next start tries again
+                log.warning("could not announce the new version: %s", safe(e))
+        if sent:
+            self.state.db.set_kv(ANNOUNCED, __version__)
+
     @property
     def chat_id(self) -> int | None:
         configured = self.data.settings.bot.chat_id
@@ -395,6 +429,7 @@ class Bot:
                     await self.learn_usernames(client)
                     await self.check_group(client, me)
                     if not self.started:  # once per process: a loop restart cuts nothing off
+                        await self.announce_version(client)
                         await self.interrupted(client)
                         await self.resume(client)
                         self.started = True  # only now: a failed resume runs again on the retry

@@ -318,3 +318,5 @@ shopping_have: Ya tengo
 shopping_have_title: Ya lo tenéis en casa (fuera de la lista)
 shopping_have_back: Volver a la lista
 reminder_day: "📅 Hoy, {date}:"
+bot_upgraded: "Nueva versión en marcha: {version} (antes {previous})."
+bot_upgraded_first: "Nueva versión en marcha: {version}."
