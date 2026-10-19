@@ -11,12 +11,12 @@
 {% else %}
   {% if pday.busy %}<p class="note">{{ t('calendar_busy', events=pday.busy | join(', ')) }}</p>{% endif %}
   {% for r in defrost %}<p class="note cold">{{ t('defrost_tonight', dish=r.name) }} <a href="/recipe/{{ r.id }}">{{ t('see_recipe') }}</a></p>{% endfor %}
-  {% if cooks %}
+  {% for s, dishes in sheets %}
   <section class="meal batch">
-    <h2>{{ t('batch_today_title', when=(t('batch_morning') if cooks[0].morning else t('batch_afternoon'))) }}</h2>
-    {{ sheet(sheet_rows, day, steps=True) }}
+    <h2>{{ t('batch_today_title', when=(t('batch_morning') if s.morning else t('batch_afternoon'))) }}</h2>
+    {{ sheet(dishes, day, steps=True) }}
   </section>
-  {% endif %}
+  {% endfor %}
 
   {% for meal in meals %}
     {% set rid = pday[meal] %}

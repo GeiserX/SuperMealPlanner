@@ -115,7 +115,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         tomorrow = day + dt.timedelta(days=1)
         defrost = []
         cooks = [s for s in plan.sessions if s.date == day] if plan else []
-        sheet_rows = batch_sheet(state.data, state.db, plan, day) if cooks else []
+        sheets = _per_session(cooks, batch_sheet(state.data, state.db, plan, day) if cooks else [])
         if plan:
             for s in plan.sessions:
                 for x in s.dishes:
@@ -136,8 +136,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 paused=day in paused_days(state.data),
                 nibbles=nibbles(state.data, pday) if pday else [],
                 people=people,
-                cooks=cooks,
-                sheet_rows=sheet_rows,
+                sheets=sheets,
                 names={p.id: p.name for p in state.data.household.people},
                 defrost=defrost,
                 recipes=state.data.recipes,
@@ -269,9 +268,10 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         plan = plan_for(state.data, m)
         sessions = []
         if plan:
-            for s in plan.sessions:
-                if m <= s.date < m + dt.timedelta(days=7):
-                    sessions.append((s, batch_sheet(state.data, state.db, plan, s.date)))
+            week = [s for s in plan.sessions if m <= s.date < m + dt.timedelta(days=7)]
+            for day in sorted({s.date for s in week}):
+                same = [s for s in week if s.date == day]
+                sessions += _per_session(same, batch_sheet(state.data, state.db, plan, day))
         names = {p.id: p.name for p in state.data.household.people}
         return tpl.TemplateResponse(
             request,
@@ -456,6 +456,11 @@ def create_app(root: str | Path | None = None) -> FastAPI:
 
     app.state.smp = state
     return app
+
+
+def _per_session(sessions: list, sheet: list) -> list:
+    """A day's batch sheet split by session (morning, afternoon): (session, its dishes)."""
+    return [(s, [b for b in sheet if b.recipe.id in {x.recipe for x in s.dishes}]) for s in sessions]
 
 
 def _local(path: str) -> bool:
