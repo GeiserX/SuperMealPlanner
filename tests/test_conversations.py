@@ -1016,6 +1016,19 @@ def test_the_households_own_instructions_never_outrank_the_rules(data_dir):
     assert rules.rstrip().endswith(context.LAST_WORD)
 
 
+def test_the_ai_knows_each_web_page_and_its_address(data_dir):
+    from supermealplanner import context
+
+    bot_data(data_dir)
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["base_url"] = "https://meals.example/"
+    write(data_dir, "settings.yaml", raw)
+    rules = context.rules(load(data_dir))
+    assert "at https://meals.example." in rules
+    for page in ("/tasks?d=", "/list?d=", "/batch?d=", "/recipe/<id>", "«I have it»", "👍/👎"):
+        assert page in rules, page
+
+
 def prompt_id(b, text: str) -> int:
     """The message id ChatBot gave the last message sent that holds `text`."""
     return max(
