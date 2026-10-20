@@ -132,6 +132,7 @@ bot_help: |
   /today, /tomorrow: the day's meals and each plate
   /week: the week's menu
   /list: this week's shopping list
+  /batch: this week's batch cooking sessions
   /weight 82.4 · /waist 95 · /craving 7 · /water: log for yourself
   /about: everything I do
   /reminders: the reminders to come, to cancel one
@@ -171,6 +172,7 @@ bot_cmd_today: Today's meals and each plate
 bot_cmd_tomorrow: Tomorrow's meals
 bot_cmd_week: This week's menu
 bot_cmd_list: This week's shopping list
+bot_cmd_batch: This week's batch cooking
 bot_cmd_weight: "Log your weight, e.g. /weight 82.4"
 bot_cmd_waist: Log your waist in cm
 bot_cmd_craving: Log a craving from 0 to 10

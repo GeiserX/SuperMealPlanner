@@ -10,6 +10,7 @@ LOCALES = Path(supermealplanner.__file__).parent / "locales"
 
 def test_spanish_text_has_no_english_batch_word():
     es = yaml.safe_load((LOCALES / "es.yaml").read_text(encoding="utf-8"))
+    es["bot_commands"] = list(es["bot_commands"].values())  # the keys are command ids, not text
     offenders = [
         key for key, text in es.items() if "batch" in re.sub(r"\{\w+\}", "", str(text)).lower()
     ]
