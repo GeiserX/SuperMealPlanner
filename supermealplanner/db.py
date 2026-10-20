@@ -48,6 +48,17 @@ CREATE TABLE IF NOT EXISTS rating (
   recipe TEXT NOT NULL, person TEXT NOT NULL, vote INTEGER NOT NULL, day TEXT NOT NULL,
   PRIMARY KEY (recipe, person)
 );
+-- A phone that has been paired. `token_hash` is sha256 of the bearer the app keeps in its keychain:
+-- the token itself is shown once, at pairing, and is never stored here or logged.
+CREATE TABLE IF NOT EXISTS device (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, person TEXT,
+  token_hash TEXT NOT NULL UNIQUE, created TEXT NOT NULL, last_seen TEXT, revoked INTEGER DEFAULT 0
+);
+-- A pairing code the bot gave someone in a private chat: six digits, one use, minutes to live.
+CREATE TABLE IF NOT EXISTS pair_code (
+  code_hash TEXT PRIMARY KEY, person TEXT, created TEXT NOT NULL, expires REAL NOT NULL,
+  used INTEGER DEFAULT 0
+);
 """
 
 HAVE = "shop.have"  # ingredient ids the household has at home: left off every list until re-added
@@ -388,6 +399,68 @@ class DB:
         weeks[monday.isoformat()] = sorted(now)
         keep = sorted(weeks)[-TICKED_WEEKS:]  # old weeks are never looked at again
         self.set_kv(TICKED, {k: weeks[k] for k in keep})
+
+    # paired phones (see devices.py: this class only stores what that module decides)
+    def add_device(self, name: str, person: str | None, token_hash: str, now: dt.datetime) -> int:
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT INTO device(name, person, token_hash, created) VALUES (?,?,?,?)",
+                (name, person, token_hash, now.isoformat(timespec="seconds")),
+            )
+        return int(cur.lastrowid)
+
+    def device_by_token(self, token_hash: str) -> dict | None:
+        """The live device that bearer belongs to, or None. A revoked one answers None."""
+        with self.conn() as c:
+            r = c.execute(
+                "SELECT * FROM device WHERE token_hash=? AND revoked=0", (token_hash,)
+            ).fetchone()
+        return dict(r) if r else None
+
+    def devices(self) -> list[dict]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT id, name, person, created, last_seen FROM device WHERE revoked=0 "
+                "ORDER BY created"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def touch_device(self, device_id: int, now: dt.datetime) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE device SET last_seen=? WHERE id=?",
+                (now.isoformat(timespec="seconds"), device_id),
+            )
+
+    def revoke_device(self, device_id: int) -> bool:
+        with self.conn() as c:
+            cur = c.execute("UPDATE device SET revoked=1 WHERE id=? AND revoked=0", (device_id,))
+        return cur.rowcount > 0
+
+    # pairing codes
+    def add_pair_code(
+        self, code_hash: str, person: str | None, now: dt.datetime, ttl_s: float
+    ) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM pair_code WHERE expires < ?", (now.timestamp(),))
+            c.execute(
+                "INSERT INTO pair_code(code_hash, person, created, expires) VALUES (?,?,?,?) "
+                "ON CONFLICT(code_hash) DO UPDATE SET person=excluded.person, "
+                "created=excluded.created, expires=excluded.expires, used=0",
+                (code_hash, person, now.isoformat(timespec="seconds"), now.timestamp() + ttl_s),
+            )
+
+    def take_pair_code(self, code_hash: str, now: dt.datetime) -> dict | None:
+        """Spend a code: returns its row once and never again, so a replay finds nothing."""
+        with self.conn() as c:
+            r = c.execute(
+                "SELECT * FROM pair_code WHERE code_hash=? AND used=0 AND expires > ?",
+                (code_hash, now.timestamp()),
+            ).fetchone()
+            if r is None:
+                return None
+            c.execute("UPDATE pair_code SET used=1 WHERE code_hash=?", (code_hash,))
+        return dict(r)
 
     # small values the app learns at run time (e.g. a group's new id after an upgrade)
     def get_kv(self, key: str):

@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import __version__
+from .api import router as api_router
 from .db import DB
 from .i18n import Translator
 from .model import Data, load
@@ -101,6 +102,10 @@ def create_app(root: str | Path | None = None) -> FastAPI:
 
     def monday(d: dt.date) -> dt.date:
         return d - dt.timedelta(days=d.weekday())
+
+    # The phone apps: /api/v1, one bearer per paired device (api.py, devices.py). Mounted here so
+    # the pages and the API are one program reading one plan — a tick on a phone shows on the laptop.
+    app.include_router(api_router(state))
 
     @app.get("/healthz")
     def healthz():
