@@ -97,6 +97,7 @@ shopping:
   primary: supermarket        # the list is written for this store
   alternatives: [online]      # shown as "or at ..." and as its own list view
 sections: {butcher: Butcher, greengrocer: Greengrocer}   # labels for ingredient sections
+section_order: [pantry, greengrocer, butcher, frozen]   # sections in the order a store is walked (pantry, then fresh, then frozen); others follow A-Z
 toppers:                      # suggested when a day falls short on protein
   - {label: "1 Greek yogurt", protein_g: 7, kcal: 120}
 bot:

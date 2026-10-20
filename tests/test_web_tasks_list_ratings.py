@@ -187,3 +187,26 @@ def test_today_and_the_week_show_every_meal_and_snack_of_each_day(data_dir, data
     for d in plan.days[:7]:
         for _, rec in day_menu(data, d):
             assert f"/recipe/{rec.id}?d={d.date}" in week, (d.date, rec.id)
+
+
+def test_sections_follow_the_configured_walking_order(data, tmp_path):
+    plan = generate(data, MONDAY, 4)
+
+    def orders():
+        shop = shopping_list(data, DB(tmp_path / "o.db"), plan, MONDAY)
+        return [list(sl.sections) for sl in shop.stores]
+
+    assert all(o == sorted(o) for o in orders())
+    data.settings.section_order = ["pescaderia", "fruteria", "despensa"]
+    walked = orders()
+    assert any(len(o) > 1 for o in walked)
+    for o in walked:
+        listed = [s for s in data.settings.section_order if s in o]
+        assert o[: len(listed)] == listed
+        assert o[len(listed) :] == sorted(o[len(listed) :])
+
+
+def test_the_list_page_folds_each_section(data_dir, data, monkeypatch):
+    c, _ = _app(data_dir, data, monkeypatch)
+    html = c.get(f"/list?d={MONDAY}").text
+    assert "<details" in html and "data-fold=" in html and "smp-fold:" in html

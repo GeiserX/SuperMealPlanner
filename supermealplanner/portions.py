@@ -319,10 +319,15 @@ def shopping_list(data: Data, db: DB, plan: Plan, monday: dt.date, t=None, view:
                 break
         groups.setdefault(store, {}).setdefault(ing.section, []).append(line)
 
+    walk = {sec: i for i, sec in enumerate(data.settings.section_order)}
     stores = []
     order = sorted(groups, key=lambda s: (s != primary, labels.get(s, s)))
     for sid in order:
-        sl = StoreList(sid, labels.get(sid, sid), dict(sorted(groups[sid].items())))
+        sl = StoreList(
+            sid,
+            labels.get(sid, sid),
+            dict(sorted(groups[sid].items(), key=lambda kv: (walk.get(kv[0], len(walk)), kv[0]))),
+        )
         for line in sl.lines:
             if line.pick and line.pick.cost is not None:
                 sl.total += line.pick.cost
