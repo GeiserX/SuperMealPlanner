@@ -17,7 +17,8 @@
 <section class="shop">
   <h2>{{ sl.name }}{% if sl.total %} <small>· {{ t('shopping_total', total=t.money(sl.total)) }}</small>{% endif %}</h2>
   {% for section, lines in sl.sections.items() %}
-    <h3>{{ section_label(section) }}</h3>
+    <details class="fold" open data-fold="{{ monday }}/{{ sl.id }}/{{ section }}">
+    <summary><h3>{{ section_label(section) }}</h3></summary>
     <ul class="check">
     {% for line in lines %}
       <li><label><input type="checkbox" data-item="{{ line.ingredient.id }}"{{ ' checked' if line.ingredient.id in ticked }}>
@@ -27,6 +28,7 @@
         <form method="post" action="/list/have" class="have"><input type="hidden" name="item" value="{{ line.ingredient.id }}"><input type="hidden" name="back" value="{{ here }}"><button>{{ t('shopping_have') }}</button></form></li>
     {% endfor %}
     </ul>
+    </details>
   {% endfor %}
 </section>
 {% endfor %}
@@ -44,6 +46,23 @@
 <p class="sub">{{ t('shopping_note') }}</p>
 {% endif %}
 <script>
+(function () {
+  var folds = document.querySelectorAll('details[data-fold]');
+  function store(d) {
+    try { localStorage.setItem('smp-fold:' + d.dataset.fold, d.open ? '0' : '1'); } catch (e) {}
+  }
+  function done(d) {
+    var boxes = d.querySelectorAll('input[data-item]');
+    return boxes.length > 0 && Array.prototype.every.call(boxes, function (b) { return b.checked; });
+  }
+  folds.forEach(function (d) {
+    var saved = null;
+    try { saved = localStorage.getItem('smp-fold:' + d.dataset.fold); } catch (e) {}
+    d.open = saved === null ? !done(d) : saved === '0';
+    d.addEventListener('toggle', function () { store(d); });
+    d.addEventListener('change', function () { if (done(d) && d.open) d.open = false; });
+  });
+})();
 document.querySelectorAll('input[data-item]').forEach(function (b) {
   b.addEventListener('change', function () {
     var f = new FormData();

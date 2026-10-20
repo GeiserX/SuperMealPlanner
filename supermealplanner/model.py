@@ -393,6 +393,7 @@ class Settings(Loose):
     stores: dict[str, Store] = {}
     shopping: Shopping = Shopping()
     sections: dict[str, str] = {}  # optional labels for ingredient sections
+    section_order: list[str] = []  # section ids in the order a store is walked; the rest follow
     bot: Bot = Bot()
     llm: LLM = LLM()
     transcription: Transcription = Transcription()
