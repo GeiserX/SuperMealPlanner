@@ -312,6 +312,17 @@ bot_about_once: "⏰ Reminders\nWhen I tell you to do something at a time, I off
 bot_cmd_reminders: "The reminders to come, to cancel one"
 reminder_not_yours: "Only the household or whoever set it can cancel a reminder."
 
+# The phone apps (api.py): a code from here pairs one, and this is where they are taken away.
+bot_cmd_pair: "A code to connect the app on your phone"
+bot_cmd_devices: "The phones connected, to disconnect one"
+bot_pair_private_only: "Write to me in private for that: a code is a key, and here everyone would read it."
+bot_pair_code: "Code for the app: {code}\n\nType it in SuperMealPlanner on your phone. It lasts {minutes} minutes and works once. If someone else asks you for it, do not give it to them."
+bot_devices_head: "Phones connected:"
+bot_devices_row: "{id}. {name} — {who} · last used {seen}"
+bot_devices_none: "No phone is connected yet. /pair gives you a code."
+bot_devices_revoked: "Phone {id} disconnected. It stops working at once."
+bot_devices_unknown: "There is no connected phone {id}."
+
 tab_tasks: Tasks
 tasks_title: "Tasks · week of {date}"
 tasks_none_day: Nothing to do.

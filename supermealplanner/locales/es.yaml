@@ -166,7 +166,7 @@ plan_ready_week: "\nSemana del {date}\n🗓️ {week}\n🛒 {list}\n🍲 {batch}
 bot_pills_logged: "Apuntado: pastillas de la comida tomadas, {name}."
 
 # bot profile and presentation (/presentacion)
-bot_commands: {today: hoy, tomorrow: manana, week: semana, list: lista, batch: cocinar, weight: peso, waist: cintura, craving: antojo, water: agua, pills: pastillas, about: presentacion, reminders: recordatorios, help: ayuda, new: nuevo}
+bot_commands: {today: hoy, tomorrow: manana, week: semana, list: lista, batch: cocinar, weight: peso, waist: cintura, craving: antojo, water: agua, pills: pastillas, about: presentacion, reminders: recordatorios, help: ayuda, new: nuevo, pair: vincular, devices: dispositivos}
 bot_cmd_today: Las comidas de hoy y el plato de cada uno
 bot_cmd_tomorrow: Las comidas de mañana
 bot_cmd_week: El menú de la semana
@@ -310,6 +310,17 @@ ask_preapproved: "Aprobado al pulsar «En el calendario»:\n{summary}"
 bot_about_once: "⏰ Recordatorios\nCuando os digo que hagáis algo a una hora, os ofrezco un recordatorio con botones; si no respondéis, no hago nada. /recordatorios enseña los que hay y deja cancelarlos."
 bot_cmd_reminders: "Los recordatorios pendientes, para cancelarlos"
 reminder_not_yours: "Solo la casa o quien lo puso puede cancelar un recordatorio."
+
+# Las apps del móvil (api.py): aquí se pide el código que vincula una y aquí se quitan.
+bot_cmd_pair: "Un código para conectar la app del móvil"
+bot_cmd_devices: "Los móviles conectados, para desconectar alguno"
+bot_pair_private_only: "Para eso escríbeme por privado: el código es una llave y aquí lo leería todo el mundo."
+bot_pair_code: "Código para la app: {code}\n\nEscríbelo en SuperMealPlanner en tu móvil. Dura {minutes} minutos y sirve una vez. Si alguien te lo pide, no se lo des."
+bot_devices_head: "Móviles conectados:"
+bot_devices_row: "{id}. {name} — {who} · usado por última vez {seen}"
+bot_devices_none: "Todavía no hay ningún móvil conectado. Con /vincular te doy un código."
+bot_devices_revoked: "Móvil {id} desconectado. Deja de funcionar ahora mismo."
+bot_devices_unknown: "No hay ningún móvil conectado con el número {id}."
 
 tab_tasks: Tareas
 tasks_title: "Tareas · semana del {date}"

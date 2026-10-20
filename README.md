@@ -25,6 +25,7 @@ SuperMealPlanner is a self-hosted meal planner for a household that eats the sam
 - An assistant that remembers the conversation: one ongoing conversation per chat, `/new` to start over.
 - Change the menu from the chat: another dish for a day, two days swapped, a pause while you eat what is at home, the whole menu moved a week later, a new draw from a Monday. Each one can be undone.
 - Change settings from the chat: reminders, batch days, guests, foods to avoid and more, saved as a git commit you can revert. It can also change a recipe you already have and keep notes about each person. What you ask for is done at once; what the assistant suggests waits for your yes. When it tells you to do something at a time, it offers a reminder here or in your calendar, with buttons, and does nothing if you do not answer.
+- An iOS app for the family, and a JSON API for anyone else's client: a code from the bot pairs a phone, the token lives in its keychain, and the app and the web page share one plan, one shopping list and one set of ticks ([docs/api.md](docs/api.md)).
 - Bring your own AI: any OpenAI-compatible endpoint, Anthropic, or a plugin file that can keep the conversation.
 - Every string is translatable; English and Spanish ship today.
 - The assistant reads the shared assistant principles first, in English or Spanish (`supermealplanner/principles/`): twelve rules on whom it answers, buttons, offers, privacy and honest results. The app's own rules after them only add what is specific to meal planning. The files are copied unchanged from the shared text, and a test pins their hashes.
@@ -43,6 +44,7 @@ Open http://localhost:8080 and add it to your phone's home screen. The data fold
 
 - [Data format](docs/data-format.md): every file in the data folder, settings, store catalogues, reminders, AI and bot
 - [How it works](docs/how-it-works.md): the planner, portions, targets, the bot
+- [The app API](docs/api.md): pairing a phone, every route, and how to expose it without opening the pages
 
 ## Not medical advice
 

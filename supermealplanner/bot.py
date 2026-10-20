@@ -123,6 +123,10 @@ COMMANDS = {
     "cocinar": "batch",
     "reminders": "reminders",
     "recordatorios": "reminders",
+    "pair": "pair",
+    "vincular": "pair",
+    "devices": "devices",
+    "dispositivos": "devices",
 }
 USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")  # Telegram usernames (4-letter ones exist)
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
@@ -1816,6 +1820,8 @@ class Bot:
         "pills",
         "about",
         "reminders",
+        "pair",
+        "devices",
         "new",
         "help",
     )
@@ -2105,6 +2111,51 @@ class Bot:
             return err
         n = self.state.db.bump_water(who, self.state.today(), int(self._number(arg) or 1))
         return self.t("bot_logged_water", n=n, name=self.data.household.person(who).name)
+
+    async def cmd_pair(self, who, arg, user, chat=None) -> str:
+        """A code that pairs a phone app with this household, for ten minutes, once.
+
+        Private chat only. A code is a credential: in the group everyone present would read it,
+        guests included when bot.group_open is set.
+        """
+        if err := self._need_person(who, user):
+            return err
+        if (chat or {}).get("type") != "private":
+            return self.t("bot_pair_private_only")
+        from . import devices as dv
+
+        code, ttl = dv.make_code(self.state.db, who)
+        return self.t("bot_pair_code", code=dv.spaced(code), minutes=int(ttl // 60))
+
+    async def cmd_devices(self, who, arg, user, chat=None) -> str:
+        """The paired phones, and `/dispositivos quitar <n>` to take one away."""
+        if err := self._need_person(who, user):
+            return err
+        if (chat or {}).get("type") != "private":
+            return self.t("bot_pair_private_only")
+        names = {p.id: p.name for p in self.data.household.people}
+        word, _, rest = arg.strip().partition(" ")
+        if word.lower() in {"quitar", "remove", "revoke", "borrar"}:
+            n = self._number(rest)
+            if n is None:
+                return self.t("bot_bad_number")
+            if not self.state.db.revoke_device(int(n)):
+                return self.t("bot_devices_unknown", id=int(n))
+            return self.t("bot_devices_revoked", id=int(n))
+        rows = self.state.db.devices()
+        if not rows:
+            return self.t("bot_devices_none")
+        lines = [
+            self.t(
+                "bot_devices_row",
+                id=d["id"],
+                name=d["name"],
+                who=names.get(d.get("person") or "", "—"),
+                seen=(d.get("last_seen") or "—")[:16].replace("T", " "),
+            )
+            for d in rows
+        ]
+        return self.t("bot_devices_head") + "\n" + "\n".join(lines)
 
     async def cmd_pills(self, who, arg, user, chat=None) -> str:
         if err := self._need_person(who, user):
