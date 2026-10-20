@@ -119,6 +119,8 @@ COMMANDS = {
     "presentacion": "about",
     "new": "new",
     "nuevo": "new",
+    "batch": "batch",
+    "cocinar": "batch",
     "reminders": "reminders",
     "recordatorios": "reminders",
 }
@@ -1806,6 +1808,7 @@ class Bot:
         "tomorrow",
         "week",
         "list",
+        "batch",
         "weight",
         "waist",
         "craving",
@@ -2027,6 +2030,31 @@ class Bot:
             if store.total:
                 lines.append(t("shopping_total", total=t.money(store.total)))
         lines.append(self.url(f"/list?d={monday.isoformat()}"))
+        return "\n".join(lines)
+
+    async def cmd_batch(self, who, arg, user, chat=None) -> str:
+        t = self.t
+        today = self.state.today()
+        monday = today - dt.timedelta(days=today.weekday())
+        plan = plan_for(self.data, monday)
+        sessions = (
+            sorted(
+                (s for s in plan.sessions if monday <= s.date < monday + dt.timedelta(days=7)),
+                key=lambda s: (s.date, not s.morning),
+            )
+            if plan
+            else []
+        )
+        blocks = []
+        for s in sessions:
+            dishes = self.batch_text(self.data, plan, s.date, s)
+            if dishes:
+                when = t("batch_morning" if s.morning else "batch_afternoon")
+                blocks.append(t("batch_cook", date=t.date(s.date), when=when) + "\n\n" + dishes)
+        if not blocks:
+            return t("batch_none")
+        lines = [t("batch_title", date=t.date(monday, False)), *("\n" + b for b in blocks)]
+        lines.append(self.url(f"/batch?d={monday.isoformat()}"))
         return "\n".join(lines)
 
     def _need_person(self, who, user):

@@ -131,6 +131,7 @@ bot_help: |
   /hoy, /manana: las comidas del día y el plato de cada uno
   /semana: el menú de la semana
   /lista: la lista de la compra de esta semana
+  /cocinar: las sesiones de cocina de esta semana
   /peso 82.4 · /cintura 95 · /antojo 7 · /agua: apuntar lo tuyo
   /presentacion: todo lo que hago
   /recordatorios: los recordatorios pendientes, para cancelarlos
@@ -165,11 +166,12 @@ plan_ready_week: "\nSemana del {date}\n🗓️ {week}\n🛒 {list}\n🍲 {batch}
 bot_pills_logged: "Apuntado: pastillas de la comida tomadas, {name}."
 
 # bot profile and presentation (/presentacion)
-bot_commands: {today: hoy, tomorrow: manana, week: semana, list: lista, weight: peso, waist: cintura, craving: antojo, water: agua, pills: pastillas, about: presentacion, reminders: recordatorios, help: ayuda, new: nuevo}
+bot_commands: {today: hoy, tomorrow: manana, week: semana, list: lista, batch: cocinar, weight: peso, waist: cintura, craving: antojo, water: agua, pills: pastillas, about: presentacion, reminders: recordatorios, help: ayuda, new: nuevo}
 bot_cmd_today: Las comidas de hoy y el plato de cada uno
 bot_cmd_tomorrow: Las comidas de mañana
 bot_cmd_week: El menú de la semana
 bot_cmd_list: La lista de la compra de esta semana
+bot_cmd_batch: Lo que toca cocinar esta semana
 bot_cmd_weight: "Apuntar tu peso, p. ej. /peso 82,4"
 bot_cmd_waist: Apuntar tu cintura en cm
 bot_cmd_craving: Apuntar un antojo de 0 a 10

@@ -923,3 +923,24 @@ def test_the_defrost_reminder_links_the_recipe(data_dir, tmp_path):
     texts = [b.reminder_text(r, d.date) for d in plan.days[:-1]]
     texts = [x for x in texts if x]
     assert texts and all("https://meals.example/recipe/" in x for x in texts)
+
+
+def test_cocinar_command_and_batch_alias_share_a_handler(data_dir, tmp_path):
+    from supermealplanner import bot as botmod
+
+    assert botmod.COMMANDS["cocinar"] == botmod.COMMANDS["batch"] == "batch"
+    data = bot_data(data_dir)
+    data.settings.locale = "es"
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    text = run(b.cmd_batch("luis", "", {}))
+    assert f"/batch?d={MONDAY}" in text or text == b.t("batch_none")
+    calls = []
+
+    async def call(client, method, _tries=0, **params):
+        calls.append((method, params))
+        return True
+
+    b.call = call
+    run(b.sync_profile(None))
+    es = next(p for m, p in calls if m == "setMyCommands" and p.get("language_code") == "es")
+    assert "cocinar" in [c["command"] for c in es["commands"]]
