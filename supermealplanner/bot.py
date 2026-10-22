@@ -251,6 +251,12 @@ class Bot:
                 API.format(token=self.token, method=method), json=params, timeout=70
             )
             body = r.json()
+        except httpx.ConnectError as e:
+            # The request never reached Telegram, so sending it again cannot post it twice.
+            if method != "getUpdates" and _tries < 2:
+                await asyncio.sleep(2 * (_tries + 1))
+                return await self.call(client, method, _tries + 1, **params)
+            raise TelegramError(method, safe(e)) from None
         except (httpx.HTTPError, ValueError) as e:
             raise TelegramError(method, safe(e)) from None
         if body.get("ok"):
@@ -1761,7 +1767,10 @@ class Bot:
                 llm.act(self.data, pending["proposal"]), timeout=ACT_TIMEOUT
             )
             if out.text:
-                await self.send(client, chat_id, out.text, reply_to)
+                try:
+                    await self.send(client, chat_id, out.text, reply_to)
+                except TelegramError as e:  # what follows still runs: the work is already done
+                    log.warning("could not say how a proposal went: %s", safe(e))
             for proposal in out.proposals:
                 await self.offer(
                     client, chat_id, reply_to, pending["asker"], pending.get("user"), proposal

@@ -7,6 +7,7 @@ import re
 import subprocess
 import time
 
+import httpx
 import pytest
 import yaml
 
@@ -915,6 +916,58 @@ def test_a_step_that_changes_nothing_runs_at_once_and_offers_what_follows(data_d
     assert db.get_kv("bot.waiting.-100")[0]["asker"] == "luis"
     run(b.handle(None, msg("yes", user=8, **TO_BOT)))
     assert [a["id"] for a in acts(data_dir)] == ["j1:1", "j2:1"]
+
+
+def test_what_follows_a_step_runs_even_when_its_message_cannot_be_sent(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    sent = b.call
+
+    async def call(client, method, _tries=0, **params):
+        if params.get("text") == "Server merged.":
+            raise TelegramError(method, "ConnectError")
+        return await sent(client, method, _tries, **params)
+
+    b.call = call
+    follow = offer(id="j2:1", summary="Now the phone.", confirm_by="none")
+    draft = offer(
+        confirm_by="none",
+        summary="Drafting it.",
+        then={"text": "Server merged.", "proposals": [follow]},
+    )
+    reply(data_dir, text="On it.", proposals=[draft])
+    settle(b, msg("@chefbot cambia el código"))
+    assert [a["id"] for a in acts(data_dir)] == ["j1:1", "j2:1"]
+    assert "Now the phone." in ChatBot.texts(b, -100)
+
+
+def test_a_send_that_never_reached_telegram_is_tried_again(data_dir, tmp_path, monkeypatch):
+    b = Bot(FakeState(bot_data(data_dir), DB(tmp_path / "b.db"), MONDAY))
+    b.token = "x"
+    tries = []
+
+    def answer(request):
+        tries.append(request.url.path)
+        if len(tries) < 3:
+            raise httpx.ConnectError("unreachable")
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 7}})
+
+    async def no_wait(s):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as c:
+            got = await b.call(c, "sendMessage", chat_id=1, text="hola")
+            tries.clear()
+            with pytest.raises(TelegramError):
+                await b.call(c, "getUpdates")  # its own loop asks again; never twice here
+            return got
+
+    assert run(go()) == {"message_id": 7}
+    assert len(tries) == 1
 
 
 def test_strangers_start_nothing_and_a_failed_step_is_said(data_dir, tmp_path):
