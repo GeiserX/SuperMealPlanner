@@ -121,6 +121,11 @@ def test_a_spoken_yes_settles_what_waits_for_that_person(chef, data_dir):
     assert got == {"id": got["id"], "state": "done", "text": b.t("menu_applied")}
     assert paused_days(b.state.data) == {D(i) for i in range(1, 7)}
     assert len(turns(data_dir)) == 1  # the yes never went to the AI, as a typed one does not
+    deadline = time.monotonic() + 5  # the group's copy of the yes, by name, with what it did
+    while len(sent(b, -100)) < 2:
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    assert sent(b, -100)[-1]["text"] == f"🎙️ Luis (by voice): Yes.\n\n{b.t('menu_applied')}"
     assert sent(b)[-2]["text"] == "🎙️ Yes."
 
 
