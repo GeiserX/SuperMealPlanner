@@ -20,6 +20,7 @@ The token itself and how it is granted: `devices.py`.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 
 from fastapi import APIRouter, HTTPException, Request
@@ -40,6 +41,7 @@ from .portions import (
 from .targets import evaluate, trend
 
 API_VERSION = 1
+CHEF_WAIT_MAX = 25  # the longest one GET /chef/{id} holds, so no client's request times out
 
 
 def _day(raw: str | None, today: dt.date) -> dt.date:
@@ -538,5 +540,54 @@ def router(state) -> APIRouter:
                 }
             )
         return {"today": today.isoformat(), "people": out}
+
+    # ---------------------------------------------------------------- talking to the chef
+    def chef_bot(row: dict):
+        """The running bot and the device's person, who must have a private chat with it."""
+        bot = state.bot
+        if bot is None or not bot.started or bot.client is None:
+            raise HTTPException(503, "the bot is not running here")
+        person = row.get("person")
+        uid = state.data.settings.bot.people.get(person or "")
+        if uid is None:
+            raise HTTPException(409, "this device's person has no Telegram user in bot.people")
+        if not bot.allowed({"type": "private", "id": uid}, uid):
+            raise HTTPException(409, "private chats with the bot are turned off")
+        return bot, person
+
+    def spoken_out(s) -> dict:
+        out = {"id": s.id, "state": s.state}
+        if s.state != "thinking":
+            out["text"] = s.answer
+        return out
+
+    @api.post("/chef", status_code=202)
+    async def chef(body: dict, request: Request):
+        """Say something to the chef: it goes into the person's private chat with the bot, as if
+        typed there. The answer comes from GET /chef/{id}. Async: the turn starts on the loop the
+        bot runs on."""
+        row = device(request)
+        bot, person = chef_bot(row)
+        text = " ".join(str(body.get("text") or "").split()).lstrip("/").strip()
+        if not text:
+            raise HTTPException(400, "text is required")
+        return spoken_out(bot.say(person, text))
+
+    @api.get("/chef/{sid}")
+    async def chef_answer(sid: str, request: Request, wait: float = 0):
+        """The answer to what was said, as soon as it exists: holds up to `wait` seconds (at most
+        CHEF_WAIT_MAX) while the chef thinks. Only the person who said it can read it."""
+        row = device(request)
+        bot = state.bot
+        spoken = bot.spoken_for(sid, row.get("person")) if bot is not None else None
+        if spoken is None:
+            raise HTTPException(404, "no such turn")
+        wait = max(0.0, min(float(wait), CHEF_WAIT_MAX))
+        if spoken.state == "thinking" and wait:
+            try:
+                await asyncio.wait_for(spoken.ready.wait(), wait)
+            except TimeoutError:
+                pass
+        return spoken_out(spoken)
 
     return api

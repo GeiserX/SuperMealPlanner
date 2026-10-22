@@ -45,6 +45,7 @@ LEGACY = {"/semana": "/week", "/lista": "/list", "/registro": "/log", "/progreso
 class App:
     def __init__(self, root: Path):
         self.root = root
+        self.bot = None  # the running Telegram bot, which the app's spoken turns go through
         self.reload()
 
     def reload(self) -> None:
@@ -67,12 +68,14 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         if state.data.settings.bot.enabled and os.environ.get("SMP_BOT", "1") == "1":
             from .bot import Bot
 
-            tasks.append(asyncio.create_task(_guard(Bot(state).run(), "bot")))
+            state.bot = Bot(state)
+            tasks.append(asyncio.create_task(_guard(state.bot.run(), "bot")))
         yield
         for task in tasks:
             task.cancel()
 
     app = FastAPI(title="SuperMealPlanner", version=__version__, lifespan=lifespan, docs_url=None)
+    app.state.smp = state  # the running App, for tests that drive it from outside
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     tpl = Jinja2Templates(directory=HERE / "templates")
 
