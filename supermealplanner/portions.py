@@ -339,6 +339,16 @@ def shopping_list(data: Data, db: DB, plan: Plan, monday: dt.date, t=None, view:
     return Shopping(view=view, stores=stores, views=views, labels=labels, have=have)
 
 
+def ticked_last(lines: list, ticked: list[str]) -> list:
+    """A section's lines: what is still to buy in its usual order, then the ticked ones as ticked."""
+    order = {item: n for n, item in enumerate(ticked)}
+    left = [x for x in lines if x.ingredient.id not in order]
+    done = sorted(
+        (x for x in lines if x.ingredient.id in order), key=lambda x: order[x.ingredient.id]
+    )
+    return left + done
+
+
 # ---------------------------------------------------------------- batch sheets
 
 

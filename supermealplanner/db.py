@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS pair_code (
 
 HAVE = "shop.have"  # ingredient ids the household has at home: left off every list until re-added
 TICKED = "shop.ticked"  # {monday: [ingredient ids]} ticked that week, in tick order, on every phone
+TICKED_AT = "shop.ticked_at"  # {monday: {ingredient id: when it was ticked}}, beside TICKED
 TICKED_WEEKS = 8
 
 
@@ -396,12 +397,30 @@ class DB:
         """The week's ticked items, the first ticked first."""
         return list((self.get_kv(TICKED) or {}).get(monday.isoformat(), []))
 
-    def tick(self, monday: dt.date, ingredient: str, on: bool) -> None:
+    def tick_times(self, monday: dt.date) -> dict[str, str]:
+        """When each of the week's ticked items was ticked, as ISO 8601 in UTC.
+
+        A tick from before these times were kept has none and is left out.
+        """
+        times = (self.get_kv(TICKED_AT) or {}).get(monday.isoformat(), {})
+        return {i: times[i] for i in self.tick_order(monday) if i in times}
+
+    def tick(
+        self, monday: dt.date, ingredient: str, on: bool, at: dt.datetime | None = None
+    ) -> None:
+        week = monday.isoformat()
         weeks = self.get_kv(TICKED) or {}
-        now = [i for i in weeks.get(monday.isoformat(), []) if i != ingredient]
-        weeks[monday.isoformat()] = now + [ingredient] if on else now
+        now = [i for i in weeks.get(week, []) if i != ingredient]
+        weeks[week] = now + [ingredient] if on else now
         keep = sorted(weeks)[-TICKED_WEEKS:]  # old weeks are never looked at again
         self.set_kv(TICKED, {k: weeks[k] for k in keep})
+        times = self.get_kv(TICKED_AT) or {}
+        mine = {i: t for i, t in times.get(week, {}).items() if i != ingredient}
+        if on:
+            when = (at or dt.datetime.now(dt.UTC)).astimezone(dt.UTC)
+            mine[ingredient] = when.isoformat(timespec="seconds")
+        times[week] = mine
+        self.set_kv(TICKED_AT, {k: times[k] for k in keep if k in times})
 
     # paired phones (see devices.py: this class only stores what that module decides)
     def add_device(self, name: str, person: str | None, token_hash: str, now: dt.datetime) -> int:
