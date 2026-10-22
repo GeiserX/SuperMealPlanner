@@ -30,6 +30,7 @@ from .portions import (
     person_days,
     plate,
     shopping_list,
+    ticked_last,
 )
 from .scheduler import tick
 from .targets import current_kcal, day_factor, evaluate, reason_text, trend
@@ -478,16 +479,6 @@ def create_app(root: str | Path | None = None) -> FastAPI:
 
     app.state.smp = state
     return app
-
-
-def ticked_last(lines: list, ticked: list[str]) -> list:
-    """A section's lines: what is still to buy in its usual order, then the ticked ones as ticked."""
-    order = {item: n for n, item in enumerate(ticked)}
-    left = [x for x in lines if x.ingredient.id not in order]
-    done = sorted(
-        (x for x in lines if x.ingredient.id in order), key=lambda x: order[x.ingredient.id]
-    )
-    return left + done
 
 
 def _per_session(sessions: list, sheet: list) -> list:

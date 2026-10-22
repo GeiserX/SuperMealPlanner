@@ -430,3 +430,54 @@ def test_every_route_but_ping_and_pair_asks_for_a_token(client):
                 assert "pair this device first" in r.text, route.path
                 checked += 1
     assert open_paths <= seen and checked >= 14, (sorted(seen), checked)
+
+
+def test_the_list_sends_each_section_still_to_buy_first_and_ticked_last_with_when(client, data_dir):
+    h = auth(pair(client, data_dir)["token"])
+    shop = client.get(f"/api/v1/list?d={MONDAY}", headers=h).json()
+    sec = next(s for st in shop["stores"] for s in st["sections"] if len(s["lines"]) >= 3)
+    usual = [x["ingredient"] for x in sec["lines"]]
+    assert [x["position"] for x in sec["lines"]] == list(range(len(usual)))
+    assert not any(x["ticked"] or x["ticked_at"] for x in sec["lines"])
+    first, middle = usual[0], usual[1]
+    for ing in (middle, first):
+        r = client.post(
+            "/api/v1/list/tick", json={"ingredient": ing, "on": True, "d": str(MONDAY)}, headers=h
+        ).json()
+    assert r["ticked_order"] == [middle, first] and set(r["ticked_at"]) == {middle, first}
+    dt.datetime.fromisoformat(r["ticked_at"][first])
+    # MUT: send the lines in their usual order → the ticked ones stay on top.
+    lines = next(
+        s
+        for st in client.get(f"/api/v1/list?d={MONDAY}", headers=h).json()["stores"]
+        for s in st["sections"]
+        if s["section"] == sec["section"]
+    )["lines"]
+    assert [x["ingredient"] for x in lines] == usual[2:] + [middle, first]
+    assert [x["position"] for x in lines[-2:]] == [1, 0]
+    assert lines[-1]["ticked"] and lines[-1]["ticked_at"] == r["ticked_at"][first]
+    assert not lines[0]["ticked"] and lines[0]["ticked_at"] is None
+    # unticked from the web page: back to its place, its time gone, and the phone's poll sees it
+    assert (
+        client.post("/list/tick", data={"week": str(MONDAY), "item": middle, "on": "0"}).status_code
+        == 200
+    )
+    polled = client.get(f"/api/v1/list/ticks?d={MONDAY}", headers=h).json()
+    assert polled["ticked_order"] == [first] and list(polled["ticked_at"]) == [first]
+    lines = next(
+        s
+        for st in client.get(f"/api/v1/list?d={MONDAY}", headers=h).json()["stores"]
+        for s in st["sections"]
+        if s["section"] == sec["section"]
+    )["lines"]
+    assert [x["ingredient"] for x in lines] == usual[1:] + [first]
+    assert client.get(f"/api/v1/list/ticks?d={MONDAY}").status_code == 401
+
+
+def test_the_time_of_a_tick_is_kept_and_forgotten_with_it(data_dir):
+    db = db_of(data_dir)
+    at = dt.datetime(2026, 1, 5, 18, 30, tzinfo=dt.UTC)
+    db.tick(MONDAY, "pollo", True, at=at)
+    assert db.tick_times(MONDAY) == {"pollo": "2026-01-05T18:30:00+00:00"}
+    db.tick(MONDAY, "pollo", False)
+    assert db.tick_times(MONDAY) == {}

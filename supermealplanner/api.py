@@ -35,6 +35,7 @@ from .portions import (
     person_days,
     plate,
     shopping_list,
+    ticked_last,
 )
 from .targets import evaluate, trend
 
@@ -90,6 +91,36 @@ def _line(x) -> dict:
         "product": getattr(pick, "name", None),
         "packs": getattr(pick, "packs", None),
         "price": getattr(pick, "price", None),
+    }
+
+
+def _section(lines: list, order: list[str], times: dict[str, str]) -> list[dict]:
+    """A section's lines as the page shows them: still to buy first, then ticked, first ticked first.
+
+    `position` is the line's place in the section's usual order, so an app can put an unticked
+    line back where it belongs without asking again.
+    """
+    pos = {x.ingredient.id: n for n, x in enumerate(lines)}
+    done = set(order)
+    return [
+        _line(x)
+        | {
+            "position": pos[x.ingredient.id],
+            "ticked": x.ingredient.id in done,
+            "ticked_at": times.get(x.ingredient.id),
+        }
+        for x in ticked_last(lines, order)
+    ]
+
+
+def _ticks(db, m: dt.date) -> dict:
+    """The week's ticks: the ids sorted (as ever), in tick order, and when each was ticked."""
+    order = db.tick_order(m)
+    return {
+        "monday": m.isoformat(),
+        "ticked": sorted(order),
+        "ticked_order": order,
+        "ticked_at": db.tick_times(m),
     }
 
 
@@ -372,6 +403,7 @@ def router(state) -> APIRouter:
         m = _monday(_day(d, state.today()))
         plan = plan_for(state.data, m)
         shop = shopping_list(state.data, state.db, plan, m, t, view=store) if plan else None
+        ticks = _ticks(state.db, m)
         return {
             "monday": m.isoformat(),
             "view": store,
@@ -384,15 +416,27 @@ def router(state) -> APIRouter:
                     "total": round(s.total, 2),
                     "unpriced": s.unpriced,
                     "sections": [
-                        {"section": sec, "lines": [_line(x) for x in lines]}
+                        {
+                            "section": sec,
+                            "lines": _section(lines, ticks["ticked_order"], ticks["ticked_at"]),
+                        }
                         for sec, lines in s.sections.items()
                     ],
                 }
                 for s in (shop.stores if shop else [])
             ],
-            "ticked": sorted(state.db.ticked(m)),
+            "ticked": ticks["ticked"],
+            "ticked_order": ticks["ticked_order"],
+            "ticked_at": ticks["ticked_at"],
             "have": sorted(state.db.have()),
         }
+
+    @api.get("/list/ticks")
+    def ticks(request: Request, d: str | None = None):
+        """Only the week's ticks: cheap enough for an open list to ask every few seconds, so a tick
+        made on another phone or on the web page shows without reloading the whole list."""
+        device(request)
+        return {"ok": True} | _ticks(state.db, _monday(_day(d, state.today())))
 
     @api.post("/list/tick")
     def tick(body: dict, request: Request):
@@ -403,7 +447,7 @@ def router(state) -> APIRouter:
             raise HTTPException(400, "ingredient is required")
         m = _monday(_day(body.get("d"), state.today()))
         state.db.tick(m, ingredient, bool(body.get("on", True)))
-        return {"ok": True, "monday": m.isoformat(), "ticked": sorted(state.db.ticked(m))}
+        return {"ok": True} | _ticks(state.db, m)
 
     @api.post("/list/have")
     def have(body: dict, request: Request):
