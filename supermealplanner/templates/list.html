@@ -20,8 +20,8 @@
     <details class="fold" open data-fold="{{ monday }}/{{ sl.id }}/{{ section }}">
     <summary><h3>{{ section_label(section) }}</h3></summary>
     <ul class="check">
-    {% for line in lines %}
-      <li><label><input type="checkbox" data-item="{{ line.ingredient.id }}"{{ ' checked' if line.ingredient.id in ticked }}>
+    {% for line in ticked_last(lines, ticked) %}
+      <li data-pos="{{ lines.index(line) }}"><label><input type="checkbox" data-item="{{ line.ingredient.id }}"{{ ' checked' if line.ingredient.id in ticked }}>
         <span class="name">{% if line.pick %}{% if line.pick.product.url %}<a href="{{ line.pick.product.url }}" target="_blank" rel="noopener">{{ line.pick.text(t) }}</a>{% else %}{{ line.pick.text(t) }}{% endif %}<br><small>{{ line.ingredient.name }} · {{ line.amount }}</small>{% else %}{{ line.ingredient.name }}{% endif %}
         {% if line.alternative %}<br><small class="alt">{{ t('shopping_alt', store=shop.labels.get(line.alternative.store, line.alternative.store), product=line.alternative.text(t)) }}</small>{% endif %}</span>
         {% if not line.pick %}<span class="qty">{{ line.amount }}</span>{% endif %}</label>
@@ -63,12 +63,26 @@
     d.addEventListener('change', function () { if (done(d) && d.open) d.open = false; });
   });
 })();
+function place(b) {
+  // ticked lines go to the bottom of their section as ticked; an unticked one goes back to its place
+  var li = b.closest('li'), ul = li.parentNode;
+  if (b.checked) { ul.appendChild(li); return; }
+  var pos = +li.dataset.pos, next = null;
+  Array.prototype.some.call(ul.children, function (o) {
+    var x = o.querySelector('input[data-item]');
+    if (o !== li && (x.checked || +o.dataset.pos > pos)) { next = o; return true; }
+    return false;
+  });
+  ul.insertBefore(li, next);
+}
+function undo(b) { b.checked = !b.checked; place(b); }
 document.querySelectorAll('input[data-item]').forEach(function (b) {
   b.addEventListener('change', function () {
+    place(b);
     var f = new FormData();
     f.append('week', '{{ monday }}'); f.append('item', b.dataset.item); f.append('on', b.checked ? '1' : '0');
-    fetch('/list/tick', {method: 'POST', body: f}).then(function (r) { if (!r.ok) b.checked = !b.checked; })
-      .catch(function () { b.checked = !b.checked; });
+    fetch('/list/tick', {method: 'POST', body: f}).then(function (r) { if (!r.ok) undo(b); })
+      .catch(function () { undo(b); });
   });
 });
 </script>
