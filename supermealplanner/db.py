@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS pair_code (
 """
 
 HAVE = "shop.have"  # ingredient ids the household has at home: left off every list until re-added
-TICKED = "shop.ticked"  # {monday: [ingredient ids]} ticked that week, the same on every phone
+TICKED = "shop.ticked"  # {monday: [ingredient ids]} ticked that week, in tick order, on every phone
 TICKED_WEEKS = 8
 
 
@@ -390,13 +390,16 @@ class DB:
         self.set_kv(HAVE, sorted(have))
 
     def ticked(self, monday: dt.date) -> set[str]:
-        return set((self.get_kv(TICKED) or {}).get(monday.isoformat(), []))
+        return set(self.tick_order(monday))
+
+    def tick_order(self, monday: dt.date) -> list[str]:
+        """The week's ticked items, the first ticked first."""
+        return list((self.get_kv(TICKED) or {}).get(monday.isoformat(), []))
 
     def tick(self, monday: dt.date, ingredient: str, on: bool) -> None:
         weeks = self.get_kv(TICKED) or {}
-        now = set(weeks.get(monday.isoformat(), []))
-        now = now | {ingredient} if on else now - {ingredient}
-        weeks[monday.isoformat()] = sorted(now)
+        now = [i for i in weeks.get(monday.isoformat(), []) if i != ingredient]
+        weeks[monday.isoformat()] = now + [ingredient] if on else now
         keep = sorted(weeks)[-TICKED_WEEKS:]  # old weeks are never looked at again
         self.set_kv(TICKED, {k: weeks[k] for k in keep})
 

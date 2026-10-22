@@ -210,3 +210,31 @@ def test_the_list_page_folds_each_section(data_dir, data, monkeypatch):
     c, _ = _app(data_dir, data, monkeypatch)
     html = c.get(f"/list?d={MONDAY}").text
     assert "<details" in html and "data-fold=" in html and "smp-fold:" in html
+
+
+def test_ticked_lines_go_to_the_bottom_of_their_section_in_the_order_they_were_ticked(
+    data_dir, data, monkeypatch
+):
+    import re
+
+    c, _ = _app(data_dir, data, monkeypatch)
+
+    def sections(page: str) -> list[list[str]]:
+        uls = re.findall(r'<ul class="check">(.*?)</ul>', page, re.DOTALL)
+        return [re.findall(r'data-item="([^"]+)"', u) for u in uls]
+
+    def tick(item: str, on: str = "1") -> None:
+        c.post("/list/tick", data={"week": MONDAY.isoformat(), "item": item, "on": on})
+
+    with c:
+        usual = next(s for s in sections(c.get(f"/list?d={MONDAY}").text) if len(s) >= 3)
+        a, b, *rest = usual
+        tick(b)
+        tick(a)
+        # MUT: keep the usual order → the ticked lines stay on top of what is still to buy.
+        page = TestClient(c.app).get(f"/list?d={MONDAY}").text  # another phone sees the same
+        assert next(s for s in sections(page) if set(s) == set(usual)) == [*rest, b, a]
+        tick(b, "0")
+        page = c.get(f"/list?d={MONDAY}").text
+        assert next(s for s in sections(page) if set(s) == set(usual)) == [b, *rest, a]
+        assert "data-pos=" in page and "place(b)" in page

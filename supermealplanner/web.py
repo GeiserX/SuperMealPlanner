@@ -224,7 +224,8 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 monday=m,
                 shop=shop,
                 store=store,
-                ticked=state.db.ticked(m),
+                ticked=state.db.tick_order(m),
+                ticked_last=ticked_last,
                 prev=m - dt.timedelta(days=7),
                 next=m + dt.timedelta(days=7),
             ),
@@ -477,6 +478,16 @@ def create_app(root: str | Path | None = None) -> FastAPI:
 
     app.state.smp = state
     return app
+
+
+def ticked_last(lines: list, ticked: list[str]) -> list:
+    """A section's lines: what is still to buy in its usual order, then the ticked ones as ticked."""
+    order = {item: n for n, item in enumerate(ticked)}
+    left = [x for x in lines if x.ingredient.id not in order]
+    done = sorted(
+        (x for x in lines if x.ingredient.id in order), key=lambda x: order[x.ingredient.id]
+    )
+    return left + done
 
 
 def _per_session(sessions: list, sheet: list) -> list:
