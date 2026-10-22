@@ -66,6 +66,8 @@ not expire; it ends when someone takes the phone away with `/devices` (`/disposi
 | `POST /rate` | `{"recipe", "vote": 1 \| -1 \| 0, "person"?}` |
 | `POST /log` | `{"kg"?, "waist_cm"?, "hunger"?, "craving"?, "nausea"?, "water"?, "binge"?, "stool"?, "pills_lunch"?, "note"?, "person"?, "day"?}` — the Log page as JSON. Numbers out of range are clamped, as the page does; an impossible weight is a `400` |
 | `GET /progress` | Each person's last readings, the smoothed trend, the current target and the flags, already in the household's language |
+| `POST /chef` | `{"text"}`: say something to the chef, as if typed in your private chat with the bot. Answers `202` with `{"id", "state"}` at once (see below) |
+| `GET /chef/{id}?wait=` | The answer to it: holds up to `wait` seconds (25 at most) until it exists. `{"id", "state": "thinking"}`, then `{"id", "state": "done" \| "failed", "text"}` |
 | `GET /devices` | Every paired phone, with `this` marking the caller |
 | `DELETE /devices/{id}` | Unpair one |
 
@@ -94,6 +96,57 @@ phone on the kitchen counter can log for everybody. It may not name anyone else:
 
 `d` is a date as `YYYY-MM-DD` and defaults to today in the household's timezone. Anything else is a
 `400` saying so, never a stack trace.
+
+## Talking to the chef by voice
+
+Any client that can turn speech into text (an iOS Shortcut with "Dictate text", a watch app, a
+car) can talk to the household's bot and read its answer out. It is the same bot and the same
+conversation as the Telegram chat, not a second assistant:
+
+- What is said goes into the private chat between the bot and the person the device is paired to.
+  The chat shows it as "🎙️ …", then the bot's answer as usual, so the conversation reads the same
+  whichever way it was had.
+- It runs through the path a typed private message takes: messages sent together are answered
+  together, a change the person asked for is made at once, and a change that waits for their yes
+  is settled by a spoken "yes" or "no" exactly as a typed one is. A proposal only an admin may
+  approve still waits for an admin in the group.
+- The AI is told the message was spoken and answers in a few plain sentences. The `text` the API
+  returns is made to be read out: no Markdown, links, code or emojis; choices come as "You can say:
+  A, B or C"; a change that waits says "Say yes or no"; reminder offers are one sentence pointing to
+  Telegram, where their buttons are.
+
+A turn is two calls, so no request has to stay open while the AI thinks:
+
+```http
+POST /api/v1/chef
+Authorization: Bearer <token>
+{"text": "what's for dinner tonight?"}
+```
+
+```json
+{"id": "q3Yx0b1VZt2mJw9C", "state": "thinking"}
+```
+
+```http
+GET /api/v1/chef/q3Yx0b1VZt2mJw9C?wait=25
+```
+
+```json
+{"id": "q3Yx0b1VZt2mJw9C", "state": "done", "text": "Tonight it is baked hake with a salad."}
+```
+
+While the answer is not there, `GET` returns `{"state": "thinking"}` after `wait` seconds (25 at
+most, so a client's request never times out): ask again until the state is `done` or `failed`.
+`failed` still carries a `text` to read out ("I could not answer that…"). Only the person who said it
+can read a turn; anyone else, an unknown id or a turn older than an hour gets `404`. `409` means the
+device's person has no Telegram user in `bot.people` (or private chats are off), and `503` that the
+bot is not running on this server.
+
+```sh
+id=$(curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"text": "what is for dinner?"}' https://comidas-api.example.com/api/v1/chef | jq -r .id)
+curl -s -H "Authorization: Bearer $TOKEN" "https://comidas-api.example.com/api/v1/chef/$id?wait=25"
+```
 
 ## Rules the apps rely on
 

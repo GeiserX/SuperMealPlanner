@@ -340,3 +340,13 @@ shopping_have_back: Put back on the list
 reminder_day: "📅 Today, {date}:"
 bot_upgraded: "Now running version {version} (was {previous})."
 bot_upgraded_first: "Now running version {version}."
+# talking to the chef from the app (POST /api/v1/chef): what the chat shows, what is read out
+voice_heard: "🎙️ {text}"
+voice_options: "You can say: {choices}."
+voice_or: " or "
+voice_arrow: " to "
+voice_change_confirm: "Shall I make this change?\n{lines}\nSay yes or no."
+voice_proposal_confirm: "Shall I do it?\n{summary}\nSay yes or no."
+voice_ask: "This needs a yes in Telegram: {summary}"
+voice_reminders: "I have offered reminders for it in Telegram; tap there if you want them."
+voice_failed: "I could not answer that. Try again in a minute."

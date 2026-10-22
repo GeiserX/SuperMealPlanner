@@ -171,6 +171,11 @@ REMIND = "bot.remind"  # reminders offered with buttons and not yet settled, acr
 REMIND_TTL = 1800  # an offer can be tapped this long; then nothing is done
 REMIND_DAYS = 60  # the furthest ahead a reminder may be
 LATE_S = 600  # a reminder posted this much after its time says so
+# A spoken turn from the app (POST /api/v1/chef): the message it becomes carries its id under this
+# key, which no Telegram message has. Its answer is kept this long for the app to read.
+SPOKEN = "_spoken"
+SPOKEN_TTL = 3600
+SPOKEN_MAX = 2000  # the longest thing anyone says in one go, as characters
 
 
 @dataclass
@@ -187,6 +192,21 @@ class Item:
     grant: dict | None = None
     # a photo or a file it carries, fetched when its turn starts {"file_id", "name", "mime", "size"}
     file: dict | None = None
+
+
+@dataclass
+class Spoken:
+    """Something said to the app, on its way through the person's private chat with the bot."""
+
+    id: str
+    person: str
+    uid: int  # their Telegram user id, which is also their private chat with the bot
+    text: str
+    ts: float = field(default_factory=time.time)
+    state: str = "thinking"  # then "done", or "failed" when nothing answered it
+    answer: str = ""  # what the bot said, cleaned to be read out
+    row: int | None = None  # its row in the chat log, once it is queued for an answer
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass
@@ -235,6 +255,11 @@ class Bot:
         self.asks: dict[str, dict] = {}  # open asks of the provider, by key
         self.resting: dict[int, float] = {}  # chat -> clock() its answer waits for (busy provider)
         self.told_busy: set[int] = set()  # chats told of the wait, until an answer goes out
+        self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
+        self.spoken: dict[str, Spoken] = {}  # what was said to the app, by turn id
+        self.spoken_rows: dict[int, str] = {}  # chat log row -> the spoken turn it is
+        # chat -> lists that each collect what the bot says in it, while a turn listens
+        self.hearing: dict[int, list[list[str]]] = {}
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -301,10 +326,13 @@ class Bot:
         who: str | None = None,
         ids: list[int] | None = None,
         buttons: list[list[tuple[str, str]]] | None = None,
+        spoken: str | None = None,
     ) -> int | None:
         """markdown: the text is the AI's Markdown, sent as Telegram HTML; a chunk Telegram refuses
         to parse goes again as plain text. Returns the id of the last message sent; `ids` collects
-        the id of every piece. buttons: rows of (label, callback data), under the last piece."""
+        the id of every piece. buttons: rows of (label, callback data), under the last piece.
+        spoken: what a spoken turn listening in this chat hears instead of `text` ("" for
+        nothing), when the message only makes sense on a screen (buttons to tap)."""
         sent = None
         chunks = list(_chunks(text, fences=markdown))
         for n, chunk in enumerate(chunks):
@@ -333,6 +361,10 @@ class Bot:
                 ids.append(sent["message_id"])
         if record:
             self.state.db.add_chat(chat_id, "assistant", who, text)
+        heard = text if spoken is None else spoken
+        for ears in self.hearing.get(chat_id, ()):
+            if heard:
+                ears.append(heard)
         return sent.get("message_id") if isinstance(sent, dict) else None
 
     async def announce_version(self, client) -> None:
@@ -430,6 +462,7 @@ class Bot:
         while True:
             try:
                 async with httpx.AsyncClient() as client:
+                    self.client = client
                     await self.call(
                         client, "deleteWebhook"
                     )  # polling and a webhook exclude each other
@@ -843,7 +876,11 @@ class Bot:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
         log_mid False: the answer replies to msg, but the log row is not that message (an edit's
-        correction), so an edit of msg still finds msg's own row."""
+        correction), so an edit of msg still finds msg's own row. A spoken turn from the app is
+        marked "[voice]" for the AI, which then answers for the ear (context.WHO)."""
+        spoken = self.spoken.get((msg or {}).get(SPOKEN) or "")
+        if spoken is not None:
+            text = f"[voice] {text}"
         row = self.state.db.add_chat(
             chat_id,
             "user",
@@ -853,6 +890,9 @@ class Bot:
             asked=asked,
         )
         if asked:
+            if spoken is not None:
+                spoken.row = row
+                self.spoken_rows[row] = spoken.id
             mid = (msg or {}).get("message_id")
             item = Item(row, mid, user.get("id"), who, self.clock(), grant, file)
             with self.qlock:
@@ -881,8 +921,12 @@ class Bot:
                     rows = self.state.db.chat_rows(
                         chat_id, self.data.settings.bot.history, self.data.settings.bot.history_days
                     )
+                    # what the bot says in the chat during the turn is what a spoken turn hears
+                    ears: list[str] = []
+                    self.hearing.setdefault(chat_id, []).append(ears)
+                    covered = None
                     try:
-                        await self.ask(client, chat_id, items, rows)
+                        covered = await self.ask(client, chat_id, items, rows)
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:  # noqa: BLE001  the next turn of the chat still runs
@@ -897,11 +941,95 @@ class Bot:
                             )
                         except Exception as e2:  # noqa: BLE001
                             log.warning("could not send the error reply: %s", safe(e2))
+                    finally:
+                        self._unhear(chat_id, ears)
+                    self.answered(items, covered, ears)
                     # the turn ended (a cancelled one did not: a stop keeps its messages queued)
                     with self.qlock:
                         self.queued(chat_id)
         finally:
             self.driving.discard(chat_id)
+
+    # ------------------------------------------------------------- spoken turns (the app)
+    def say(self, person: str, text: str) -> Spoken:
+        """Something `person` said to the app: it goes into their private chat with the bot as if
+        typed there, so it is the same conversation with the same rules. Returns at once; the
+        answer arrives on the Spoken (hear)."""
+        self._forget_spoken()
+        uid = self.data.settings.bot.people[person]
+        spoken = Spoken(secrets.token_urlsafe(12), person, uid, text[:SPOKEN_MAX])
+        self.spoken[spoken.id] = spoken
+        self.spawn(self.hear(spoken))
+        return spoken
+
+    def spoken_for(self, sid: str, person: str | None) -> Spoken | None:
+        """A spoken turn, only for the person who said it."""
+        self._forget_spoken()
+        spoken = self.spoken.get(sid)
+        return spoken if spoken is not None and spoken.person == person else None
+
+    async def hear(self, spoken: Spoken) -> None:
+        """The chat shows what was said, then it is handled like a typed private message: a yes or
+        no to what waits for this person, a command, or a message for the AI. A message queued for
+        the AI is finished by the turn that answers it (answered); anything else here."""
+        client, ears = self.client, []
+        try:
+            mid = await self.send(
+                client, spoken.uid, self.t("voice_heard", text=spoken.text), record=False, spoken=""
+            )
+            msg = {
+                "message_id": mid,
+                "chat": {"id": spoken.uid, "type": "private"},
+                "from": {
+                    "id": spoken.uid,
+                    "first_name": self.data.household.person(spoken.person).name,
+                },
+                "text": spoken.text,
+                SPOKEN: spoken.id,
+            }
+            self.hearing.setdefault(spoken.uid, []).append(ears)
+            try:
+                await self.handle(client, msg)
+            finally:
+                self._unhear(spoken.uid, ears)
+        except Exception as e:  # noqa: BLE001  the app hears that it failed
+            log.warning("a spoken turn failed: %s", safe(e))
+            if spoken.row is None:
+                self._finish(spoken, "failed", [])
+            return
+        if spoken.row is None:  # answered without a turn of the AI
+            self._finish(spoken, "done" if ears else "failed", ears)
+
+    def answered(self, items: list[Item], covered: list[Item] | None, ears: list[str]) -> None:
+        """A turn ended: each spoken message it answered gets what the bot said in it. One it was
+        started with and did not answer (the provider failed or is busy) gets what the bot said
+        instead, as failed; a busy provider still answers it later, in the chat and here."""
+        done = {i.row for i in covered or []}
+        for i in [*(covered or []), *items]:
+            spoken = self.spoken.get(self.spoken_rows.get(i.row) or "")
+            if spoken is None or (spoken.state == "done" and i.row not in done):
+                continue
+            self._finish(spoken, "done" if i.row in done and ears else "failed", ears)
+
+    def _finish(self, spoken: Spoken, state: str, ears: list[str]) -> None:
+        said = speakable(ears, self.t)
+        spoken.state = state if said else "failed"
+        spoken.answer = said or self.t("voice_failed")
+        spoken.ready.set()
+
+    def _unhear(self, chat_id: int, ears: list[str]) -> None:
+        listening = self.hearing.get(chat_id) or []
+        if ears in listening:
+            listening.remove(ears)
+        if not listening:
+            self.hearing.pop(chat_id, None)
+
+    def _forget_spoken(self) -> None:
+        old = time.time() - SPOKEN_TTL
+        for sid in [k for k, v in self.spoken.items() if v.ts < old]:
+            self.spoken.pop(sid, None)
+        for row in [r for r, sid in self.spoken_rows.items() if sid not in self.spoken]:
+            self.spoken_rows.pop(row, None)
 
     async def settle(self, chat_id: int) -> None:
         """Wait until the chat's newest message is DEBOUNCE_S old and no voice note of it is still
@@ -936,15 +1064,18 @@ class Bot:
             )
         return out
 
-    async def ask(self, client, chat_id: int, items: list[Item], rows: list[dict]) -> None:
+    async def ask(
+        self, client, chat_id: int, items: list[Item], rows: list[dict]
+    ) -> list[Item] | None:
         """One AI answer for the queued messages `items`. A provider that keeps the conversation
         gets only what it has not seen; the household's data goes with every message, fresh.
         Messages that arrive meanwhile are handed to it; the ones its answer does not take go back
-        to the queue for the next turn."""
+        to the queue for the next turn. Returns the messages the answer covered, None when there
+        was no answer."""
         data, db = self.data, self.state.db
         if data.settings.llm.provider == "none":
             await self.send(client, chat_id, self.t("bot_no_llm"), _reply_to(items))
-            return
+            return None
         key = f"bot.conversation.{chat_id}"
         conv = db.get_kv(key) or {}
         seen = conv.get("seen", 0) if conv.get("id") else 0
@@ -955,7 +1086,7 @@ class Bot:
             if r["id"] > seen and r["id"] not in done and not (seen and r["who"] == AI)
         ]
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
-            return  # an earlier turn already took these messages
+            return None  # an earlier turn already took these messages
         turn_state = Turn(chat_id, items)
         self.running[chat_id] = turn_state
         reply, deferred = None, False
@@ -995,12 +1126,12 @@ class Bot:
                 if later is not None:  # out of capacity: the same messages go again by themselves
                     deferred = True
                     await self.rest(client, chat_id, items, later)
-                    return
+                    return None
                 # never recorded: the unanswered messages go again with the next one
                 await self.send(
                     client, chat_id, self.t("bot_error"), _reply_to(items), record=False
                 )
-                return
+                return None
         finally:
             with self.qlock:
                 turn_state.closed = True  # a provider thread that outlives the turn takes nothing
@@ -1024,7 +1155,7 @@ class Bot:
         listed = reply.reminders or listed
         if not text and change is None and not reply.proposals and not listed:
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
-            return
+            return None
         if text:
             await self.answer_text(client, chat_id, text, reply_to, offered, covered)
         if reply.conversation:
@@ -1043,6 +1174,7 @@ class Bot:
             await self.offer(client, chat_id, anchor.mid, anchor.who, anchor.uid, proposal)
         if listed:
             await self.offer_reminders(client, chat_id, listed, covered, reply_to)
+        return covered
 
     async def rest(self, client, chat_id: int, items: list[Item], seconds: float) -> None:
         """The provider is out of capacity for `seconds`: say so once, with the wait, and answer
@@ -1084,6 +1216,7 @@ class Bot:
             markdown=True,
             who=AI,
             buttons=rows,
+            spoken=f"{text}\n\n{self.t('voice_options', choices=_either(self.t, offered))}",
         )
         users = list(dict.fromkeys(i.uid for i in covered if i.uid))
         kept = [
@@ -1153,6 +1286,7 @@ class Bot:
             reply_to,
             ids=msgs,
             buttons=self.yes_no(key := secrets.token_hex(4)),
+            spoken=t("voice_change_confirm", lines="\n".join(lines)),
         )
         item = {
             "key": key,
@@ -1417,6 +1551,7 @@ class Bot:
                 self.t("ask_confirm", name=names, summary=summary),
                 turn_state.items[-1].mid,
                 record=False,
+                spoken=self.t("voice_ask", summary=summary),
                 buttons=[
                     [
                         (self.t("button_approve"), f"a:{key}:y"),
@@ -1717,6 +1852,7 @@ class Bot:
             answer_to,
             ids=msgs,
             buttons=self.yes_no(key),
+            spoken=t("voice_proposal_confirm", summary=proposal["summary"]),
         )
         if where != chat_id:
             await self.send(client, chat_id, t("proposal_in_group", name=names), reply_to)
@@ -2437,6 +2573,7 @@ class Bot:
             ),
             reply_to,
             buttons=self._remind_rows(key, items),
+            spoken=self.t("voice_reminders"),
         )
         users = [i.uid for i in covered if i.uid] + [people[p] for p in persons if p in people]
         offer = {
@@ -2639,6 +2776,54 @@ def _file_name(name, mime: str) -> str:
     if ext:
         return f"{stem}.{ext}"
     return stem + (mimetypes.guess_extension(mime) or "")
+
+
+def _either(t: Translator, labels: list[str]) -> str:
+    """'A, B or C', to be read out."""
+    labels = [str(x) for x in labels]
+    if len(labels) < 2:
+        return "".join(labels)
+    return ", ".join(labels[:-1]) + t("voice_or") + labels[-1]
+
+
+_FENCE = re.compile(r"```.*?(```|$)", re.DOTALL)
+_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_URL = re.compile(r"<?https?://\S+>?")
+_SHA = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b")
+_BOLD = re.compile(r"(\*\*|__|~~)(.+?)\1")
+_ITALIC = re.compile(r"(?<!\w)[*_](\S(?:.*?\S)?)[*_](?!\w)")
+_BULLET = re.compile(r"^\s*(?:#{1,6}\s+|[-*•·]\s+|\d{1,2}[.)]\s+|>\s*)")
+_END = ".!?…:;,"
+
+
+def speakable(parts: list[str], t: Translator) -> str:
+    """What the bot said in a chat, made to be read out: no Markdown, links, code, emojis or commit
+    ids, each line a sentence. The chat keeps its own rendering; this is only what the app reads."""
+    out = []
+    for part in parts:
+        part = _FENCE.sub(" ", part)
+        part = _LINK.sub(r"\1", part)
+        part = _URL.sub("", part)
+        part = re.sub(r"\([^()]*" + _SHA.pattern + r"[^()]*\)", "", part)  # "(change 1a2b3c4)"
+        part = _SHA.sub("", part)
+        part = _BOLD.sub(r"\2", part)
+        part = _ITALIC.sub(r"\1", part).replace("`", "")
+        part = part.replace("→", t("voice_arrow"))
+        for line in part.splitlines():
+            line = _BULLET.sub("", line)
+            line = "".join(
+                ch
+                for ch in line
+                if unicodedata.category(ch) != "So" and ch not in "\u200d\ufe0f\u20e3"
+            )
+            line = " ".join(line.split()).strip()
+            if not line:
+                continue
+            if not out or out[-1][-1] in ".!?…":  # a list item becomes a sentence of its own
+                line = line[0].upper() + line[1:]
+            out.append(line if line[-1] in _END else f"{line}.")
+    said = " ".join(out)
+    return re.sub(r"\s+([.,;:!?])", r"\1", said).strip()
 
 
 def _retry_after(e: BaseException) -> float | None:

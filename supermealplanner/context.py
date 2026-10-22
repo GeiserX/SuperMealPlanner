@@ -59,6 +59,9 @@ are context only.
 A message that replies to an earlier one starts with what it points at: "(replying to <who>'s
 <photo, file, video, voice note or message> of <its time, UTC>)". When that message is not in the
 conversation, that is how to find it.
+A message that starts with "[voice]" was said out loud to a phone, and your answer is read out to
+them: answer in a few short spoken sentences, with no tables, lists, links, emojis or Markdown. When
+a change waits for their yes, the app reads its question out after your answer, so do not ask it.
 """
 
 CHANGES = """
