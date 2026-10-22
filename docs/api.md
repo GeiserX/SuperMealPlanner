@@ -110,6 +110,10 @@ conversation as the Telegram chat, not a second assistant:
   together, a change the person asked for is made at once, and a change that waits for their yes
   is settled by a spoken "yes" or "no" exactly as a typed one is. A proposal only an admin may
   approve still waits for an admin in the group.
+- The group sees it too: each exchange is copied there as one message from the bot, "🎙️ <name>
+  (by voice): <what they said>" and then the answer. It is only a copy: it is kept out of the
+  group's history, never starts an answer there and never joins the group's next turn.
+  `bot.voice_to_group: false` turns the copy off; without a `chat_id` nothing is copied.
 - The AI is told the message was spoken and answers in a few plain sentences. The `text` the API
   returns is made to be read out: no Markdown, links, code or emojis; choices come as "You can say:
   A, B or C"; a change that waits says "Say yes or no"; reminder offers are one sentence pointing to

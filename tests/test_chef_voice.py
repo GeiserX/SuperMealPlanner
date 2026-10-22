@@ -145,7 +145,8 @@ def test_only_the_person_who_said_it_reads_the_answer(chef, data_dir):
     assert client.get(f"/api/v1/chef/{sid}").status_code == 401
     assert client.post("/api/v1/chef", json={"text": "hi"}).status_code == 401
     assert client.post("/api/v1/chef", json={"text": " "}, headers=luis).status_code == 400
-    assert [p["chat_id"] for m, p in b.calls if m == "sendMessage"] == [LUIS, LUIS]
+    sends = [p["chat_id"] for m, p in b.calls if m == "sendMessage"]
+    assert sends == [LUIS, LUIS, -100]  # the echo, the answer, and the group's copy
 
 
 def test_one_request_waits_no_longer_than_the_cap(chef, data_dir, monkeypatch):
@@ -260,3 +261,41 @@ def test_speech_drops_what_only_a_screen_shows():
     assert said == (
         "Plan. Soak the lentils. Cook them. Saved as change; see. Lunch time: 14:00 to 14:30."
     )
+
+
+def spoken_turn(data_dir, tmp_path, **bot):
+    """One spoken turn at the bot, with what it started in the background run to the end."""
+    data = plugin_data(data_dir, **bot)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    reply(data_dir, text="**Tonight**: hake 🐟")
+
+    async def go():
+        spoken = b.say("luis", "what's for dinner?")
+        await asyncio.wait_for(spoken.ready.wait(), 5)
+        while b.tasks:
+            await asyncio.gather(*list(b.tasks))
+
+    run(go())
+    return b
+
+
+def test_the_group_reads_a_copy_of_each_spoken_exchange(data_dir, tmp_path):
+    b = spoken_turn(data_dir, tmp_path)
+    (copy,) = ChatBot.texts(b, -100)
+    assert copy == "🎙️ Luis (by voice): what's for dinner?\n\nTonight: hake."
+    assert b.state.db.chat_rows(-100, 20, 0) == []  # in no group history, so no turn takes it
+    (turn,) = turns(data_dir)
+    assert turn["chat"]["id"] == LUIS  # the conversation stayed in the private chat
+    reply(data_dir, text="ok")
+    run(b.handle(None, msg("@chefbot hi")))  # the group's next turn does not see the copy
+    later = turns(data_dir)[-1]
+    assert later["chat"]["id"] == -100
+    assert "by voice" not in str(later["new"]) + str(later["history"])
+
+
+def test_no_copy_when_the_setting_is_off_or_there_is_no_group(data_dir, tmp_path):
+    b = spoken_turn(data_dir, tmp_path, voice_to_group=False)
+    assert ChatBot.texts(b, -100) == [] and ChatBot.texts(b, LUIS)
+    (tmp_path / "x").mkdir()
+    b = spoken_turn(data_dir, tmp_path / "x", chat_id=None)
+    assert [p["chat_id"] for m, p in b.calls if m == "sendMessage"] == [LUIS, LUIS]
