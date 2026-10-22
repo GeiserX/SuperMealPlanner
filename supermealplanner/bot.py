@@ -53,6 +53,7 @@ import threading
 import time
 import unicodedata
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -176,6 +177,10 @@ LATE_S = 600  # a reminder posted this much after its time says so
 SPOKEN = "_spoken"
 SPOKEN_TTL = 3600
 SPOKEN_MAX = 2000  # the longest thing anyone says in one go, as characters
+# (chat id, list) pairs: each list collects what the bot says in that chat while a spoken turn
+# listens. A context variable, so only the task running that turn (and what it starts) is heard,
+# never a typed command answered in the same chat at the same moment.
+HEARING: ContextVar[tuple[tuple[int, list[str]], ...]] = ContextVar("hearing", default=())
 
 
 @dataclass
@@ -258,8 +263,6 @@ class Bot:
         self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
         self.spoken: dict[str, Spoken] = {}  # what was said to the app, by turn id
         self.spoken_rows: dict[int, str] = {}  # chat log row -> the spoken turn it is
-        # chat -> lists that each collect what the bot says in it, while a turn listens
-        self.hearing: dict[int, list[list[str]]] = {}
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -362,8 +365,8 @@ class Bot:
         if record:
             self.state.db.add_chat(chat_id, "assistant", who, text)
         heard = text if spoken is None else spoken
-        for ears in self.hearing.get(chat_id, ()):
-            if heard:
+        for chat, ears in HEARING.get():
+            if chat == chat_id and heard:
                 ears.append(heard)
         return sent.get("message_id") if isinstance(sent, dict) else None
 
@@ -495,6 +498,8 @@ class Bot:
                 raise
             except Exception as e:  # noqa: BLE001
                 log.warning("bot stopped (%s); restarting in %ss", safe(e), backoff)
+            finally:
+                self.client = None  # closed: the app's turns wait for the next one (api.chef)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 300)
 
@@ -923,7 +928,7 @@ class Bot:
                     )
                     # what the bot says in the chat during the turn is what a spoken turn hears
                     ears: list[str] = []
-                    self.hearing.setdefault(chat_id, []).append(ears)
+                    listening = HEARING.set((*HEARING.get(), (chat_id, ears)))
                     covered = None
                     try:
                         covered = await self.ask(client, chat_id, items, rows)
@@ -942,7 +947,7 @@ class Bot:
                         except Exception as e2:  # noqa: BLE001
                             log.warning("could not send the error reply: %s", safe(e2))
                     finally:
-                        self._unhear(chat_id, ears)
+                        HEARING.reset(listening)
                     self.answered(items, covered, ears)
                     # the turn ended (a cancelled one did not: a stop keeps its messages queued)
                     with self.qlock:
@@ -957,7 +962,9 @@ class Bot:
         answer arrives on the Spoken (hear)."""
         self._forget_spoken()
         uid = self.data.settings.bot.people[person]
-        spoken = Spoken(secrets.token_urlsafe(12), person, uid, text[:SPOKEN_MAX])
+        # words, never a command: a spoken "/pair" must not hand a pairing code to the device
+        text = text.lstrip().lstrip("/").strip()[:SPOKEN_MAX]
+        spoken = Spoken(secrets.token_urlsafe(12), person, uid, text)
         self.spoken[spoken.id] = spoken
         self.spawn(self.hear(spoken))
         return spoken
@@ -987,11 +994,11 @@ class Bot:
                 "text": spoken.text,
                 SPOKEN: spoken.id,
             }
-            self.hearing.setdefault(spoken.uid, []).append(ears)
+            listening = HEARING.set((*HEARING.get(), (spoken.uid, ears)))
             try:
                 await self.handle(client, msg)
             finally:
-                self._unhear(spoken.uid, ears)
+                HEARING.reset(listening)
         except Exception as e:  # noqa: BLE001  the app hears that it failed
             log.warning("a spoken turn failed: %s", safe(e))
             if spoken.row is None:
@@ -1016,13 +1023,6 @@ class Bot:
         spoken.state = state if said else "failed"
         spoken.answer = said or self.t("voice_failed")
         spoken.ready.set()
-
-    def _unhear(self, chat_id: int, ears: list[str]) -> None:
-        listening = self.hearing.get(chat_id) or []
-        if ears in listening:
-            listening.remove(ears)
-        if not listening:
-            self.hearing.pop(chat_id, None)
 
     def _forget_spoken(self) -> None:
         old = time.time() - SPOKEN_TTL

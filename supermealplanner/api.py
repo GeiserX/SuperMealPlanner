@@ -545,7 +545,7 @@ def router(state) -> APIRouter:
     def chef_bot(row: dict):
         """The running bot and the device's person, who must have a private chat with it."""
         bot = state.bot
-        if bot is None or not bot.started:
+        if bot is None or not bot.started or bot.client is None:
             raise HTTPException(503, "the bot is not running here")
         person = row.get("person")
         uid = state.data.settings.bot.people.get(person or "")
@@ -568,7 +568,7 @@ def router(state) -> APIRouter:
         bot runs on."""
         row = device(request)
         bot, person = chef_bot(row)
-        text = " ".join(str(body.get("text") or "").split())
+        text = " ".join(str(body.get("text") or "").split()).lstrip("/").strip()
         if not text:
             raise HTTPException(400, "text is required")
         return spoken_out(bot.say(person, text))

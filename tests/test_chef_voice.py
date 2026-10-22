@@ -13,6 +13,7 @@ What each test pins, and why:
 
 import asyncio
 import datetime as dt
+import re
 import time
 
 import pytest
@@ -49,7 +50,7 @@ def chef(data_dir, tmp_path, monkeypatch):
     app = create_app(data_dir)
     with TestClient(app) as client:
         b = ChatBot(data, DB(tmp_path / "b.db"))
-        b.started = True
+        b.started, b.client = True, object()  # up, with a Telegram client (a stand-in)
         app.state.smp.bot = b
         yield client, b
 
@@ -171,9 +172,45 @@ def test_without_a_bot_or_a_telegram_user_the_chef_says_why(chef, data_dir):
     client, b = chef
     nobody = token(data_dir, client, None)
     assert client.post("/api/v1/chef", json={"text": "hi"}, headers=nobody).status_code == 409
-    b.started = False
     me = token(data_dir, client)
+    b.client = None  # between two runs of the bot's loop: its client is closed
     assert client.post("/api/v1/chef", json={"text": "hi"}, headers=me).status_code == 503
+    b.client, b.started = object(), False
+    assert client.post("/api/v1/chef", json={"text": "hi"}, headers=me).status_code == 503
+
+
+def test_spoken_words_never_run_a_command(chef, data_dir):
+    client, _ = chef
+    me = token(data_dir, client)
+    got = answer(client, me, say(client, me, "/pair"))
+    assert got["state"] == "done" and not any(ch.isdigit() for ch in got["text"])
+    (turn,) = turns(data_dir)  # it went to the AI as words
+    assert turn["new"][-1]["content"] == "luis: [voice] pair"
+    assert client.post("/api/v1/chef", json={"text": " / "}, headers=me).status_code == 400
+
+
+def test_a_typed_command_answered_meanwhile_is_not_heard(data_dir, tmp_path):
+    data = plugin_data(data_dir)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    reply(data_dir, text="Fish tonight.")
+    slow = b.ask
+
+    async def ask(*args):
+        await asyncio.sleep(0.2)  # the provider thinks; a typed /pair comes in meanwhile
+        return await slow(*args)
+
+    b.ask = ask
+
+    async def go():
+        spoken = b.say("luis", "what's for dinner?")
+        await asyncio.sleep(0.1)
+        await b.handle(None, msg("/pair", chat=LUIS, user=LUIS, message_id=5))
+        await asyncio.wait_for(spoken.ready.wait(), 5)
+        return spoken
+
+    spoken = run(go())
+    assert any(re.search(r"\d{3} \d{3}", x) for x in ChatBot.texts(b, LUIS))  # the code, typed
+    assert (spoken.state, spoken.answer) == ("done", "Fish tonight.")
 
 
 def test_a_spoken_message_merged_into_a_burst_gets_the_answer_that_covered_it(data_dir, tmp_path):
