@@ -151,6 +151,10 @@ def test_only_the_person_who_said_it_reads_the_answer(chef, data_dir):
     assert client.get(f"/api/v1/chef/{sid}").status_code == 401
     assert client.post("/api/v1/chef", json={"text": "hi"}).status_code == 401
     assert client.post("/api/v1/chef", json={"text": " "}, headers=luis).status_code == 400
+    deadline = time.monotonic() + 5  # the group's copy is sent after the answer is ready
+    while not sent(b, -100):
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
     sends = [p["chat_id"] for m, p in b.calls if m == "sendMessage"]
     assert sends == [LUIS, LUIS, -100]  # the echo, the answer, and the group's copy
 
