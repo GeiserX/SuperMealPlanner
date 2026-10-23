@@ -114,7 +114,8 @@ def test_a_spoken_yes_settles_what_waits_for_that_person(chef, data_dir):
     pause = {"pause": {"from": str(D(1)), "to": str(D(6))}}
     reply(data_dir, text=block({"plan": [pause]}))
     asked = answer(client, me, say(client, me, "should we eat what we have?"))
-    assert asked["text"].endswith("Say yes or no.") and "Tap" not in asked["text"]
+    # a question at the end, so a voice client that listens again after one keeps the mic open
+    assert asked["text"].endswith("Yes or no?") and "Tap" not in asked["text"]
     assert "Tap Yes or No" in sent(b)[-1]["text"]  # the chat still has its buttons
     assert len(b.pending(LUIS)) == 1 and paused_days(b.state.data) == set()
     got = answer(client, me, say(client, me, "Yes."))

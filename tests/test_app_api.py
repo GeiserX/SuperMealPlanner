@@ -159,7 +159,7 @@ def test_nothing_readable_reaches_the_database(client, data_dir):
 
 
 def test_a_device_name_is_cleaned_up(client, data_dir):
-    got = pair(client, data_dir, device="  iPhone\u0007 de\n Sergio  " + "x" * 200)
+    got = pair(client, data_dir, device="  iPhone\u0007 de\n Ana  " + "x" * 200)
     assert "\u0007" not in got["device"] and "\n" not in got["device"]
     assert len(got["device"]) <= dv.NAME_MAX
     assert dv.clean_name("") == "Phone"
