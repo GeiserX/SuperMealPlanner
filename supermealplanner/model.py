@@ -317,6 +317,9 @@ class Bot(Loose):
     # a voice note is always transcribed and answered, in the group too: it cannot mention the bot
     voice: bool = True
     private_chats: bool = True  # people in bot.people may also talk to the bot privately
+    # what someone says to the chef from the app (POST /api/v1/chef) and its answer are copied to
+    # the group, read only, so the others see it; nothing is posted without a chat_id
+    voice_to_group: bool = True
     group_open: bool = False  # True: anyone in the group may use the bot, not only bot.people
     sync_profile: bool = True  # at start, set the bot's command menu and descriptions in Telegram
     share_logs_in_group: bool = (

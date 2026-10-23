@@ -18,12 +18,12 @@ There is no password. The bot hands out a code and the app swaps it for a token.
 
    ```http
    POST /api/v1/pair
-   {"code": "418 203", "device": "iPhone de Sergio"}
+   {"code": "418 203", "device": "Alex's iPhone"}
    ```
 
    ```json
-   {"token": "…", "device_id": 3, "device": "iPhone de Sergio",
-    "person": "sergio", "person_name": "Sergio", "household": "Casa"}
+   {"token": "…", "device_id": 3, "device": "Alex's iPhone",
+    "person": "alex", "person_name": "Alex", "household": "The Example Household"}
    ```
 
 3. The app keeps `token` in the phone's keychain and sends it from then on:
@@ -110,9 +110,14 @@ conversation as the Telegram chat, not a second assistant:
   together, a change the person asked for is made at once, and a change that waits for their yes
   is settled by a spoken "yes" or "no" exactly as a typed one is. A proposal only an admin may
   approve still waits for an admin in the group.
+- The group sees it too: each exchange is copied there as one message from the bot, "🎙️ <name>
+  (by voice): <what they said>" and then the answer (past 3,500 characters it is split into
+  parts, as every bot message is). It is only a copy: it is kept out of the
+  group's history, never starts an answer there and never joins the group's next turn.
+  `bot.voice_to_group: false` turns the copy off; without a `chat_id` nothing is copied.
 - The AI is told the message was spoken and answers in a few plain sentences. The `text` the API
   returns is made to be read out: no Markdown, links, code or emojis; choices come as "You can say:
-  A, B or C"; a change that waits says "Say yes or no"; reminder offers are one sentence pointing to
+  A, B or C"; a change that waits ends "Yes or no?", so a voice client that listens again after a question keeps the mic open; reminder offers are one sentence pointing to
   Telegram, where their buttons are.
 
 A turn is two calls, so no request has to stay open while the AI thinks:

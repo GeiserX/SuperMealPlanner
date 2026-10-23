@@ -209,6 +209,7 @@ class Spoken:
     text: str
     ts: float = field(default_factory=time.time)
     state: str = "thinking"  # then "done", or "failed" when nothing answered it
+    copied: str = ""  # the state last copied to the group (bot.voice_to_group)
     answer: str = ""  # what the bot said, cleaned to be read out
     row: int | None = None  # its row in the chat log, once it is queued for an answer
     ready: asyncio.Event = field(default_factory=asyncio.Event)
@@ -1023,6 +1024,22 @@ class Bot:
         spoken.state = state if said else "failed"
         spoken.answer = said or self.t("voice_failed")
         spoken.ready.set()
+        if spoken.copied != spoken.state:  # a busy provider's late answer is copied once more
+            spoken.copied = spoken.state
+            self.spawn(self.copy_to_group(spoken))
+
+    async def copy_to_group(self, spoken: Spoken) -> None:
+        """What was said to the app and the answer, in the group for the others to read. Sent by
+        the bot and never recorded, so it is in no turn's history and no turn starts from it."""
+        cfg = self.data.settings.bot
+        if not cfg.voice_to_group or self.chat_id is None:
+            return
+        name = self.data.household.person(spoken.person).name
+        text = self.t("voice_copy", name=name, text=spoken.text, answer=spoken.answer)
+        try:
+            await self.send(self.client, self.chat_id, text, record=False, spoken="")
+        except Exception as e:  # noqa: BLE001  a copy only: the asker already has the answer
+            log.warning("could not copy a spoken turn to the group: %s", safe(e))
 
     def _forget_spoken(self) -> None:
         old = time.time() - SPOKEN_TTL

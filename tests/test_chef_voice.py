@@ -114,13 +114,19 @@ def test_a_spoken_yes_settles_what_waits_for_that_person(chef, data_dir):
     pause = {"pause": {"from": str(D(1)), "to": str(D(6))}}
     reply(data_dir, text=block({"plan": [pause]}))
     asked = answer(client, me, say(client, me, "should we eat what we have?"))
-    assert asked["text"].endswith("Say yes or no.") and "Tap" not in asked["text"]
+    # a question at the end, so a voice client that listens again after one keeps the mic open
+    assert asked["text"].endswith("Yes or no?") and "Tap" not in asked["text"]
     assert "Tap Yes or No" in sent(b)[-1]["text"]  # the chat still has its buttons
     assert len(b.pending(LUIS)) == 1 and paused_days(b.state.data) == set()
     got = answer(client, me, say(client, me, "Yes."))
     assert got == {"id": got["id"], "state": "done", "text": b.t("menu_applied")}
     assert paused_days(b.state.data) == {D(i) for i in range(1, 7)}
     assert len(turns(data_dir)) == 1  # the yes never went to the AI, as a typed one does not
+    deadline = time.monotonic() + 5  # the group's copy of the yes, by name, with what it did
+    while len(sent(b, -100)) < 2:
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    assert sent(b, -100)[-1]["text"] == f"🎙️ Luis (by voice): Yes.\n\n{b.t('menu_applied')}"
     assert sent(b)[-2]["text"] == "🎙️ Yes."
 
 
@@ -145,7 +151,12 @@ def test_only_the_person_who_said_it_reads_the_answer(chef, data_dir):
     assert client.get(f"/api/v1/chef/{sid}").status_code == 401
     assert client.post("/api/v1/chef", json={"text": "hi"}).status_code == 401
     assert client.post("/api/v1/chef", json={"text": " "}, headers=luis).status_code == 400
-    assert [p["chat_id"] for m, p in b.calls if m == "sendMessage"] == [LUIS, LUIS]
+    deadline = time.monotonic() + 5  # the group's copy is sent after the answer is ready
+    while not sent(b, -100):
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    sends = [p["chat_id"] for m, p in b.calls if m == "sendMessage"]
+    assert sends == [LUIS, LUIS, -100]  # the echo, the answer, and the group's copy
 
 
 def test_one_request_waits_no_longer_than_the_cap(chef, data_dir, monkeypatch):
@@ -260,3 +271,41 @@ def test_speech_drops_what_only_a_screen_shows():
     assert said == (
         "Plan. Soak the lentils. Cook them. Saved as change; see. Lunch time: 14:00 to 14:30."
     )
+
+
+def spoken_turn(data_dir, tmp_path, **bot):
+    """One spoken turn at the bot, with what it started in the background run to the end."""
+    data = plugin_data(data_dir, **bot)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    reply(data_dir, text="**Tonight**: hake 🐟")
+
+    async def go():
+        spoken = b.say("luis", "what's for dinner?")
+        await asyncio.wait_for(spoken.ready.wait(), 5)
+        while b.tasks:
+            await asyncio.gather(*list(b.tasks))
+
+    run(go())
+    return b
+
+
+def test_the_group_reads_a_copy_of_each_spoken_exchange(data_dir, tmp_path):
+    b = spoken_turn(data_dir, tmp_path)
+    (copy,) = ChatBot.texts(b, -100)
+    assert copy == "🎙️ Luis (by voice): what's for dinner?\n\nTonight: hake."
+    assert b.state.db.chat_rows(-100, 20, 0) == []  # in no group history, so no turn takes it
+    (turn,) = turns(data_dir)
+    assert turn["chat"]["id"] == LUIS  # the conversation stayed in the private chat
+    reply(data_dir, text="ok")
+    run(b.handle(None, msg("@chefbot hi")))  # the group's next turn does not see the copy
+    later = turns(data_dir)[-1]
+    assert later["chat"]["id"] == -100
+    assert "by voice" not in str(later["new"]) + str(later["history"])
+
+
+def test_no_copy_when_the_setting_is_off_or_there_is_no_group(data_dir, tmp_path):
+    b = spoken_turn(data_dir, tmp_path, voice_to_group=False)
+    assert ChatBot.texts(b, -100) == [] and ChatBot.texts(b, LUIS)
+    (tmp_path / "x").mkdir()
+    b = spoken_turn(data_dir, tmp_path / "x", chat_id=None)
+    assert [p["chat_id"] for m, p in b.calls if m == "sendMessage"] == [LUIS, LUIS]
