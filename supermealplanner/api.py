@@ -25,7 +25,7 @@ import datetime as dt
 
 from fastapi import APIRouter, HTTPException, Request
 
-from . import __version__
+from . import __version__, llm
 from .i18n import Translator
 from .planner import day_menu, paused_days, plan_for
 from .portions import (
@@ -42,6 +42,20 @@ from .targets import evaluate, trend
 
 API_VERSION = 1
 CHEF_WAIT_MAX = 25  # the longest one GET /chef/{id} holds, so no client's request times out
+TRANSCRIBE_MAX_BYTES = 10 * 1024 * 1024  # a spoken sentence is a few hundred KB even as WAV
+AUDIO_TYPES = {  # what POST /transcribe takes, and the file name the transcriber is given
+    "audio/wav": "audio.wav",
+    "audio/x-wav": "audio.wav",
+    "audio/wave": "audio.wav",
+    "audio/ogg": "audio.ogg",
+    "audio/opus": "audio.opus",
+    "audio/mpeg": "audio.mp3",
+    "audio/mp4": "audio.m4a",
+    "audio/x-m4a": "audio.m4a",
+    "audio/aac": "audio.aac",
+    "audio/webm": "audio.webm",
+    "audio/flac": "audio.flac",
+}
 
 
 def _day(raw: str | None, today: dt.date) -> dt.date:
@@ -589,5 +603,37 @@ def router(state) -> APIRouter:
             except TimeoutError:
                 pass
         return spoken_out(spoken)
+
+    @api.post("/transcribe")
+    async def transcribe(request: Request):
+        """Speech to text with the transcriber the bot uses for voice notes, so a voice client
+        needs no speech service of its own. The body is the audio; the answer is {"text"}."""
+        device(request)
+        kind = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        name = AUDIO_TYPES.get(kind)
+        if name is None:
+            raise HTTPException(415, "send the audio as one of: " + ", ".join(AUDIO_TYPES))
+        too_big = HTTPException(413, f"audio over {TRANSCRIBE_MAX_BYTES} bytes")
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > TRANSCRIBE_MAX_BYTES:
+            raise too_big
+        audio = bytearray()
+        async for chunk in request.stream():  # counted as it comes, whatever the header said
+            audio += chunk
+            if len(audio) > TRANSCRIBE_MAX_BYTES:
+                raise too_big
+        audio = bytes(audio)
+        if not audio:
+            raise HTTPException(400, "the body is empty")
+        if state.data.settings.transcription.provider == "none":
+            raise HTTPException(503, "no transcription is configured here")
+        try:
+            text = await asyncio.wait_for(
+                llm.transcribe(state.data, audio, name),
+                timeout=state.data.settings.transcription.timeout_s,
+            )
+        except Exception as e:  # noqa: BLE001  a plugin or a remote service: say it failed
+            raise HTTPException(502, f"transcription failed: {type(e).__name__}") from None
+        return {"text": " ".join(text.split())}
 
     return api

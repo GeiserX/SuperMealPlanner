@@ -309,3 +309,48 @@ def test_no_copy_when_the_setting_is_off_or_there_is_no_group(data_dir, tmp_path
     (tmp_path / "x").mkdir()
     b = spoken_turn(data_dir, tmp_path / "x", chat_id=None)
     assert [p["chat_id"] for m, p in b.calls if m == "sendMessage"] == [LUIS, LUIS]
+
+
+def test_speech_is_turned_into_text_by_the_voice_note_transcriber(chef, data_dir, monkeypatch):
+    client, _b = chef
+    me = token(data_dir, client)
+    heard = []
+
+    async def fake(data, audio, filename):
+        heard.append((audio, filename))
+        return "  what is   for dinner? "
+
+    monkeypatch.setattr(api.llm, "transcribe", fake)
+    url = "/api/v1/transcribe"
+    wav = {**me, "content-type": "audio/wav"}
+    assert client.post(url, content=b"RIFF", headers=wav).status_code == 503  # none configured
+    client.app.state.smp.data.settings.transcription.provider = "plugin"
+    r = client.post(url, content=b"RIFF", headers=wav)
+    assert r.status_code == 200 and r.json() == {"text": "what is for dinner?"}
+    assert heard == [(b"RIFF", "audio.wav")]
+    ogg = {**me, "content-type": "audio/ogg; codecs=opus"}
+    assert client.post(url, content=b"OggS", headers=ogg).json()["text"] == "what is for dinner?"
+    assert heard[-1][1] == "audio.ogg"
+    assert (
+        client.post(url, content=b"RIFF", headers={"content-type": "audio/wav"}).status_code == 401
+    )
+    assert (
+        client.post(url, content=b"x", headers={**me, "content-type": "text/plain"}).status_code
+        == 415
+    )
+    assert client.post(url, content=b"", headers=wav).status_code == 400
+    monkeypatch.setattr(api, "TRANSCRIBE_MAX_BYTES", 3)
+    assert client.post(url, content=b"RIFF", headers=wav).status_code == 413
+
+    def streamed():  # no Content-Length: the limit still holds while reading
+        yield b"RI"
+        yield b"FF"
+
+    assert client.post(url, content=streamed(), headers=wav).status_code == 413
+
+    async def broken(data, audio, filename):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(api, "TRANSCRIBE_MAX_BYTES", 10_000)
+    monkeypatch.setattr(api.llm, "transcribe", broken)
+    assert client.post(url, content=b"RIFF", headers=wav).status_code == 502

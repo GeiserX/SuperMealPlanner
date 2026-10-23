@@ -68,6 +68,7 @@ not expire; it ends when someone takes the phone away with `/devices` (`/disposi
 | `GET /progress` | Each person's last readings, the smoothed trend, the current target and the flags, already in the household's language |
 | `POST /chef` | `{"text"}`: say something to the chef, as if typed in your private chat with the bot. Answers `202` with `{"id", "state"}` at once (see below) |
 | `GET /chef/{id}?wait=` | The answer to it: holds up to `wait` seconds (25 at most) until it exists. `{"id", "state": "thinking"}`, then `{"id", "state": "done" \| "failed", "text"}` |
+| `POST /transcribe` | The body is audio (`Content-Type` `audio/wav`, `audio/ogg`, `audio/mpeg`, `audio/mp4`, `audio/webm`, `audio/flac`…): turned into text by the transcriber the bot uses for voice notes. `{"text"}` (see below) |
 | `GET /devices` | Every paired phone, with `this` marking the caller |
 | `DELETE /devices/{id}` | Unpair one |
 
@@ -152,6 +153,25 @@ id=$(curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
   -d '{"text": "what is for dinner?"}' https://comidas-api.example.com/api/v1/chef | jq -r .id)
 curl -s -H "Authorization: Bearer $TOKEN" "https://comidas-api.example.com/api/v1/chef/$id?wait=25"
 ```
+
+### Speech to text
+
+A voice client that has no speech recognition of its own can send what it recorded to
+`POST /transcribe` and then send the text to `POST /chef`. The server uses the same transcriber it
+uses for voice notes in the chat (`transcription` in the settings), so the client needs no speech
+service or key of its own.
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: audio/wav' \
+  --data-binary @question.wav https://comidas-api.example.com/api/v1/transcribe
+```
+
+```json
+{"text": "what is for dinner?"}
+```
+
+`415` is a type it does not take, `413` audio over 10 MB, `400` an empty body, `503` a server with no
+transcription configured, and `502` a transcriber that failed.
 
 ## Rules the apps rely on
 
