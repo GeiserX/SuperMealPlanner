@@ -201,15 +201,16 @@ class Item:
 
 @dataclass
 class Spoken:
-    """Something said to the app, on its way through the person's private chat with the bot."""
+    """Something said to the app, on its way through the household group (or, with no group or
+    bot.voice_to_group off, the person's private chat with the bot)."""
 
     id: str
     person: str
-    uid: int  # their Telegram user id, which is also their private chat with the bot
+    uid: int  # their Telegram user id
     text: str
+    chat: int = 0  # where the turn happens: the group, or their private chat (0: uid)
     ts: float = field(default_factory=time.time)
     state: str = "thinking"  # then "done", or "failed" when nothing answered it
-    copied: str = ""  # the state last copied to the group (bot.voice_to_group)
     answer: str = ""  # what the bot said, cleaned to be read out
     row: int | None = None  # its row in the chat log, once it is queued for an answer
     ready: asyncio.Event = field(default_factory=asyncio.Event)
@@ -793,7 +794,7 @@ class Bot:
                     buttons=rows,
                 )
             return
-        asked = private or self.mentioned(text) or self.replied(msg)
+        asked = private or self.mentioned(text) or self.replied(msg) or SPOKEN in msg
         if asked or cfg.history_scope == "all":
             self.take(chat["id"], user, who, msg, self.reply_tag(msg) + text, asked)
             self.inbox(done=msg)  # logged, and queued when asked: QUEUED keeps it from here
@@ -957,15 +958,22 @@ class Bot:
             self.driving.discard(chat_id)
 
     # ------------------------------------------------------------- spoken turns (the app)
+    def voice_chat(self, uid: int) -> int:
+        """Where spoken turns happen: the household group, so everyone reads them, unless there is
+        none or bot.voice_to_group is off; then the person's private chat with the bot."""
+        if self.data.settings.bot.voice_to_group and self.chat_id is not None:
+            return self.chat_id
+        return uid
+
     def say(self, person: str, text: str) -> Spoken:
-        """Something `person` said to the app: it goes into their private chat with the bot as if
-        typed there, so it is the same conversation with the same rules. Returns at once; the
-        answer arrives on the Spoken (hear)."""
+        """Something `person` said to the app: it goes into the group (voice_chat) as if they had
+        written it there to the bot, so it is the same conversation with the same rules. Returns
+        at once; the answer arrives on the Spoken (hear)."""
         self._forget_spoken()
         uid = self.data.settings.bot.people[person]
         # words, never a command: a spoken "/pair" must not hand a pairing code to the device
         text = text.lstrip().lstrip("/").strip()[:SPOKEN_MAX]
-        spoken = Spoken(secrets.token_urlsafe(12), person, uid, text)
+        spoken = Spoken(secrets.token_urlsafe(12), person, uid, text, chat=self.voice_chat(uid))
         self.spoken[spoken.id] = spoken
         self.spawn(self.hear(spoken))
         return spoken
@@ -977,25 +985,27 @@ class Bot:
         return spoken if spoken is not None and spoken.person == person else None
 
     async def hear(self, spoken: Spoken) -> None:
-        """The chat shows what was said, then it is handled like a typed private message: a yes or
-        no to what waits for this person, a command, or a message for the AI. A message queued for
+        """The chat shows what was said, then it is handled like a message written to the bot: a
+        yes or no to what waits for this person, a command, or a message for the AI. A message queued for
         the AI is finished by the turn that answers it (answered); anything else here."""
         client, ears = self.client, []
+        chat, name = spoken.chat or spoken.uid, self.data.household.person(spoken.person).name
+        private = chat == spoken.uid
         try:
-            mid = await self.send(
-                client, spoken.uid, self.t("voice_heard", text=spoken.text), record=False, spoken=""
+            heard = (
+                self.t("voice_heard", text=spoken.text)
+                if private
+                else self.t("voice_heard_group", name=name, text=spoken.text)
             )
+            mid = await self.send(client, chat, heard, record=False, spoken="")
             msg = {
                 "message_id": mid,
-                "chat": {"id": spoken.uid, "type": "private"},
-                "from": {
-                    "id": spoken.uid,
-                    "first_name": self.data.household.person(spoken.person).name,
-                },
+                "chat": {"id": chat, "type": "private" if private else "group"},
+                "from": {"id": spoken.uid, "first_name": name},
                 "text": spoken.text,
                 SPOKEN: spoken.id,
             }
-            listening = HEARING.set((*HEARING.get(), (spoken.uid, ears)))
+            listening = HEARING.set((*HEARING.get(), (chat, ears)))
             try:
                 await self.handle(client, msg)
             finally:
@@ -1024,22 +1034,6 @@ class Bot:
         spoken.state = state if said else "failed"
         spoken.answer = said or self.t("voice_failed")
         spoken.ready.set()
-        if spoken.copied != spoken.state:  # a busy provider's late answer is copied once more
-            spoken.copied = spoken.state
-            self.spawn(self.copy_to_group(spoken))
-
-    async def copy_to_group(self, spoken: Spoken) -> None:
-        """What was said to the app and the answer, in the group for the others to read. Sent by
-        the bot and never recorded, so it is in no turn's history and no turn starts from it."""
-        cfg = self.data.settings.bot
-        if not cfg.voice_to_group or self.chat_id is None:
-            return
-        name = self.data.household.person(spoken.person).name
-        text = self.t("voice_copy", name=name, text=spoken.text, answer=spoken.answer)
-        try:
-            await self.send(self.client, self.chat_id, text, record=False, spoken="")
-        except Exception as e:  # noqa: BLE001  a copy only: the asker already has the answer
-            log.warning("could not copy a spoken turn to the group: %s", safe(e))
 
     def _forget_spoken(self) -> None:
         old = time.time() - SPOKEN_TTL
@@ -1354,7 +1348,8 @@ class Bot:
             return False
         # in the group, only an answer addressed to the bot: an "ok" replying to someone else is
         # their conversation, not a yes
-        if msg["chat"].get("type") != "private" and not (self.replied(msg) or self.mentioned(text)):
+        addressed = self.replied(msg) or self.mentioned(text) or SPOKEN in msg
+        if msg["chat"].get("type") != "private" and not addressed:
             return False
         if self.username:  # "@chefbot sí" is the answer too
             text = re.sub(rf"@{re.escape(self.username)}\b", " ", text, flags=re.IGNORECASE)

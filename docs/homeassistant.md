@@ -4,8 +4,8 @@
 chef into an Assist conversation agent. With it, "Hey Siri, talk to the chef" (or a Voice PE in the
 kitchen) opens a spoken conversation with the household's bot: you ask, it answers aloud, and the
 microphone opens again for the next question or for a "yes" to a change it proposes. Each exchange
-lands in your private chat with the bot and, with `bot.voice_to_group`, in the group too, exactly as
-described in [api.md](api.md#talking-to-the-chef-by-voice).
+lands in the household group, said by you and answered there, exactly as described in
+[api.md](api.md#talking-to-the-chef-by-voice).
 
 ## What it adds
 
@@ -26,8 +26,7 @@ question goes to the chef, which is waiting for it.
 
 1. Copy `homeassistant/custom_components/supermealplanner` into Home Assistant's
    `config/custom_components/` and restart Home Assistant.
-2. Each person sends `/pair` to the bot in their private chat with it (they must have pressed Start
-   there once: a bot cannot write first).
+2. Each person sends `/pair` to the bot in their private chat with it.
 3. Settings → Devices & services → Add integration → "SuperMealPlanner chef": the server's address as
    Home Assistant reaches it, and the six digits. The entry is named after that person.
 4. Settings → Voice assistants → Add assistant, one per person ("Chef Alex"): conversation agent and
@@ -36,12 +35,14 @@ question goes to the chef, which is waiting for it.
 
 ## On an iPhone
 
-In the Home Assistant app, signed in to that home:
+The Home Assistant app opens Assist on a given pipeline, already listening, from the link
+`homeassistant://assist?pipelineId=<pipeline id>&startListening=true` (the id is in the pipeline's
+URL under Settings → Voice assistants). A shortcut that opens that link is all Siri needs:
 
-1. Shortcuts → new shortcut → action "Assist in app" (Home Assistant), the person's assistant, "Start
-   listening" on. Name it the phrase to say, for example "Talk to the chef".
-2. A second shortcut with another phrase can run the first, so both "talk to the chef" and "let's talk
-   to the chef" work.
+1. Shortcuts → new shortcut → "URL" with that link, then "Open URLs".
+2. Name it one short word Siri does not take for something else. "Chef" works; "Talk to the chef"
+   does not, because Siri reads "talk to …" as a call to a contact.
 
-"Hey Siri, talk to the chef" then opens the app already listening. From a locked phone, Siri asks to
-unlock first, because the shortcut opens an app.
+Say only its name ("Hey Siri, chef"), wait for the microphone, then ask: Siri passes nothing said
+after a shortcut's name into the shortcut. From a locked phone, Siri asks to unlock first, because
+the shortcut opens an app.
