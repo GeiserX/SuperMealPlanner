@@ -342,6 +342,12 @@ def test_speech_is_turned_into_text_by_the_voice_note_transcriber(chef, data_dir
     monkeypatch.setattr(api, "TRANSCRIBE_MAX_BYTES", 3)
     assert client.post(url, content=b"RIFF", headers=wav).status_code == 413
 
+    def streamed():  # no Content-Length: the limit still holds while reading
+        yield b"RI"
+        yield b"FF"
+
+    assert client.post(url, content=streamed(), headers=wav).status_code == 413
+
     async def broken(data, audio, filename):
         raise RuntimeError("down")
 

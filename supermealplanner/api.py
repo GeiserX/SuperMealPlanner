@@ -613,13 +613,18 @@ def router(state) -> APIRouter:
         name = AUDIO_TYPES.get(kind)
         if name is None:
             raise HTTPException(415, "send the audio as one of: " + ", ".join(AUDIO_TYPES))
-        if int(request.headers.get("content-length") or 0) > TRANSCRIBE_MAX_BYTES:
-            raise HTTPException(413, f"audio over {TRANSCRIBE_MAX_BYTES} bytes")
-        audio = await request.body()
+        too_big = HTTPException(413, f"audio over {TRANSCRIBE_MAX_BYTES} bytes")
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > TRANSCRIBE_MAX_BYTES:
+            raise too_big
+        audio = bytearray()
+        async for chunk in request.stream():  # counted as it comes, whatever the header said
+            audio += chunk
+            if len(audio) > TRANSCRIBE_MAX_BYTES:
+                raise too_big
+        audio = bytes(audio)
         if not audio:
             raise HTTPException(400, "the body is empty")
-        if len(audio) > TRANSCRIBE_MAX_BYTES:
-            raise HTTPException(413, f"audio over {TRANSCRIBE_MAX_BYTES} bytes")
         if state.data.settings.transcription.provider == "none":
             raise HTTPException(503, "no transcription is configured here")
         try:
