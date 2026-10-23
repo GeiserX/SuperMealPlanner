@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Pair with SuperMealPlanner",
+        "description": "Send /pair to the bot in your private chat with it, then enter its six digits here. Home Assistant will talk to the chef as you.",
+        "data": {
+          "url": "Server address (for example http://192.168.1.10:8080)",
+          "code": "Pairing code"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the server at that address.",
+      "invalid_code": "That code is wrong, already used or too old. Ask the bot for a new one."
+    },
+    "abort": {
+      "already_configured": "This device is already paired."
+    }
+  }
+}

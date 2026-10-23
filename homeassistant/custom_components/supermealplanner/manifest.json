@@ -1,0 +1,13 @@
+{
+  "domain": "supermealplanner",
+  "name": "SuperMealPlanner chef",
+  "codeowners": ["@GeiserX"],
+  "config_flow": true,
+  "dependencies": ["conversation"],
+  "documentation": "https://github.com/GeiserX/SuperMealPlanner/blob/main/docs/homeassistant.md",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/GeiserX/SuperMealPlanner/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

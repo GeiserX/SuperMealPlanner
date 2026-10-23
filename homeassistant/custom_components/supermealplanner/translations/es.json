@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Vincular con SuperMealPlanner",
+        "description": "Envía /vincular al bot en tu chat privado con él y escribe aquí sus seis cifras. Home Assistant hablará con el chef en tu nombre.",
+        "data": {
+          "url": "Dirección del servidor (por ejemplo http://192.168.1.10:8080)",
+          "code": "Código de vinculación"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "No se pudo conectar con el servidor en esa dirección.",
+      "invalid_code": "Ese código es incorrecto, ya se usó o ha caducado. Pide uno nuevo al bot."
+    },
+    "abort": {
+      "already_configured": "Este dispositivo ya está vinculado."
+    }
+  }
+}
