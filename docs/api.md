@@ -104,18 +104,14 @@ Any client that can turn speech into text (an iOS Shortcut with "Dictate text", 
 car) can talk to the household's bot and read its answer out. It is the same bot and the same
 conversation as the Telegram chat, not a second assistant:
 
-- What is said goes into the private chat between the bot and the person the device is paired to.
-  The chat shows it as "🎙️ …", then the bot's answer as usual, so the conversation reads the same
-  whichever way it was had.
-- It runs through the path a typed private message takes: messages sent together are answered
+- What is said goes into the household group, as if the person had written it there to the bot:
+  the bot posts "🎙️ <name> (by voice): <what they said>" and answers it there, so everyone
+  reads the conversation once, in one place. With no group (`chat_id`) or with
+  `bot.voice_to_group: false`, it goes into the private chat between the bot and the person the
+  device is paired to instead, shown as "🎙️ …".
+- It runs through the path a typed message to the bot takes: messages sent together are answered
   together, a change the person asked for is made at once, and a change that waits for their yes
-  is settled by a spoken "yes" or "no" exactly as a typed one is. A proposal only an admin may
-  approve still waits for an admin in the group.
-- The group sees it too: each exchange is copied there as one message from the bot, "🎙️ <name>
-  (by voice): <what they said>" and then the answer (past 3,500 characters it is split into
-  parts, as every bot message is). It is only a copy: it is kept out of the
-  group's history, never starts an answer there and never joins the group's next turn.
-  `bot.voice_to_group: false` turns the copy off; without a `chat_id` nothing is copied.
+  is settled by a spoken "yes" or "no" exactly as a typed one is.
 - The AI is told the message was spoken and answers in a few plain sentences. The `text` the API
   returns is made to be read out: no Markdown, links, code or emojis; choices come as "You can say:
   A, B or C"; a change that waits ends "Yes or no?", so a voice client that listens again after a question keeps the mic open; reminder offers are one sentence pointing to

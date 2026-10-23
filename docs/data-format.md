@@ -109,7 +109,7 @@ bot:
   admins: [alex]              # optional: whose yes approves what only an admin may (a plugin's pull request)
   voice: true                 # transcribe voice notes; every one is answered, in the group too
   private_chats: true         # people in bot.people may also write to the bot privately
-  voice_to_group: true        # copy what is said to the chef from the app, and its answer, to the group (read only)
+  voice_to_group: true        # what is said to the chef from the app happens in the group; false: in the person's private chat
   group_open: false           # true: anyone in the group may use the bot, not only bot.people
   sync_profile: true          # at start, set the bot's command menu and descriptions in Telegram
   share_logs_in_group: false  # true: the AI may discuss weigh-ins, binges, cravings and notes in the group

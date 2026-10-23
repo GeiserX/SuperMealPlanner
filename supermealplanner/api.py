@@ -557,7 +557,8 @@ def router(state) -> APIRouter:
 
     # ---------------------------------------------------------------- talking to the chef
     def chef_bot(row: dict):
-        """The running bot and the device's person, who must have a private chat with it."""
+        """The running bot and the device's person, who must be able to write where spoken turns
+        happen: the household group, or their private chat with the bot."""
         bot = state.bot
         if bot is None or not bot.started or bot.client is None:
             raise HTTPException(503, "the bot is not running here")
@@ -565,7 +566,9 @@ def router(state) -> APIRouter:
         uid = state.data.settings.bot.people.get(person or "")
         if uid is None:
             raise HTTPException(409, "this device's person has no Telegram user in bot.people")
-        if not bot.allowed({"type": "private", "id": uid}, uid):
+        chat = bot.voice_chat(uid)
+        kind = "private" if chat == uid else "group"
+        if not bot.allowed({"type": kind, "id": chat}, uid):
             raise HTTPException(409, "private chats with the bot are turned off")
         return bot, person
 
