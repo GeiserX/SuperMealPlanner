@@ -417,6 +417,26 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
     return out
 
 
+@dataclass
+class Soak:
+    recipe: Recipe
+    ingredient: Ingredient
+    qty: float
+    amount: str
+
+
+def soak_for(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[Soak]:
+    """What to leave in water the night before a batch session: each dish's ingredients marked
+    `soak`, in the quantity the whole dish needs."""
+    out = []
+    for b in batch_sheet(data, db, plan, session_date):
+        for iid, qty in amounts(data, b.recipe, b.eaters).items():
+            ing = data.ingredients[iid]
+            if ing.soak:
+                out.append(Soak(b.recipe, ing, qty, fmt_qty(ing, qty, data.locale)))
+    return out
+
+
 def batch_dish_text(t, b: BatchDish, names: dict[str, str]) -> str:
     """A batch dish for the chat: whole servings, when it is cooked, which lunches it is for, and
     the split by person (the only place with decimals)."""

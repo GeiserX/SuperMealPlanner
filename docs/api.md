@@ -54,9 +54,9 @@ not expire; it ends when someone takes the phone away with `/devices` (`/disposi
 | `GET /ping` | **No token.** `{"app": "supermealplanner", "version", "api"}` — what an app checks before it asks for anything, and how it knows a server is one of ours |
 | `POST /pair` | **No token.** A code for a token, as above |
 | `GET /meta` | The household name, the language, who lives here, the stores, and which device this is |
-| `GET /day?d=&person=` | One day in eating order: every meal, each dish, and a plate per person with its lines, kcal and protein. Plus the day's targets, what to take out of the freezer for tomorrow, and this person's votes |
+| `GET /day?d=&person=` | One day in eating order: every meal, each dish, and a plate per person with its lines, kcal and protein. Plus the day's targets, what to take out of the freezer for tomorrow, what to leave to soak tonight for tomorrow's batch session (`soak_for_tomorrow`: each dish with the ingredient, `qty`, `unit` and the `amount` as the page writes it), and this person's votes |
 | `GET /week?d=` | Seven days of dish names from that week's Monday |
-| `GET /tasks?d=` | Each day's kitchen jobs with their times: defrost, batch, shopping, and one-off reminders set from the chat |
+| `GET /tasks?d=` | Each day's kitchen jobs with their times: defrost, batch (with the soaking on the eve of a session), shopping, and one-off reminders set from the chat |
 | `GET /cook?d=` | A batch afternoon: every dish, its servings, its containers and where each one goes |
 | `GET /recipe/{id}?d=&person=` | The whole recipe, with this person's plate for that day and their vote |
 | `GET /list?d=&store=` | The week's shopping list per store, in the order the aisles come, with the ticks and what is already at home. Each section's lines come as the page shows them (see below) |

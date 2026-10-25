@@ -36,6 +36,7 @@ from .portions import (
     person_days,
     plate,
     shopping_list,
+    soak_for,
     ticked_last,
 )
 from .targets import evaluate, trend
@@ -289,6 +290,18 @@ def router(state) -> APIRouter:
                         e == tomorrow and (e - x.cook).days > r.fridge_days for e in x.eat
                     ):
                         defrost.append(_recipe_brief(r))
+        later = plan_for(state.data, tomorrow)
+        soak = [
+            {
+                "recipe": _recipe_brief(x.recipe),
+                "ingredient": x.ingredient.id,
+                "name": x.ingredient.name,
+                "qty": round(x.qty, 1),
+                "unit": x.ingredient.unit,
+                "amount": x.amount,
+            }
+            for x in (soak_for(state.data, state.db, later, tomorrow) if later else [])
+        ]
         return {
             "day": date.isoformat(),
             "today": today.isoformat(),
@@ -310,6 +323,7 @@ def router(state) -> APIRouter:
                 for pd in people
             ],
             "defrost_for_tomorrow": defrost,
+            "soak_for_tomorrow": soak,
             "votes": state.db.ratings(who or "-") if who else {},
             "person": who,
         }

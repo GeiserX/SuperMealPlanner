@@ -159,7 +159,7 @@ people:
 
 The app fetches the file when the data loads: at start and every hour. It sends the ETag of the last good copy, so an unchanged file costs a 304, and keeps that copy at `cache` with a `.meta` file beside it. When a fetch fails (no answer within `timeout_s`, an error status, or something that is not an export), the last good copy is used; with no copy, everyone's pills come from household.yaml. `smp check` ends with one line per person saying where their pills came from. A check of a change from the chat never fetches: pills never change from the chat. Nothing logs the URL, the token or the file.
 
-Reminder times are `HH:MM` in the household timezone; a bad time or an unknown `{placeholder}` is rejected when the data loads. Reminder kinds: `message` sends its text (`{names}` and `{today}` are filled in); `day` sends the whole day's menu (every meal, the side salad, the snack and the snacks to nibble on) with the day's page; `meal` sends today's `meal` (breakfast, lunch or dinner) with where it comes from and the recipe link; `shopping` links the week's list; `batch` lists today's batch dishes, only on batch days; `defrost` fires only when tomorrow's lunch is in the freezer; `pills_lunch` asks each person with lunch pills who has not logged them yet.
+Reminder times are `HH:MM` in the household timezone; a bad time or an unknown `{placeholder}` is rejected when the data loads. Reminder kinds: `message` sends its text (`{names}` and `{today}` are filled in); `day` sends the whole day's menu (every meal, the side salad, the snack and the snacks to nibble on) with the day's page; `meal` sends today's `meal` (breakfast, lunch or dinner) with where it comes from and the recipe link; `shopping` links the week's list; `batch` lists today's batch dishes, only on batch days, and on the eve of a session (paused or not) the ingredients marked `soak` to leave in water that night, with the quantity and the dish; `defrost` fires only when tomorrow's lunch is in the freezer; `pills_lunch` asks each person with lunch pills who has not logged them yet.
 
 The `plugin` provider loads a Python file from the data directory that defines `complete(system, messages, settings) -> str` (sync or async). Use it for any model or gateway the built-in providers do not cover.
 
@@ -250,6 +250,7 @@ chicken-thigh:
   unit: g                     # g | ml | ud (units)
   kitchen: {name: thigh, g: 110}   # how a cook counts it; optional `plural` when the language rule fails
   flags: []                   # free tags: oxalate-high, gluten, lactose, fish, sweet, contact-irritant...
+  soak: false                 # true for a dried pulse left in water the night before (chickpeas, beans)
 ```
 
 ## recipes/<id>.yaml
