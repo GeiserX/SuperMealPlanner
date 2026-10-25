@@ -66,6 +66,7 @@ class Ingredient(Loose):
     kitchen: KitchenUnit | None = None
     flags: list[str] = []
     clean_label: str | None = None
+    soak: bool = False  # a dried pulse left in water the night before it is cooked
 
 
 # ---------- recipes ----------

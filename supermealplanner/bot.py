@@ -64,7 +64,7 @@ from . import __version__, changes, context, llm, menu
 from .i18n import Translator
 from .model import WEEKDAYS
 from .planner import ICONS, day_menu, paused_days, plan_for
-from .portions import batch_dish_text, batch_sheet, person_days, shopping_list
+from .portions import batch_dish_text, batch_sheet, person_days, shopping_list, soak_for
 
 log = logging.getLogger("supermealplanner.bot")
 API = "https://api.telegram.org/bot{token}/{method}"
@@ -2350,6 +2350,9 @@ class Bot:
             if rest <= paused_days(data):  # the rest of the week is paused: nothing to buy for
                 return None
             return t("reminder_shopping", url=self.url(f"/list?d={day.isoformat()}"))
+        if r.kind == "batch":
+            said = [x for x in (plan and self.batch_reminder(plan, day), self.soak_text(day)) if x]
+            return "\n\n".join(said) or None
         if not plan:
             return None
         if r.kind == "day":
@@ -2367,29 +2370,6 @@ class Bot:
                     dish=data.recipes[tomorrow.lunch].name,
                     url=self.url(f"/recipe/{tomorrow.lunch}?d={tomorrow.date.isoformat()}"),
                 )
-            return None
-        if r.kind == "batch":
-            for s in plan.sessions:
-                if s.date == day and not s.morning:
-                    dishes = self.batch_text(data, plan, day, s)
-                    if not dishes:  # every dish was deleted: nothing to remind about yet
-                        continue
-                    return t(
-                        "reminder_batch", dishes=dishes, url=self.url(f"/batch?d={day.isoformat()}")
-                    )
-            tomorrow = day + dt.timedelta(days=1)
-            if day in paused_days(
-                data
-            ):  # the first day back cooks that morning: say so the day before
-                for s in plan.sessions:
-                    if s.date == tomorrow and s.morning:
-                        dishes = self.batch_text(data, plan, tomorrow, s)
-                        if dishes:
-                            return t(
-                                "reminder_batch_morning",
-                                dishes=dishes,
-                                url=self.url(f"/batch?d={tomorrow.isoformat()}"),
-                            )
             return None
         if r.kind == "meal":
             d = plan.day(day)
@@ -2429,6 +2409,45 @@ class Bot:
                     todo.append(t("reminder_pills_lunch", name=self.mention(p.id)))
             return "\n".join(todo) or None
         return None
+
+    def batch_reminder(self, plan, day: dt.date) -> str | None:
+        """Today's afternoon session, or tomorrow morning's when today is paused."""
+        t, data = self.t, self.data
+        for s in plan.sessions:
+            if s.date == day and not s.morning:
+                dishes = self.batch_text(data, plan, day, s)
+                if not dishes:  # every dish was deleted: nothing to remind about yet
+                    continue
+                return t(
+                    "reminder_batch", dishes=dishes, url=self.url(f"/batch?d={day.isoformat()}")
+                )
+        tomorrow = day + dt.timedelta(days=1)
+        if day in paused_days(data):  # the first day back cooks that morning: say so the day before
+            for s in plan.sessions:
+                if s.date == tomorrow and s.morning:
+                    dishes = self.batch_text(data, plan, tomorrow, s)
+                    if dishes:
+                        return t(
+                            "reminder_batch_morning",
+                            dishes=dishes,
+                            url=self.url(f"/batch?d={tomorrow.isoformat()}"),
+                        )
+        return None
+
+    def soak_text(self, day: dt.date) -> str | None:
+        """The eve of a batch session: the dried pulses to leave in water tonight, even when
+        today is paused."""
+        t = self.t
+        tomorrow = day + dt.timedelta(days=1)
+        plan = plan_for(self.data, tomorrow)
+        soaks = soak_for(self.data, self.state.db, plan, tomorrow) if plan else []
+        if not soaks:
+            return None
+        items = "\n".join(
+            t("reminder_soak_item", name=x.ingredient.name, amount=x.amount, dish=x.recipe.name)
+            for x in soaks
+        )
+        return t("reminder_soak", items=items, url=self.url(f"/batch?d={tomorrow.isoformat()}"))
 
     def batch_text(self, data, plan, day: dt.date, session) -> str:
         """The session's dishes, one block each: servings, cooking time, lunches, split by person."""
