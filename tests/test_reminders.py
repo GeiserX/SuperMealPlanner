@@ -168,7 +168,7 @@ def test_a_tap_on_here_stores_it_and_the_clock_posts_it_once_naming_the_person(
     cfg(data_dir, text="Sunday.\n" + block((when, "Cook Monday's lunch", "ana")))
     run(b.handle(None, msg("@chefbot when?", message_id=1)))
     offer = offer_of(b)
-    here, _nothing = buttons(offer)
+    (here,) = buttons(offer)  # no calendar: only «here»
     mid = mid_of(b, offer)
     run(tap(b, here["callback_data"], 5, mid))  # a stranger: nothing
     assert db.reminders(-100) == []
@@ -195,7 +195,7 @@ def test_only_the_people_it_was_for_can_tap_an_offer(data_dir, tmp_path):
     cfg(data_dir, text="Sunday.\n" + block((when, "Cook Monday's lunch")))  # for Luis, who asked
     run(b.handle(None, msg("@chefbot when?", message_id=1)))
     offer = offer_of(b)
-    here, _nothing = buttons(offer)
+    (here,) = buttons(offer)  # no calendar: only «here»
     run(tap(b, here["callback_data"], 8, mid_of(b, offer)))  # Ana is in the household, not asked
     assert toasts(b)[-1] == "Only Luis can answer this."
     assert db.reminders(-100) == [] and not markups(b)
@@ -213,15 +213,20 @@ def test_a_reminder_set_survives_a_restart_and_a_late_one_says_so(data_dir, tmp_
 
 
 def test_nothing_or_no_tap_does_nothing_and_the_buttons_say_so(data_dir, tmp_path, monkeypatch):
-    b, db = setup(data_dir, tmp_path)
+    b, db = setup(data_dir, tmp_path, reminder_calendar=True)  # «No» comes with the calendar
     one, _ = ahead(2, 18)
     two, _ = ahead(2, 20)
     cfg(data_dir, text="Two steps.\n" + block((one, "Cook"), (two, "Clean")))
     run(b.handle(None, msg("@chefbot plan?", message_id=1)))
     offer = offer_of(b)
-    _h1, nothing1, h2, _n2 = buttons(offer)
+    _h1, _c1, nothing1, h2, _c2, _n2 = buttons(offer)
     run(tap(b, nothing1["callback_data"], 7, mid_of(b, offer)))
-    assert labels(markups(b)[-1]) == ["✓ 1 · No", "2 · Reminder here", "2 · No"]
+    assert labels(markups(b)[-1]) == [
+        "✓ 1 · No",
+        "2 · Reminder here",
+        "2 · In the calendar",
+        "2 · No",
+    ]
     now = time.time()
     monkeypatch.setattr(botmod.time, "time", lambda: now + botmod.REMIND_TTL + 5)
     run(b.expire_offers(None))
