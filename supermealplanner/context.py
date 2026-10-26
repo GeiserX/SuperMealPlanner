@@ -3,7 +3,8 @@
 rules(): the instructions, which stay the same from one message to the next: the shared assistant
 principles first (principles/<language>.md), then this app's own rules.
 facts(): the household, today's and tomorrow's plates, the menu of this week and the next, the
-recipes, recent logs and the settings it may change, as of now.
+recipes, this week's shopping list with what is ticked, recent logs and the settings it may change,
+as of now.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from .db import DB
 from .i18n import Translator
 from .model import Data
 from .planner import paused_days, plan_for
-from .portions import person_days
+from .portions import person_days, shopping_list
 from .targets import current_kcal
 
 RULES = """You are the household's meal-planning assistant inside a family chat.
@@ -341,6 +342,7 @@ def facts(
                 out.append(f"  - {meal}: {pl.recipe.name}: " + "; ".join(pl.lines))
 
     out += menu_now(data, t, today)
+    out += list_now(data, db, today)
     out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)
 
@@ -377,6 +379,31 @@ def menu_now(data: Data, t: Translator, today: dt.date) -> list[str]:
     for r in sorted(data.recipes.values(), key=lambda r: r.id):
         side = ", side salad" if r.has("side") else ""
         out.append(f"- {r.id}: {r.name}; {', '.join(r.meals)}; {r.kind}{side}")
+    return out
+
+
+def list_now(data: Data, db: DB, today: dt.date) -> list[str]:
+    """This week's shopping list as the phones share it: each line ticked (bought) or still to buy,
+    by store and section, and what is at home and off the list. Someone back from the shop can ask
+    what was missing, and the menu can be fitted to it, without reading the list out."""
+    monday = today - dt.timedelta(days=today.weekday())
+    plan = plan_for(data, monday)
+    if not plan:
+        return []
+    shop = shopping_list(data, db, plan, monday)
+    ticked = db.ticked(monday)
+    head = "\n## Shopping list this week (bought = ticked on the list; after a shop, what is still "
+    out = [head + "to buy was not found or not bought yet)"]
+    for s in shop.stores:
+        out.append(f"- {s.name}:")
+        for sec, lines in s.sections.items():
+            for line in lines:
+                state = "bought" if line.ingredient.id in ticked else "to buy"
+                out.append(
+                    f"  - {sec}: {line.ingredient.name} [{line.ingredient.id}], {line.amount}: {state}"
+                )
+    if shop.have:
+        out.append("- at home, off the list: " + ", ".join(i.name for i in shop.have))
     return out
 
 
