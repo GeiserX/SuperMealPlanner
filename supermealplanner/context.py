@@ -17,7 +17,7 @@ from .db import DB
 from .i18n import Translator
 from .model import Data
 from .planner import paused_days, plan_for
-from .portions import person_days, shopping_list
+from .portions import needs, person_days, shopping_list
 from .targets import current_kcal
 
 RULES = """You are the household's meal-planning assistant inside a family chat.
@@ -154,10 +154,11 @@ plan:
   - undo: true                                           # alone in the list
 ```
 
-A new reminder needs id, kind (message, day, meal, batch, shopping, defrost), at, and text
+A new reminder needs id, kind (message, day, meal, batch, shopping, defrost, review), at, and text
 for kind message ({names} and {today} are filled in). Kind day sends the whole day's menu
 (breakfast, lunch with where it comes from, salad, snack, the snacks to nibble on, dinner) and the
-day's page; nothing is sent on a paused day.
+day's page; nothing is sent on a paused day. Kind review is the weekly review: at its time you
+are asked to check the coming week and fix it (a day before the shopping day suits it).
 
 `asked: true` means the person you are answering asked for exactly this change in their message
 ("lunch at 14:30", "this week we eat what we have"). The app then makes it at once, with no
@@ -404,7 +405,34 @@ def list_now(data: Data, db: DB, today: dt.date) -> list[str]:
                 )
     if shop.have:
         out.append("- at home, off the list: " + ", ".join(i.name for i in shop.have))
+    out += unused_now(data, db, monday)
     return out
+
+
+def unused_now(data: Data, db: DB, monday: dt.date) -> list[str]:
+    """Food ticked as bought on last week's or this week's list that no dish uses, from last Monday
+    to the end of next week: a dish was moved or dropped after the shopping. It must not go to
+    waste, so the AI is told to put it back in the menu or say how to keep it."""
+    weeks = [monday + dt.timedelta(days=7 * w) for w in (-1, 0, 1)]
+    used: set[str] = set()
+    for m in weeks:
+        if plan := plan_for(data, m):
+            used |= set(needs(data, db, plan, m))
+    bought = db.ticked(weeks[0]) | db.ticked(weeks[1])
+    left = sorted(data.ingredients[i].name for i in bought - used if i in data.ingredients)
+    if not left:
+        return []
+    head = (
+        "\n## Bought and on no dish (ticked since last Monday; a dish was moved or dropped after "
+    )
+    rule = (
+        "- Never let it go to waste: put each in the menu before it spoils, with a menu change, or "
+    )
+    return [
+        head + "the shopping)",
+        "- " + ", ".join(left),
+        rule + "say how to keep it (freeze it); ask only if it may already be eaten.",
+    ]
 
 
 def settings_now(data: Data, viewer: str | None = None) -> str:

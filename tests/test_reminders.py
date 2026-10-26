@@ -110,13 +110,8 @@ def test_steps_at_a_time_are_offered_as_reminders_with_buttons_and_the_no_answer
     assert "1. " in offer["text"] and "Cook Monday's lunch" in offer["text"]
     assert "18:00" in offer["text"] and "22:00" in offer["text"]
     assert offer["text"].endswith("If you do not answer, I do nothing.")
-    # calendar off by default: here and nothing per reminder
-    assert labels(offer) == [
-        "1 · Reminder here",
-        "1 · No",
-        "2 · Reminder here",
-        "2 · No",
-    ]
+    # calendar off by default: only «here» per reminder; untapped, nothing is done anyway
+    assert labels(offer) == ["1 · Reminder here", "2 · Reminder here"]
     assert db.reminders(-100) == []  # nothing until a tap
 
 
@@ -453,3 +448,43 @@ def test_untouched_answer_flow_still_runs_while_an_offer_waits(data_dir, tmp_pat
     run(b.handle(None, msg("@chefbot and for dinner?", message_id=2)))
     assert sends(b, -100)[-1]["text"] == "Lentils."
     assert asyncio.iscoroutinefunction(b.expire_offers)
+
+
+# ---------------------------------------------------------------- the weekly review
+
+
+def test_the_weekly_review_asks_the_ai_itself_and_answers_the_group(data_dir, tmp_path):
+    # nobody has to ask: at its time the review is a turn of its own, for the coming week
+    from supermealplanner.model import Reminder
+
+    b, db = setup(data_dir, tmp_path)
+    cfg(data_dir, text="The week fits. Buy the fish on Tuesday.")
+    review = Reminder(id="revision", kind="review", at=["18:00"], days=["sunday"])
+    b.data.settings.reminders = [review]
+    sunday = dt.date(2026, 10, 25)
+    b.due = lambda now: [(review, "18:00")]
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2026, 10, 25, 18, 1, tzinfo=tz)
+
+    real = botmod.dt.datetime
+    botmod.dt.datetime = Clock
+    try:
+
+        async def go():
+            await b.tick_reminders(None)
+            await drain(b)
+            await b.tick_reminders(None)  # once per time, like every reminder
+            await drain(b)
+
+        run(go())
+    finally:
+        botmod.dt.datetime = real
+    (turn,) = lines(data_dir, "turns.jsonl")
+    (asked,) = turn["new"]
+    assert "Weekly review" in asked and "2026-10-26" in asked  # the week that starts tomorrow
+    assert "waste" in asked and "what each of us has to do" in asked
+    assert sends(b, -100)[-1]["text"] == "The week fits. Buy the fish on Tuesday."
+    assert db.was_sent("revision", sunday, "18:00")

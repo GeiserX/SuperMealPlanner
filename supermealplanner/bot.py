@@ -2338,6 +2338,15 @@ class Bot:
                     out.append((r, at))
         return out
 
+    def review(self, chat: int, day: dt.date) -> None:
+        """The weekly review: a turn the bot asks itself, before the week's shopping, to check the
+        coming week against everything the household said, fix what does not fit with menu
+        changes, and tell the group what to do. It is answered like any message, so the AI uses
+        the same changes and reminders; nobody has to ask."""
+        monday = day + dt.timedelta(days=(7 - day.weekday()) % 7)
+        text = self.t("review_turn", week=self.t.date(monday), d=monday.isoformat())
+        self.take(chat, {"first_name": self.t("review_who")}, None, None, text, True)
+
     def reminder_text(self, r, day: dt.date) -> str | None:
         t, data, db = self.t, self.data, self.state.db
         people = [p for p in data.household.people if not r.people or p.id in r.people]
@@ -2494,6 +2503,11 @@ class Bot:
         for r, at in self.due(now):
             if self.state.db.was_sent(r.id, now.date(), at):
                 continue
+            if r.kind == "review":
+                self.review(chat, now.date())
+                self.state.db.mark_sent(r.id, now.date(), at)
+                self.spawn(self.drive(client, chat))
+                continue
             text = self.reminder_text(r, now.date())
             if text:
                 await self.send(client, chat, text)
@@ -2565,7 +2579,8 @@ class Bot:
 
     def _remind_rows(self, key: str, items: list[dict]) -> list[list[tuple[str, str]]]:
         """Each reminder's buttons (here, in the calendar, nothing), or one inert button saying
-        what became of it."""
+        what became of it. Without the calendar only «here» is offered: an offer nobody taps
+        does nothing anyway, and the offer says so."""
         t, rows = self.t, []
         calendar = self.data.settings.bot.reminder_calendar
         for n, r in enumerate(items):
@@ -2574,8 +2589,10 @@ class Bot:
                 rows.append([(f"✓ {pre}{t('remind_' + r['done'])}", "x")])
                 continue
             first = [(pre + t("remind_here"), f"r:{key}:{n}h")]
-            if calendar:
-                first.append((pre + t("remind_calendar"), f"r:{key}:{n}c"))
+            if not calendar:
+                rows.append(first)
+                continue
+            first.append((pre + t("remind_calendar"), f"r:{key}:{n}c"))
             rows += [first, [(pre + t("remind_nothing"), f"r:{key}:{n}x")]]
         return rows
 
