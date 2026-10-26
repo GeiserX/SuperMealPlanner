@@ -744,3 +744,24 @@ def test_a_shift_asked_in_the_chat_is_done_and_said(data_dir, tmp_path):
         with pytest.raises(menu.MenuError):
             menu.parse([{"shift": bad}], data)
     assert "shift: {from:" in context.rules(data)
+
+
+def test_the_assistant_sees_what_is_ticked_on_the_weeks_list(data_dir, tmp_path):
+    # back from the shop, someone asks what was missing: the chef reads it, nobody reads it out
+    data = planned(data_dir)
+    db = DB(tmp_path / "x.db")
+    lines = needs(data, db, plan_for(data, MONDAY), MONDAY)
+    got, missing, home = sorted(lines)[:3]
+    db.tick(MONDAY, got, True)
+    db.set_have(home, True)
+    facts = context.facts(data, db, MONDAY)
+    assert "## Shopping list this week" in facts
+    rows = {
+        r.split("[")[1].split("]")[0]: r
+        for r in facts.splitlines()
+        if r.startswith("  - ") and "]," in r
+    }
+    assert rows[got].endswith(": bought") and rows[missing].endswith(": to buy")
+    assert (
+        home not in rows and data.ingredients[home].name in facts.split("at home, off the list:")[1]
+    )
