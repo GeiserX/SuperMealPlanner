@@ -110,13 +110,8 @@ def test_steps_at_a_time_are_offered_as_reminders_with_buttons_and_the_no_answer
     assert "1. " in offer["text"] and "Cook Monday's lunch" in offer["text"]
     assert "18:00" in offer["text"] and "22:00" in offer["text"]
     assert offer["text"].endswith("If you do not answer, I do nothing.")
-    # calendar off by default: here and nothing per reminder
-    assert labels(offer) == [
-        "1 · Reminder here",
-        "1 · No",
-        "2 · Reminder here",
-        "2 · No",
-    ]
+    # calendar off by default: only «here» per reminder; untapped, nothing is done anyway
+    assert labels(offer) == ["1 · Reminder here", "2 · Reminder here"]
     assert db.reminders(-100) == []  # nothing until a tap
 
 
@@ -173,7 +168,7 @@ def test_a_tap_on_here_stores_it_and_the_clock_posts_it_once_naming_the_person(
     cfg(data_dir, text="Sunday.\n" + block((when, "Cook Monday's lunch", "ana")))
     run(b.handle(None, msg("@chefbot when?", message_id=1)))
     offer = offer_of(b)
-    here, _nothing = buttons(offer)
+    (here,) = buttons(offer)  # no calendar: only «here»
     mid = mid_of(b, offer)
     run(tap(b, here["callback_data"], 5, mid))  # a stranger: nothing
     assert db.reminders(-100) == []
@@ -200,7 +195,7 @@ def test_only_the_people_it_was_for_can_tap_an_offer(data_dir, tmp_path):
     cfg(data_dir, text="Sunday.\n" + block((when, "Cook Monday's lunch")))  # for Luis, who asked
     run(b.handle(None, msg("@chefbot when?", message_id=1)))
     offer = offer_of(b)
-    here, _nothing = buttons(offer)
+    (here,) = buttons(offer)  # no calendar: only «here»
     run(tap(b, here["callback_data"], 8, mid_of(b, offer)))  # Ana is in the household, not asked
     assert toasts(b)[-1] == "Only Luis can answer this."
     assert db.reminders(-100) == [] and not markups(b)
@@ -218,15 +213,20 @@ def test_a_reminder_set_survives_a_restart_and_a_late_one_says_so(data_dir, tmp_
 
 
 def test_nothing_or_no_tap_does_nothing_and_the_buttons_say_so(data_dir, tmp_path, monkeypatch):
-    b, db = setup(data_dir, tmp_path)
+    b, db = setup(data_dir, tmp_path, reminder_calendar=True)  # «No» comes with the calendar
     one, _ = ahead(2, 18)
     two, _ = ahead(2, 20)
     cfg(data_dir, text="Two steps.\n" + block((one, "Cook"), (two, "Clean")))
     run(b.handle(None, msg("@chefbot plan?", message_id=1)))
     offer = offer_of(b)
-    _h1, nothing1, h2, _n2 = buttons(offer)
+    _h1, _c1, nothing1, h2, _c2, _n2 = buttons(offer)
     run(tap(b, nothing1["callback_data"], 7, mid_of(b, offer)))
-    assert labels(markups(b)[-1]) == ["✓ 1 · No", "2 · Reminder here", "2 · No"]
+    assert labels(markups(b)[-1]) == [
+        "✓ 1 · No",
+        "2 · Reminder here",
+        "2 · In the calendar",
+        "2 · No",
+    ]
     now = time.time()
     monkeypatch.setattr(botmod.time, "time", lambda: now + botmod.REMIND_TTL + 5)
     run(b.expire_offers(None))
@@ -453,3 +453,43 @@ def test_untouched_answer_flow_still_runs_while_an_offer_waits(data_dir, tmp_pat
     run(b.handle(None, msg("@chefbot and for dinner?", message_id=2)))
     assert sends(b, -100)[-1]["text"] == "Lentils."
     assert asyncio.iscoroutinefunction(b.expire_offers)
+
+
+# ---------------------------------------------------------------- the weekly review
+
+
+def test_the_weekly_review_asks_the_ai_itself_and_answers_the_group(data_dir, tmp_path):
+    # nobody has to ask: at its time the review is a turn of its own, for the coming week
+    from supermealplanner.model import Reminder
+
+    b, db = setup(data_dir, tmp_path)
+    cfg(data_dir, text="The week fits. Buy the fish on Tuesday.")
+    review = Reminder(id="revision", kind="review", at=["18:00"], days=["sunday"])
+    b.data.settings.reminders = [review]
+    sunday = dt.date(2026, 10, 25)
+    b.due = lambda now: [(review, "18:00")]
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2026, 10, 25, 18, 1, tzinfo=tz)
+
+    real = botmod.dt.datetime
+    botmod.dt.datetime = Clock
+    try:
+
+        async def go():
+            await b.tick_reminders(None)
+            await drain(b)
+            await b.tick_reminders(None)  # once per time, like every reminder
+            await drain(b)
+
+        run(go())
+    finally:
+        botmod.dt.datetime = real
+    (turn,) = lines(data_dir, "turns.jsonl")
+    (asked,) = turn["new"]
+    assert "Weekly review" in asked and "2026-10-26" in asked  # the week that starts tomorrow
+    assert "waste" in asked and "what each of us has to do" in asked
+    assert sends(b, -100)[-1]["text"] == "The week fits. Buy the fish on Tuesday."
+    assert db.was_sent("revision", sunday, "18:00")

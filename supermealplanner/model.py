@@ -277,9 +277,9 @@ class Shopping(Loose):
 
 class Reminder(Loose):
     id: str
-    kind: Literal["message", "day", "defrost", "batch", "shopping", "pills_lunch", "meal"] = (
-        "message"
-    )
+    kind: Literal[
+        "message", "day", "defrost", "batch", "shopping", "pills_lunch", "meal", "review"
+    ] = "message"
     meal: Literal["breakfast", "lunch", "dinner"] = "lunch"  # for kind "meal"
     text: str = ""  # for kind "message"
     at: list[str]  # "HH:MM" times in the household timezone

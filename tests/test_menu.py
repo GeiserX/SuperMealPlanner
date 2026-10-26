@@ -765,3 +765,19 @@ def test_the_assistant_sees_what_is_ticked_on_the_weeks_list(data_dir, tmp_path)
     assert (
         home not in rows and data.ingredients[home].name in facts.split("at home, off the list:")[1]
     )
+
+
+def test_food_bought_that_no_dish_uses_is_put_to_the_assistant_never_wasted(data_dir, tmp_path):
+    # a dish moved after the shopping left the beef in the fridge with no day to eat it
+    data = planned(data_dir)
+    db = DB(tmp_path / "x.db")
+    used = set(needs(data, db, plan_for(data, MONDAY), MONDAY))
+    spare = next(i for i in sorted(data.ingredients) if i not in used)
+    eaten = min(used)
+    assert "## Bought and on no dish" not in context.facts(data, db, MONDAY)
+    db.tick(MONDAY - dt.timedelta(days=7), spare, True)  # last week's list
+    db.tick(MONDAY, eaten, True)
+    facts = context.facts(data, db, MONDAY + dt.timedelta(days=2))
+    part = facts.split("## Bought and on no dish")[1].split("\n## ")[0]
+    assert data.ingredients[spare].name in part and data.ingredients[eaten].name not in part
+    assert "Never let it go to waste" in part
