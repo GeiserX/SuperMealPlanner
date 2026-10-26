@@ -146,6 +146,7 @@ notes:
   - remove: {person: <person id>, text: <the exact text of a chat note>}
 plan:
   - set: {date: 2026-01-14, meal: dinner, recipe: <recipe id>}
+  - set: {date: 2026-01-15, meal: lunch, recipe: <recipe id>, cook: 2026-01-13}   # cook: the day it is cooked; always give it when you tell someone which day to cook a lunch, so the Cook page and its reminder say the same
   - swap: {a: 2026-01-14, b: 2026-01-16, meal: dinner}   # without meal: the whole day
   - pause: {from: 2026-01-12, to: 2026-01-18}
   - resume: {from: 2026-01-15, to: 2026-01-18}

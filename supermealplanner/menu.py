@@ -45,7 +45,7 @@ log = logging.getLogger("supermealplanner")
 
 MEALS = ("breakfast", "lunch", "side", "snack", "dinner")
 FIELDS = {
-    "set": {"date", "meal", "recipe"},
+    "set": {"date", "meal", "recipe", "cook"},
     "swap": {"a", "b", "meal"},
     "pause": {"from", "to"},
     "resume": {"from", "to"},
@@ -104,9 +104,16 @@ def parse(raw, data: Data, new_recipe: str | None = None) -> list[Op]:
                 raise MenuError(f"no recipe {rid}")
             if meal == "side" and r is not None and not r.has("side"):
                 raise MenuError(f"{rid} is not a side salad")
-            out.append(
-                Op(kind, {"date": _date(args.get("date"), "date"), "meal": meal, "recipe": rid})
-            )
+            day = _date(args.get("date"), "date")
+            op = Op(kind, {"date": day, "meal": meal, "recipe": rid})
+            if "cook" in args:  # the day it is cooked, when the household said one
+                cook = _date(args["cook"], "cook")
+                if meal != "lunch":
+                    raise MenuError("cook is the day a lunch is cooked; other meals are made fresh")
+                if cook > day:
+                    raise MenuError(f"{rid} cannot be cooked on {cook}, after it is eaten on {day}")
+                op.args["cook"] = cook
+            out.append(op)
         elif kind == "swap":
             a, b = _date(args.get("a"), "a"), _date(args.get("b"), "b")
             if a == b:
@@ -155,6 +162,7 @@ def describe(ops: list[Op], data: Data, t, names: dict[str, str] | None = None) 
                     old=name(getattr(day[2], a["meal"]) if day else None),
                     new=name(a["recipe"]),
                 )
+                + (t("change_plan_cooked", day=t.date(a["cook"])) if a.get("cook") else "")
             )
         elif op.kind == "swap":
             key = "change_plan_swap_meal" if a["meal"] else "change_plan_swap"
@@ -243,11 +251,24 @@ def _set(data: Data, plans, op: Op, today: dt.date) -> set[Path]:
     else:
         # in the batch session that cooked the lunch it replaces, when that is still to come and
         # the dish keeps until the day; otherwise cooked the same morning
-        cook = day.lunch_cook
-        gap = (day.date - cook).days
-        keeps = gap <= r.fridge_days or r.freezes
-        if r.kind != "batch" or cook < today or not keeps:
-            cook = day.date
+        if a.get("cook"):  # the day the household said: kept to, or refused with the reason
+            cook = a["cook"]
+            if cook < today:
+                raise MenuError(f"{cook} is already past: {r.name} cannot be cooked then")
+            gap = (day.date - cook).days
+            if gap > r.fridge_days and not r.freezes:
+                raise MenuError(
+                    f"{r.name} keeps {r.fridge_days} days in the fridge: cooked on {cook} it "
+                    f"does not reach {day.date}"
+                )
+        else:
+            # in the batch session that cooked the lunch it replaces, when that is still to come
+            # and the dish keeps until the day; otherwise cooked the same morning
+            cook = day.lunch_cook
+            gap = (day.date - cook).days
+            keeps = gap <= r.fridge_days or r.freezes
+            if r.kind != "batch" or cook < today or not keeps:
+                cook = day.date
         _put_lunch(plan, day, r.id, cook)
     _salad(data, day)
     return {path}

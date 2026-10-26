@@ -85,6 +85,33 @@ def test_a_new_lunch_leaves_its_old_container_and_gets_its_own(data_dir):
     assert all(D(1) not in x.eat for x in old)
 
 
+def test_a_lunch_is_cooked_the_day_the_household_said(data_dir):
+    # the chef said «cook it on Wednesday night»; the Cook page put it on Monday and again later
+    data = planned(data_dir)
+    lunch = plan_for(data, D(3)).day(D(3)).lunch
+
+    def put(date, cook, rid=lunch, meal="lunch", today=MONDAY):
+        op = {"date": str(date), "meal": meal, "recipe": rid, "cook": str(cook)}
+        change(data, {"set": op}, today=today)
+
+    put(D(3), D(2))
+    put(D(4), D(2))
+    plan = plan_for(data, D(3))
+    assert plan.day(D(3)).lunch_cook == D(2) == plan.day(D(4)).lunch_cook
+    boxes = [(s.date, s.morning, x.eat) for s in plan.sessions for x in s.dishes if D(3) in x.eat]
+    assert boxes == [(D(2), False, [D(3), D(4)])]  # one session, the evening before, for both
+    op = {"set": {"date": str(D(3)), "meal": "lunch", "recipe": lunch, "cook": str(D(2))}}
+    assert "cooked on" in menu.describe(menu.parse([op], data), data, Translator("en"))[0]
+    with pytest.raises(menu.MenuError, match="after it is eaten"):
+        put(D(3), D(4))
+    with pytest.raises(menu.MenuError, match="already past"):
+        put(D(2), D(0), today=D(1))
+    with pytest.raises(menu.MenuError, match="keeps 2 days"):  # does not freeze either
+        put(D(5), D(1), rid="pollo-sin-congelar")
+    with pytest.raises(menu.MenuError, match="other meals"):
+        put(D(3), D(2), meal="dinner")
+
+
 def test_two_days_swap_and_every_lunch_is_still_cooked_before_it_is_eaten(data_dir):
     data = planned(data_dir)
     before = plan_for(data, MONDAY)
