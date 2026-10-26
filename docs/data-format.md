@@ -223,6 +223,7 @@ The same block changes the menu with a `plan` list. Menu changes are written und
 asked: true
 plan:
   - set: {date: 2026-01-14, meal: dinner, recipe: tuna-salad}   # breakfast, lunch, side, snack, dinner
+  - set: {date: 2026-01-15, meal: lunch, recipe: lentils, cook: 2026-01-13}   # cook: the day a lunch is cooked (an evening session before the day); refused if past or longer than the dish keeps
   - swap: {a: 2026-01-14, b: 2026-01-16, meal: dinner}          # without meal: the whole day
   - pause: {from: 2026-01-12, to: 2026-01-18}                   # both days included
   - resume: {from: 2026-01-15, to: 2026-01-18}
