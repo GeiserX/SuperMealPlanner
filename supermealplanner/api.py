@@ -29,10 +29,12 @@ from . import __version__, llm
 from .i18n import Translator
 from .planner import day_menu, paused_days, plan_for
 from .portions import (
+    MEAL_HOURS,
     MEAL_ORDER,
     batch_for_text,
     batch_sheet,
     batch_split_text,
+    meals_now,
     person_days,
     plate,
     shopping_list,
@@ -254,6 +256,7 @@ def router(state) -> APIRouter:
         menu = day_menu(state.data, pday) if pday else []
         who = whose(row, person)
         swaps = {p.id: p.swaps for p in state.data.household.people}
+        open_meals = meals_now(state.now().time())
         meals = []
         for meal in MEAL_ORDER:
             dishes = [r for m, r in menu if m == meal]
@@ -262,6 +265,9 @@ def router(state) -> APIRouter:
             meals.append(
                 {
                     "meal": meal,
+                    "starts": MEAL_HOURS[meal][0],
+                    "ends": MEAL_HOURS[meal][1],
+                    "open": meal in open_meals,
                     "dishes": [
                         {
                             "recipe": _recipe_brief(r),
@@ -308,6 +314,7 @@ def router(state) -> APIRouter:
             "paused": date in paused_days(state.data),
             "planned": plan is not None and pday is not None,
             "meals": meals,
+            "open_meals": open_meals,
             "people": [
                 {
                     "person": pd.person_id,

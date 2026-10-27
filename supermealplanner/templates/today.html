@@ -14,8 +14,8 @@
   {% for meal in meals %}
     {% set rid = pday[meal] %}
     {% if rid and rid in recipes %}
-    <section class="meal">
-      <h2>{{ t('meal_' + meal) }}{% if meal == 'lunch' %}<small> · {{ hh.lunch_time }}</small>{% endif %}</h2>
+    <details class="meal fold" data-meal="{{ meal }}" data-starts="{{ meal_hours[meal][0] }}" data-ends="{{ meal_hours[meal][1] }}"{% if meal in open_meals %} open{% endif %}>
+      <summary><h2>{{ t('meal_' + meal) }}{% if meal == 'lunch' %}<small> · {{ hh.lunch_time }}</small>{% endif %}</h2></summary>
       <a class="dish" href="/recipe/{{ rid }}?d={{ day }}">{{ recipes[rid].name }}</a>
       {% if meal in ('lunch', 'dinner') %}{{ vote(rid) }}{% endif %}
       {% if meal == 'lunch' %}
@@ -31,7 +31,7 @@
         </div>
       {% endfor %}
       </div>
-    </section>
+    </details>
     {% endif %}
   {% endfor %}
   {% if picks %}
@@ -62,5 +62,14 @@
     </div>
     {% endfor %}
   </section>
+<script>
+(function () {
+  // The page may come from the offline copy: open the meal of this phone's hour, once, on load.
+  var d = new Date(), hm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+  document.querySelectorAll('details[data-meal]').forEach(function (m) {
+    m.open = m.dataset.starts <= hm && hm < m.dataset.ends;
+  });
+})();
+</script>
 {% endif %}
 {% endblock %}

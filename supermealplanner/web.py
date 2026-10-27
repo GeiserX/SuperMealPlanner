@@ -23,10 +23,12 @@ from .i18n import Translator
 from .model import Data, load
 from .planner import ICONS, day_menu, paused_days, plan_for
 from .portions import (
+    MEAL_HOURS,
     MEAL_ORDER,
     batch_for_text,
     batch_sheet,
     batch_split_text,
+    meals_now,
     person_days,
     plate,
     shopping_list,
@@ -52,8 +54,11 @@ class App:
         self.data: Data = load(self.root)
         self.db = DB(self.data.state / "supermealplanner.db")
 
+    def now(self) -> dt.datetime:
+        return dt.datetime.now(ZoneInfo(self.data.household.timezone))
+
     def today(self) -> dt.date:
-        return dt.datetime.now(ZoneInfo(self.data.household.timezone)).date()
+        return self.now().date()
 
 
 def create_app(root: str | Path | None = None) -> FastAPI:
@@ -164,6 +169,8 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 defrost=defrost,
                 recipes=state.data.recipes,
                 meals=MEAL_ORDER,
+                meal_hours=MEAL_HOURS,
+                open_meals=meals_now(state.now().time()),
                 votes=state.db.ratings(request.cookies.get("who") or "-"),
                 prev=day - dt.timedelta(days=1),
                 next=tomorrow,

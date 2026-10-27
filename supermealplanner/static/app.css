@@ -67,5 +67,5 @@ ul.menu small { color: var(--mut); display: inline-block; min-width: 5.5em; }
 section.day.today { border-color: var(--acc); }
 .fold > summary { cursor: pointer; list-style: none; }
 .fold > summary::-webkit-details-marker { display: none; }
-.fold > summary h3::before { content: "▾ "; }
-.fold:not([open]) > summary h3::before { content: "▸ "; }
+.fold > summary h3::before, .fold > summary h2::before { content: "▾ "; }
+.fold:not([open]) > summary h3::before, .fold:not([open]) > summary h2::before { content: "▸ "; }

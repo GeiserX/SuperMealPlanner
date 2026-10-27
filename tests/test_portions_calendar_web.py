@@ -1,11 +1,12 @@
 import datetime as dt
+import re
 
 from fastapi.testclient import TestClient
 
 from supermealplanner.calendar import busy_afternoons_from_ics
 from supermealplanner.db import DB
 from supermealplanner.planner import generate, plans_dir
-from supermealplanner.portions import person_days, servings_for_week, shopping_list
+from supermealplanner.portions import meals_now, person_days, servings_for_week, shopping_list
 
 from .conftest import MONDAY
 
@@ -133,3 +134,28 @@ def test_plural_kitchen_units():
     assert plural("clove of garlic", 3, "en") == "cloves of garlic"
     assert plural("berry", 2, "en") == "berries"
     assert plural("leaf", 2, "en", explicit="leaves") == "leaves"
+
+
+def test_meals_now_follows_the_hours():
+    assert meals_now(dt.time(0, 0)) == ["breakfast"]
+    assert meals_now(dt.time(11, 59)) == ["breakfast"]
+    assert meals_now(dt.time(12, 0)) == ["lunch", "side"]
+    assert meals_now(dt.time(16, 0)) == ["snack"]
+    assert meals_now(dt.time(18, 59)) == ["snack"]
+    assert meals_now(dt.time(19, 0)) == ["dinner"]
+    assert meals_now(dt.time(23, 59)) == ["dinner"]
+
+
+def test_the_day_page_folds_every_meal_but_the_one_of_the_hour(data_dir, data, monkeypatch):
+    monkeypatch.setenv("SMP_SCHEDULER", "0")
+    monkeypatch.setenv("SMP_BOT", "0")
+    generate(data, MONDAY, 4).save(plans_dir(data) / f"{MONDAY}.yaml")
+    from supermealplanner.web import App, create_app
+
+    at = dt.datetime.combine(MONDAY, dt.time(13, 30))
+    monkeypatch.setattr(App, "now", lambda self: at)
+    with TestClient(create_app(data_dir)) as c:
+        html = c.get(f"/?d={MONDAY}").text
+    folds = re.findall(r'<details class="meal fold" data-meal="(\w+)"[^>]*?( open)?>', html)
+    assert {"breakfast", "lunch", "dinner"} <= {m for m, _ in folds}
+    assert all(bool(o) == (m in ("lunch", "side")) for m, o in folds)

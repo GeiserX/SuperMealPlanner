@@ -213,6 +213,20 @@ def test_a_day_comes_with_every_meal_in_order_and_a_plate_per_person(client, dat
     assert {p["person"] for p in day["people"]} == {"ana", "luis"}
 
 
+def test_a_day_says_which_meal_is_open_at_this_hour(client, data_dir, monkeypatch):
+    from supermealplanner.web import App
+
+    at = dt.datetime.combine(MONDAY, dt.time(20, 15))
+    monkeypatch.setattr(App, "now", lambda self: at)
+    got = pair(client, data_dir)
+    day = client.get(f"/api/v1/day?d={MONDAY}", headers=auth(got["token"])).json()
+    assert day["open_meals"] == ["dinner"]
+    hours = {m["meal"]: (m["starts"], m["ends"], m["open"]) for m in day["meals"]}
+    assert hours["breakfast"] == ("00:00", "12:00", False)
+    assert hours["lunch"] == ("12:00", "16:00", False)
+    assert hours["dinner"] == ("19:00", "24:00", True)
+
+
 def test_the_week_the_tasks_and_the_cooking_all_answer(client, data_dir):
     got = pair(client, data_dir)
     h = auth(got["token"])

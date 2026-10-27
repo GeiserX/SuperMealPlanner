@@ -92,6 +92,21 @@ first, in the section's usual order, then the ticked ones, the first ticked firs
 So an app can reorder a section by itself the moment a tick changes, here or from `GET /list/ticks`,
 without asking for the whole list again.
 
+### Which meal is open on the day
+
+The day page folds each meal (breakfast, lunch, salad, snack, dinner) under its title and opens only
+the one whose hours hold the local time; the rest stay folded until tapped. `GET /day` carries the
+same:
+
+- each meal's `starts` and `ends`, as `"HH:MM"` in local time, `ends` not included: breakfast
+  `00:00`–`12:00`, lunch and salad `12:00`–`16:00`, snack `16:00`–`19:00`, dinner `19:00`–`24:00`.
+- each meal's `open`: whether its hours hold the time now in the household's timezone.
+- `open_meals`: the ids of those meals, in eating order (lunch and salad open together).
+
+An app opens these when it shows the day and then leaves each fold as the person last tapped it. It
+may compare `starts` and `ends` with the phone's own clock instead, as the page does when it opens
+from its offline copy.
+
 `person` defaults to the person the device is paired to, and may name anyone in the household — one
 phone on the kitchen counter can log for everybody. It may not name anyone else: that is a `400`.
 

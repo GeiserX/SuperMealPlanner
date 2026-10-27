@@ -16,6 +16,20 @@ from .planner import MEALS, Plan
 from .targets import current_kcal, day_factor
 
 MEAL_ORDER = MEALS
+# When each meal is the one to show first on the day page, in local time: [starts, ends).
+MEAL_HOURS = {
+    "breakfast": ("00:00", "12:00"),
+    "lunch": ("12:00", "16:00"),
+    "side": ("12:00", "16:00"),
+    "snack": ("16:00", "19:00"),
+    "dinner": ("19:00", "24:00"),
+}
+
+
+def meals_now(at: dt.time) -> list[str]:
+    """The meals whose hours hold this local time, in eating order (lunch and salad go together)."""
+    hm = at.strftime("%H:%M")
+    return [m for m in MEAL_ORDER if MEAL_HOURS[m][0] <= hm < MEAL_HOURS[m][1]]
 
 
 def factors(data: Data, db: DB, day: dt.date) -> dict[str, float]:
