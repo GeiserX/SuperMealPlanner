@@ -14,8 +14,8 @@
   {% for meal in meals %}
     {% set rid = pday[meal] %}
     {% if rid and rid in recipes %}
-    <section class="meal">
-      <h2>{{ t('meal_' + meal) }}{% if meal == 'lunch' %}<small> · {{ hh.lunch_time }}</small>{% endif %}</h2>
+    <details class="meal fold" data-meal="{{ meal }}"{% if meal in open_meals %} open{% endif %}>
+      <summary><h2>{{ t('meal_' + meal) }}{% if meal == 'lunch' %}<small> · {{ hh.lunch_time }}</small>{% endif %}</h2></summary>
       <a class="dish" href="/recipe/{{ rid }}?d={{ day }}">{{ recipes[rid].name }}</a>
       {% if meal in ('lunch', 'dinner') %}{{ vote(rid) }}{% endif %}
       {% if meal == 'lunch' %}
@@ -31,7 +31,7 @@
         </div>
       {% endfor %}
       </div>
-    </section>
+    </details>
     {% endif %}
   {% endfor %}
   {% if picks %}

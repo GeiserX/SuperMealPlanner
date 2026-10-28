@@ -27,7 +27,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from . import __version__, llm
 from .i18n import Translator
-from .planner import day_menu, paused_days, plan_for
+from .planner import MEAL_HOURS, day_menu, meals_now, paused_days, plan_for
 from .portions import (
     MEAL_ORDER,
     batch_for_text,
@@ -254,6 +254,8 @@ def router(state) -> APIRouter:
         menu = day_menu(state.data, pday) if pday else []
         who = whose(row, person)
         swaps = {p.id: p.swaps for p in state.data.household.people}
+        now = state.now()
+        open_now = meals_now(now.time())
         meals = []
         for meal in MEAL_ORDER:
             dishes = [r for m, r in menu if m == meal]
@@ -262,6 +264,8 @@ def router(state) -> APIRouter:
             meals.append(
                 {
                     "meal": meal,
+                    "hours": {"from": MEAL_HOURS[meal][0], "until": MEAL_HOURS[meal][1]},
+                    "open": meal in open_now,
                     "dishes": [
                         {
                             "recipe": _recipe_brief(r),
@@ -305,6 +309,7 @@ def router(state) -> APIRouter:
         return {
             "day": date.isoformat(),
             "today": today.isoformat(),
+            "now": now.strftime("%H:%M"),
             "paused": date in paused_days(state.data),
             "planned": plan is not None and pday is not None,
             "meals": meals,
