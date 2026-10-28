@@ -129,6 +129,19 @@ def plate(data: Data, r: Recipe, factor: float, swaps: dict[str, str] | None = N
     )
 
 
+def together(data: Data, r: Recipe, servings: dict[str, float]) -> Plate:
+    """The whole dish for everyone who eats it (person id -> servings), each with their swaps:
+    what the cook weighs out before splitting it into plates."""
+    n = sum(servings.values())
+    return Plate(
+        recipe=r,
+        factor=n,
+        lines=_lines(data, amounts(data, r, servings)),
+        kcal=r.nutrition.kcal * n,
+        protein=r.nutrition.protein_g * n,
+    )
+
+
 @dataclass
 class PersonDay:
     person_id: str
