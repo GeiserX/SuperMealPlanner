@@ -73,6 +73,8 @@ the event, and that tap approves its first ask of that turn when the ask adds an
 time), or nothing. An offer nobody taps expires and nothing happens. A reminder with "set": true (a
 fourth "| set" field in the block) is one the person asked for: the app sets it at once and says
 so, with no offer. {"cancel": id} (a "- cancel | <id>" line) cancels a reminder set from that chat.
+A reminder about a dish may carry "recipe" and "date" (the day it is eaten; a "| dish <recipe id>
+<YYYY-MM-DD>" field in the block): when that day's menu no longer has the dish, the app cancels it.
 
 A plugin whose actions need a person's yes while it works defines
       def answer(request: dict, decision: dict, settings: dict) -> dict
@@ -150,6 +152,8 @@ def extract_options(text: str) -> tuple[str, list[str]]:
 REMINDERS_MAX, REMINDER_CHARS = 5, 300
 REMINDERS = re.compile(r"\n?```reminders[ \t]*\n(.*?)```[ \t]*", re.DOTALL)
 WHEN = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}")
+DISH = re.compile(r"dish\s+([a-z0-9][a-z0-9-]{0,63})\s+(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def reminders(raw) -> list[dict]:
@@ -179,6 +183,9 @@ def reminders(raw) -> list[dict]:
         }
         if r.get("set") is True:  # asked for in so many words: set without an offer
             item["set"] = True
+        recipe, date = str(r.get("recipe") or "").strip(), str(r.get("date") or "").strip()
+        if recipe and DATE.fullmatch(date):  # about a dish: cancelled when the menu drops it
+            item["recipe"], item["date"] = recipe, date
         if all((o.get("when"), o.get("text")) != (item["when"], item["text"]) for o in out):
             out.append(item)
     return out[:REMINDERS_MAX] + cancels[:REMINDERS_MAX]
@@ -195,6 +202,9 @@ def extract_reminders(text: str) -> tuple[str, list[dict]]:
         if not line.startswith(("-", "*")):
             continue
         parts = [x.strip() for x in line[1:].split("|")]
+        dish = next((m for x in parts[2:] if (m := DISH.fullmatch(x))), None)
+        if dish:  # the dish field may come after the person or after "set"
+            parts = parts[:2] + [x for x in parts[2:] if not DISH.fullmatch(x)]
         if len(parts) >= 2 and parts[0].lower() == "cancel":
             found.append({"cancel": parts[1]})
         elif len(parts) >= 2:
@@ -204,6 +214,7 @@ def extract_reminders(text: str) -> tuple[str, list[dict]]:
                     "text": parts[1],
                     "person": (parts[2] or None) if len(parts) > 2 else None,
                     "set": len(parts) > 3 and parts[3].lower() == "set",
+                    **({"recipe": dish[1].lower(), "date": dish[2]} if dish else {}),
                 }
             )
     return REMINDERS.sub("", text).strip(), reminders(found)

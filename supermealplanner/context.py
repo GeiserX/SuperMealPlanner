@@ -13,11 +13,12 @@ import datetime as dt
 from functools import cache
 from pathlib import Path
 
+from . import doctor
 from .db import DB
 from .i18n import Translator
 from .model import Data
 from .planner import paused_days, plan_for
-from .portions import needs, person_days, shopping_list
+from .portions import person_days, shopping_list
 from .targets import current_kcal
 
 RULES = """You are the household's meal-planning assistant inside a family chat.
@@ -213,6 +214,11 @@ When the person you are answering asked for that reminder in so many words ("rem
 field empty when it is for them: `- 2026-01-18 23:00 | Soak the chickpeas | | set`). The app sets
 it at once and says so, and nobody is asked again. Without "set", never say a reminder is set.
 
+When a reminder is about a dish of the menu (cook it, defrost it, soak what it needs), add a field
+`dish <recipe id> <the date it is eaten>` at the end of its line:
+`- 2026-01-17 22:00 | Move the fish to the fridge | <person id> | | dish salmon-bake 2026-01-18`.
+When that day's menu no longer has the dish, the app cancels the reminder by itself and says so.
+
 The reminders already set in this chat are listed in the facts with their ids. When a change
 makes one wrong (the dish changed, the step moved, it is no longer needed), cancel it in the same
 block with a line `- cancel | <id>`, and list the right one if there is one. Never tell the
@@ -355,6 +361,7 @@ def facts(
 
     out += menu_now(data, t, today)
     out += list_now(data, db, today)
+    out += problems_now(data, db, today)
     out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)
 
@@ -424,13 +431,7 @@ def unused_now(data: Data, db: DB, monday: dt.date) -> list[str]:
     """Food ticked as bought on last week's or this week's list that no dish uses, from last Monday
     to the end of next week: a dish was moved or dropped after the shopping. It must not go to
     waste, so the AI is told to put it back in the menu or say how to keep it."""
-    weeks = [monday + dt.timedelta(days=7 * w) for w in (-1, 0, 1)]
-    used: set[str] = set()
-    for m in weeks:
-        if plan := plan_for(data, m):
-            used |= set(needs(data, db, plan, m))
-    bought = db.ticked(weeks[0]) | db.ticked(weeks[1])
-    left = sorted(data.ingredients[i].name for i in bought - used if i in data.ingredients)
+    left = doctor.unused_food(data, db, monday)
     if not left:
         return []
     head = (
@@ -443,6 +444,66 @@ def unused_now(data: Data, db: DB, monday: dt.date) -> list[str]:
         head + "the shopping)",
         "- " + ", ".join(left),
         rule + "say how to keep it (freeze it); ask only if it may already be eaten.",
+    ]
+
+
+def problems_now(data: Data, db: DB, today: dt.date) -> list[str]:
+    """What the consistency check (doctor.py) found, with what to change. Food bought and on no
+    dish has its own section above, so it is not repeated here."""
+    found = [p for p in doctor.problems(data, db, today) if p.kind != "unused"]
+    if not found:
+        return []
+    return [
+        "\n## Problems the app found: fix them",
+        (
+            "- Fix each with a change or reminders block in your answer when the person you answer "
+            "can decide it, or say what you would change; never leave one unsaid."
+        ),
+        *(f"- {p.text}" for p in found),
+    ]
+
+
+def limits() -> list[str]:
+    """The limits the app's validation enforces on what a change may set, read from the code that
+    enforces them, so a proposal never carries a value the app refuses."""
+    from .changes import INSTRUCTIONS_MAX, NOTE_MAX, NOTES_MAX
+    from .llm import REMINDER_CHARS, REMINDERS_MAX
+    from .menu import PAUSE_MAX, SHIFT_MAX
+    from .model import Batch, Recipe, Reminder
+
+    def bounds(model, name: str) -> str:
+        lo = hi = None
+        for m in model.model_fields[name].metadata:
+            lo = getattr(m, "ge", lo)
+            hi = getattr(m, "le", hi)
+        return f"{lo} to {hi}"
+
+    kinds = Reminder.model_fields["kind"].annotation.__args__
+    return [
+        "- limits the app enforces (a change outside them is refused):",
+        f"  - household.batch.sessions_per_week: {bounds(Batch, 'sessions_per_week')}",
+        "  - household.batch.avoid_days: at least one weekday left to cook on",
+        (
+            f"  - settings.reminders: kind one of {', '.join(kinds)}; at: HH:MM (00:00 to 23:59); "
+            "days: daily or a non-empty list of weekdays; kind message needs text, which may use only "
+            "{names} and {today}"
+        ),
+        (
+            f"  - a new recipe: fridge_days {bounds(Recipe, 'fridge_days')}; every ingredient qty "
+            "above 0"
+        ),
+        (
+            f"  - menu: shift 1 to {SHIFT_MAX} weeks; a pause at most {PAUSE_MAX} days; regenerate "
+            "from a Monday; a lunch's cook is not past and not after the day it is eaten"
+        ),
+        (
+            f"  - chat notes: at most {NOTES_MAX} per person, {NOTE_MAX} characters each; "
+            f"settings.llm.instructions at most {INSTRUCTIONS_MAX} characters"
+        ),
+        (
+            f"  - reminders block: at most {REMINDERS_MAX} per answer, {REMINDER_CHARS} characters "
+            "each"
+        ),
     ]
 
 
@@ -479,4 +540,5 @@ def settings_now(data: Data, viewer: str | None = None) -> str:
             + (f", text {r.text!r}" if r.text else "")
             + ("" if r.enabled else ", disabled")
         )
+    out += limits()
     return "\n".join(out)
