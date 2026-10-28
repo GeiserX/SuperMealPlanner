@@ -42,6 +42,7 @@ tag_busy: agenda
 no_plan_short: sin plan
 paused_day: "El menú está en pausa este día: coméis lo que tenéis en casa. Pedidle al asistente en el chat que lo vuelva a poner."
 paused_short: en pausa
+everyone_total: Para todos
 nibble_title: Para picar
 nibble: "Para picar: {items}"
 

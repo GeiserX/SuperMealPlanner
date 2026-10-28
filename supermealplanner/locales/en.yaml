@@ -42,6 +42,7 @@ tag_busy: calendar
 no_plan_short: no plan
 paused_day: "The menu is paused this day: you eat what you have at home. Ask the assistant in the chat to bring it back."
 paused_short: paused
+everyone_total: Everyone together
 nibble_title: To nibble
 nibble: "To nibble: {items}"
 

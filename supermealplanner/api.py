@@ -38,8 +38,9 @@ from .portions import (
     shopping_list,
     soak_for,
     ticked_last,
+    together,
 )
-from .targets import evaluate, trend
+from .targets import current_kcal, day_factor, evaluate, trend
 
 API_VERSION = 1
 CHEF_WAIT_MAX = 25  # the longest one GET /chef/{id} holds, so no client's request times out
@@ -244,7 +245,8 @@ def router(state) -> APIRouter:
 
     @api.get("/day")
     def day(request: Request, d: str | None = None, person: str | None = None):
-        """One day: every meal in the order it is eaten, and each person's plate."""
+        """One day: every meal in the order it is eaten, each person's plate, and each dish for
+        everyone together."""
         row = device(request)
         today = state.today()
         date = _day(d, today)
@@ -256,6 +258,7 @@ def router(state) -> APIRouter:
         swaps = {p.id: p.swaps for p in state.data.household.people}
         now = state.now()
         open_now = meals_now(now.time())
+        eaters = {pd.person_id: pd.factor for pd in people}
         meals = []
         for meal in MEAL_ORDER:
             dishes = [r for m, r in menu if m == meal]
@@ -279,6 +282,7 @@ def router(state) -> APIRouter:
                                 }
                                 for pd in people
                             ],
+                            "total": _plate(together(state.data, r, eaters)),
                         }
                         for r in dishes
                     ],
@@ -409,7 +413,8 @@ def router(state) -> APIRouter:
 
     @api.get("/recipe/{rid}")
     def recipe(request: Request, rid: str, d: str | None = None, person: str | None = None):
-        """A whole recipe, with this person's plate when there is a plan for the day."""
+        """A whole recipe, with this person's plate when there is a plan for the day, every
+        person's plate that day as the recipe page shows them, and the dish for all of them."""
         row = device(request)
         r = state.data.recipes.get(rid)
         if r is None:
@@ -423,9 +428,20 @@ def router(state) -> APIRouter:
                 if pd.person_id == who:
                     swaps = {p.id: p.swaps for p in state.data.household.people}
                     mine = _plate(plate(state.data, r, pd.factor, swaps.get(who)))
+        hh = state.data.household
+        factor = {p.id: day_factor(hh, p, current_kcal(state.db, p), date) for p in hh.people}
         return {
             "recipe": r.model_dump(mode="json"),
             "plate": mine,
+            "plates": [
+                {
+                    "person": p.id,
+                    "name": p.name,
+                    **_plate(plate(state.data, r, factor[p.id], p.swaps)),
+                }
+                for p in hh.people
+            ],
+            "total": _plate(together(state.data, r, factor)),
             "vote": state.db.ratings(who or "-").get(rid) if who else None,
         }
 
