@@ -1082,7 +1082,7 @@ class Bot:
         """The AI's instructions, with the people's Telegram handles."""
         out = context.rules(self.data)
         bot = self.data.settings.bot
-        out += "\n\n" + gestures.guide("en", bot.style, bool(bot.sticker_set), bot.photos)
+        out += "\n\n" + gestures.guide("en", bot.style, bool(bot.sticker_set), bot.photo_hosts)
         handles = {p.id: self.mention(p.id) for p in self.data.household.people}
         named = [
             f"{self.data.household.person(pid).name} = {h}"
@@ -1187,7 +1187,7 @@ class Bot:
         reply_to = _reply_to(covered)
         anchor = covered[-1]  # changes and proposals act for the newest message's sender
         text, change = changes.extract(reply.text)
-        text, acts = gestures.extract(text)
+        text, acts = gestures.extract(text, data.settings.bot.photo_hosts, self.t("file_name"))
         text, offered = llm.extract_options(text)
         offered = reply.options or offered
         text, listed = llm.extract_reminders(text)
@@ -1250,7 +1250,6 @@ class Bot:
         """What the answer's gestures block asks for (gestures.py), each on its own after the text,
         so a file or a reaction Telegram refuses never loses the answer. A reaction goes on message
         `to`; when it cannot and the answer had no text, the emoji is said instead."""
-        bot = self.data.settings.bot
         shown = texted
         sends = [
             (
@@ -1260,11 +1259,10 @@ class Bot:
             )
             for d in acts["documents"]
         ]
-        if bot.photos:
-            sends += [
-                ("sendPhoto", {"photo": p["url"], "caption": p["caption"]}, None)
-                for p in acts["photos"]
-            ]
+        sends += [
+            ("sendPhoto", {"photo": p["url"], "caption": p["caption"]}, None)
+            for p in acts["photos"]
+        ]
         sticker = await self.sticker(client, acts["sticker"])
         if sticker:
             sends.append(("sendSticker", {"sticker": sticker}, None))

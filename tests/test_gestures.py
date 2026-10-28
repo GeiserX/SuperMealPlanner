@@ -120,7 +120,7 @@ def test_stickers_photos_and_the_voice_come_from_the_settings(data_dir, tmp_path
     assert "sticker:" not in b.rules() and "photo:" not in b.rules()
 
     raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
-    raw["bot"].update(style="Cálido y alegre 🍅", sticker_set="cocina", photos=True)
+    raw["bot"].update(style="Cálido y alegre 🍅", sticker_set="cocina", photo_hosts=["a.org"])
     write(data_dir, "settings.yaml", raw)
     b = ChatBot(load(data_dir), DB(tmp_path / "c.db"))
     real = b.call
@@ -136,4 +136,12 @@ def test_stickers_photos_and_the_voice_come_from_the_settings(data_dir, tmp_path
     assert calls(b, "sendSticker")[0]["sticker"] == "STK"
     assert calls(b, "sendPhoto")[0]["photo"] == "https://a.org/p.jpg"
     rules = b.rules()
-    assert "sticker: 🎉" in rules and rules.rstrip().endswith("Cálido y alegre 🍅")
+    assert "sticker: 🎉" in rules and "solo de a.org" not in rules and "only from a.org" in rules
+    assert rules.rstrip().endswith("Cálido y alegre 🍅")
+
+
+def test_a_file_with_no_latin_letter_is_named_in_the_households_language(data_dir, tmp_path):
+    b = ChatBot(plugin_data(data_dir), DB(tmp_path / "b.db"))
+    reply(data_dir, text="Toma.\n```document 日本.txt\nx\n```")
+    run(b.handle(None, msg("hola", chat=7, user=7)))
+    assert calls(b, "sendDocument")[0]["_files"]["document"][0] == "file.txt"  # its locale is en
