@@ -1303,16 +1303,18 @@ class Bot:
         return gestures.sticker_for(self.stickers.get("set"), emoji)
 
     async def answer_text(self, client, chat_id, text, reply_to, offered, covered) -> None:
-        """The answer, with the choices it offers as buttons under it."""
+        """The answer, with the choices it offers as buttons under it. A long one shows its first
+        lines and folds the rest; a voice listener still hears all of it."""
+        shown = render.brief(text)
         if not offered:
-            await self.send(client, chat_id, text, reply_to, markdown=True, who=AI)
+            await self.send(client, chat_id, shown, reply_to, markdown=True, who=AI, spoken=text)
             return
         key = secrets.token_hex(4)
         rows = [[(label, f"o:{key}:{n}")] for n, label in enumerate(offered)]
         sent = await self.send(
             client,
             chat_id,
-            f"{text}\n\n_{self.t('options_hint')}_",
+            f"{shown}\n\n_{self.t('options_hint')}_",
             reply_to,
             markdown=True,
             who=AI,

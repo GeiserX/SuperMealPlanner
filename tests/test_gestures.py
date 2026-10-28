@@ -96,6 +96,20 @@ def test_the_shopping_list_goes_as_a_file_after_the_text(data_dir, tmp_path):
     assert (doc["chat_id"], doc["caption"]) == (7, "Semana 44")
 
 
+def test_a_long_plan_summary_comes_out_short_with_its_link(data_dir, tmp_path):
+    b = ChatBot(plugin_data(data_dir), DB(tmp_path / "b.db"))
+    detail = "\n".join(f"- Día {i}: un plato con su guarnición y cantidades" for i in range(40))
+    head = (
+        "Plan listo: 5 comidas y 2 sesiones. Todo en [la semana](https://meals.example/week?d=1)."
+    )
+    reply(data_dir, text=f"{head}\n\n{detail}")
+    run(b.handle(None, msg("el plan", chat=7, user=7)))
+    [text] = ChatBot.texts(b, 7)
+    shown, folded = text.split("<blockquote expandable>")
+    assert '<a href="https://meals.example/week?d=1">la semana</a>' in shown
+    assert len(shown) < 200 and "Día 39" in folded
+
+
 def test_a_refused_file_never_loses_the_text(data_dir, tmp_path):
     b = ChatBot(plugin_data(data_dir), DB(tmp_path / "b.db"))
     real = b.call
