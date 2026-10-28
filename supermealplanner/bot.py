@@ -60,7 +60,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import __version__, changes, context, llm, menu
+from . import __version__, changes, context, doctor, llm, menu
 from .i18n import Translator
 from .model import WEEKDAYS
 from .planner import ICONS, day_menu, paused_days, plan_for
@@ -679,6 +679,10 @@ class Bot:
             except Exception as e:  # noqa: BLE001
                 log.warning("one-off reminder tick failed: %s", safe(e))
             try:
+                await self.tick_checkup(client)
+            except Exception as e:  # noqa: BLE001
+                log.warning("morning checkup failed: %s", safe(e))
+            try:
                 await self.expire_asks(client)
                 await self.expire_offers(client)
             except Exception as e:  # noqa: BLE001
@@ -1290,7 +1294,10 @@ class Bot:
         name = self.data.household.person(asker).name
         if proposal.asked:
             item = {"change": change, "asker": asker, "name": name}
+            before = await self.problem_keys()
             await self.send(client, chat_id, await self.apply(item, asked=True), reply_to)
+            if item.get("applied"):
+                await self.checkup(client, chat_id, before, reply_to)
             return bool(item.get("applied"))
         lines = changes.describe(proposal, self.data, t)
         msgs: list[int] = []
@@ -1397,8 +1404,11 @@ class Bot:
         if yes and "proposal" in pending:
             await self.act(client, chat_id, reply_to, pending)
             return
+        before = await self.problem_keys() if yes else set()
         reply = await self.apply(pending) if yes else self.t("change_cancelled")
         await self.send(client, chat_id, reply, reply_to)
+        if pending.get("applied"):
+            await self.checkup(client, chat_id, before, reply_to)
 
     # ------------------------------------------------------------- buttons
     def yes_no(self, key: str) -> list[list[tuple[str, str]]]:
@@ -2581,8 +2591,22 @@ class Bot:
             item = {"at": at.timestamp(), "text": r["text"], "person": person, "done": None}
             if r.get("set"):
                 item["set"] = True
+            if r.get("recipe") and self._links(r["recipe"], r.get("date")):
+                item["recipe"], item["date"] = r["recipe"], r["date"]
             out.append(item)
         return out
+
+    def _links(self, recipe: str, date) -> bool:
+        """A dish link the menu backs: that recipe on that day. A wrong one is dropped, so the
+        reminder is not cancelled the moment it is set."""
+        try:
+            day = dt.date.fromisoformat(str(date))
+        except ValueError:
+            return False
+        if doctor.serves(self.data, recipe, day):
+            return True
+        log.info("a reminder's dish link is not on the menu: %s on %s", recipe, day)
+        return False
 
     def _offers(self) -> list[dict]:
         return [o for o in self.state.db.get_kv(REMIND) or [] if isinstance(o, dict)]
@@ -2617,7 +2641,8 @@ class Bot:
             pid = self._person(r["person"])
             who = f", {self.data.household.person(pid).name}" if pid else ""
             local = dt.datetime.fromtimestamp(r["at"], self._zone())
-            out.append(f"- {r['id']}: {local:%Y-%m-%d %H:%M}{who}: {r['text']}")
+            dish = f" (about {r['recipe']} on {r['date']})" if r.get("recipe") else ""
+            out.append(f"- {r['id']}: {local:%Y-%m-%d %H:%M}{who}: {r['text']}{dish}")
         return "\n".join(out)
 
     async def offer_reminders(self, client, chat_id, listed, covered, reply_to) -> None:
@@ -2627,6 +2652,7 @@ class Bot:
         message saying both."""
         t, db = self.t, self.state.db
         done: list[str] = []
+        before = await self.problem_keys()
         uid = covered[-1].uid if covered else None
         member = self.person_of(uid or 0) is not None
         for r in listed:
@@ -2639,10 +2665,13 @@ class Bot:
             [r for r in listed if "cancel" not in r], covered[-1].who if covered else None
         )
         for r in [r for r in items if r.get("set")] if uid else []:
-            db.add_reminder(chat_id, r["person"], r["at"], r["text"], uid)
+            db.add_reminder(
+                chat_id, r["person"], r["at"], r["text"], uid, r.get("recipe"), r.get("date")
+            )
             done.append(t("remind_set_log", when=self._when(r["at"]), text=r["text"]))
         if done:  # recorded in the chat by send, so the AI hears it
             await self.send(client, chat_id, "\n".join(done), reply_to)
+            await self.checkup(client, chat_id, before, reply_to)
         items = [r for r in items if not (uid and r.get("set"))]
         if not items:
             return
@@ -2737,7 +2766,15 @@ class Bot:
         await self.rekey(client, chat["id"], offer["msg"], self._remind_rows(key, items))
         if c == "h":
             person = item["person"] or who
-            self.state.db.add_reminder(chat["id"], person, item["at"], item["text"], user.get("id"))
+            self.state.db.add_reminder(
+                chat["id"],
+                person,
+                item["at"],
+                item["text"],
+                user.get("id"),
+                item.get("recipe"),
+                item.get("date"),
+            )
             # the AI hears it with the rest of the chat
             self.state.db.add_chat(
                 chat["id"], "assistant", None, t("remind_set_log", when=when, text=item["text"])
@@ -2769,6 +2806,14 @@ class Bot:
         it sent. One Telegram refuses for good (the chat is gone) is marked failed."""
         now = time.time()
         for r in self.state.db.due_reminders(now):
+            try:
+                gone = doctor.stale(self.data, r)
+            except Exception as e:  # noqa: BLE001  a broken plan must not hold reminders back
+                log.warning("could not check a reminder's dish: %s", safe(e))
+                gone = False
+            if gone:  # the menu dropped its dish since the last check
+                await self.checkup(client)
+                continue
             pid = self._person(r["person"])
             text = f"⏰ {self.mention(pid)}: {r['text']}" if pid else f"⏰ {r['text']}"
             if now - r["at"] > LATE_S:
@@ -2782,6 +2827,77 @@ class Bot:
                     continue
                 raise
             self.state.db.settle_reminder(r["id"], "sent")  # only after Telegram took it
+
+    # ------------------------------------------------------------- the consistency check
+    async def problems(self) -> list[doctor.Problem] | None:
+        """What the consistency check finds now; None when it could not run (never in the way of
+        the change or the reminder that called it)."""
+        try:
+            return await asyncio.to_thread(
+                doctor.problems, self.data, self.state.db, self.state.today()
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("the consistency check failed: %s", safe(e))
+            return None
+
+    async def problem_keys(self) -> set[str]:
+        return {p.key for p in await self.problems() or []}
+
+    def problem_line(self, p: doctor.Problem) -> str:
+        """A problem in a few words of the household's language."""
+        t = self.t
+        args = {k: t.date(v) if isinstance(v, dt.date) else v for k, v in p.args.items()}
+        return t("problem_" + p.kind, **args)
+
+    async def checkup(
+        self, client, chat_id: int | None = None, before: set[str] | None = None, reply_to=None
+    ) -> list[doctor.Problem]:
+        """Run the consistency check after a write (before: the problems it found just before it)
+        or in the morning (before None). A linked reminder the menu no longer backs is cancelled
+        here, with one line in its chat. In chat_id: one line naming the problems the write left
+        that were not there before, or in the morning all of them. Food bought and on no dish is
+        left to the AI, which sees it every turn: it can stay true for days once it is frozen."""
+        db, t = self.state.db, self.t
+        found = await self.problems()
+        if found is None:
+            return []
+        said: dict[int, list[str]] = {}
+        for p in found:
+            r = db.reminder(p.reminder) if p.reminder else None
+            if r and db.settle_reminder(r["id"], "cancelled"):
+                line = t("doctor_reminder_cancelled", when=self._when(r["at"]), text=r["text"])
+                said.setdefault(r["chat"], []).append(line)
+        rest = [p for p in found if p.kind not in ("stale_reminder", "unused")]
+        new = [p for p in rest if before is None or p.key not in before]
+        if chat_id is not None and new:
+            items = "; ".join(self.problem_line(p) for p in new)
+            key = "doctor_morning" if before is None else "doctor_new"
+            said.setdefault(chat_id, []).append(t(key, items=items))
+        for chat, lines in said.items():
+            try:
+                await self.send(
+                    client, chat, "\n".join(lines), reply_to if chat == chat_id else None
+                )
+            except TelegramError as e:  # the fix is made; only the notice is lost
+                log.warning("could not post what the checkup found: %s", safe(e))
+        return rest
+
+    async def tick_checkup(self, client) -> None:
+        """Once each morning at bot.checkup_at: the check's safe fixes, and a report in
+        bot.checkup_chat (the group when unset) only when something is wrong."""
+        cfg = self.data.settings.bot
+        chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
+        if not cfg.checkup_at or chat is None:
+            return
+        now = dt.datetime.now(self._zone())
+        h, m = (int(x) for x in cfg.checkup_at.split(":"))
+        when = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if not when <= now < when + dt.timedelta(minutes=10):
+            return
+        if self.state.db.was_sent("checkup", now.date(), cfg.checkup_at):
+            return
+        await self.checkup(client, chat)
+        self.state.db.mark_sent("checkup", now.date(), cfg.checkup_at)
 
     async def cmd_reminders(self, who, arg, user, chat=None):
         """The chat's reminders still to come, each with a button to cancel it."""

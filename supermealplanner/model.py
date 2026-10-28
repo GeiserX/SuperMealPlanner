@@ -330,6 +330,10 @@ class Bot(Loose):
     # the AI's offer of a reminder also shows "In the calendar": a tap starts a turn in which the
     # provider adds the event with its own calendar tools (a plugin that has them)
     reminder_calendar: bool = False
+    # the consistency check (doctor.py) each morning at this time: what it found, in checkup_chat
+    # (the group when unset), only when something is wrong; "" turns the report off
+    checkup_at: str = Field(default="08:00", pattern=r"^(([01]\d|2[0-3]):[0-5]\d)?$")
+    checkup_chat: int | None = None
 
 
 class LLM(Loose):
