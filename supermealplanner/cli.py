@@ -7,6 +7,7 @@ import datetime as dt
 import os
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from . import __version__
 from .db import DB
@@ -84,7 +85,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         t = Translator(data.locale)
         db = DB(data.state / "supermealplanner.db")
-        shop = shopping_list(data, db, plan, monday, t, view=a.store)
+        today = dt.datetime.now(ZoneInfo(data.household.timezone)).date()
+        shop = shopping_list(data, db, plan, monday, t, view=a.store, today=today)
         for sl in shop.stores:
             total = f"  ({t.money(sl.total)})" if sl.total else ""
             print(f"\n== {sl.name}{total}")

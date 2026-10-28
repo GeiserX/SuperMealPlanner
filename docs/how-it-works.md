@@ -44,7 +44,24 @@ A plan is never redone when the data changes, because lunches may already be coo
 
 The list adds up every plate of the week, each with its eater's swaps, so a swapped ingredient is bought only for the person who eats it. The batch sheet splits the pot the same way. Batch dishes are bought in the week they are cooked. With store catalogues, each line shows the first clean product, how many packs, and the price, plus the same at an alternative store. `/list?store=<id>` writes the whole list for one store, which is handy for an online order.
 
-Ticks on the list are saved by the app, so every phone sees the same ones. «I have it» takes an ingredient off every week's list and puts it in a short "at home" part at the bottom, until someone puts it back.
+Ticks on the list are saved by the app, so every phone sees the same ones. «I have it» takes an ingredient off every week's list and puts it in a short "at home" part at the bottom, until someone puts it back. The list also leaves off what the pantry already holds enough of (below).
+
+## The pantry
+
+The pantry is what is at home, and it is worked out by the app, so nobody keeps it up to date. Only what comes in is stored:
+
+- A tick on a week's list brings in what that line buys: the whole packs the store's catalogue sells (a 1 l bottle of oil, 0.4 kg of loose apples), or the line's amount when there is no catalogue. Unticking takes it out again. A tick on the phone does the same as one on the page.
+- The chat says how much there is ("the oil ran out", "there is a kilo of rice"), and the AI sets it with a change (`pantry` in the [data format](data-format.md#changes-from-the-chat)). That amount replaces what the pantry had. Said before the household's `lunch_time` it is what that day's cooking starts from; from lunch time on, it is what that cooking left.
+
+Everything else follows from the plan and the data, the same way every time:
+
+- Each day the plan cooks takes its ingredients out at the end of that day: the lunches cooked in that day's sessions and the other meals eaten that day, at each person's servings and swaps, the same amounts the shopping list adds up. The oldest entry goes first. A paused day cooks nothing.
+- An ingredient with `keeps_days` goes off that many days after it came in. One without keeps until it is used up.
+- «I have it» stays as it was: at home in an amount nobody counted, never used up.
+
+The list for a week leaves off an ingredient when the pantry, without what that week's own ticks brought in, holds enough of it for that week's cooking still to come, in food still good on the last day it is used. A next week's list counts what this week cooks first. A ticked line never leaves its own list. The list page shows the pantry at the bottom, with what each line of this week no longer asks for, and `GET /api/v1/pantry` gives the same to the phone.
+
+The AI sees the pantry in its facts, across weeks, and is told that nothing else is at home as far as the app knows. The consistency check names food that goes off before any planned dish uses it up.
 
 ## The bot
 
@@ -85,7 +102,8 @@ The plan, the batch days, the cook dates and the chat's reminders are written at
 - **A lunch that does not keep.** A lunch eaten today or later is cooked longer before its day than the recipe keeps in the fridge, and it does not freeze.
 - **A lunch nobody cooked.** A lunch eaten today or later says it was cooked on a day already past, and no session of that day cooked that dish for that day. The Cook page never showed it on that day, so nobody made it.
 - **A reminder about a dish the menu dropped.** A chat reminder linked to a dish and its day, when that day's menu no longer has the dish. The app cancels these itself.
-- **Food bought and on no dish**, as the AI already sees it.
+- **Food that goes off in the pantry.** Food the pantry holds that goes off, by its `keeps_days`, before the plan cooking as planned up to the end of next week uses it up.
+- **Food bought and on no dish**, as the AI already sees it, without the food the line above already names.
 
 The AI gets what the check found in its facts as "Problems the app found: fix them", each with the menu change that fixes it. Food bought and on no dish keeps its own section there, and is never posted in the chat by the check: once it is frozen it can stay true for days. Reminders about a dish the menu dropped stay out of it, because they may belong to another chat, a private one; the app cancels them and says so in their own chat. The AI also gets the limits the app's validation enforces on what a change may set (`sessions_per_week` 1 to 2, a recipe's `fridge_days` 0 to 4, a shift of 1 to 4 weeks, and so on), read from the code that enforces them, so it never proposes a value the app refuses.
 

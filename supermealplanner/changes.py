@@ -118,6 +118,7 @@ class Proposal:
     recipes: dict[str, dict] = field(default_factory=dict)  # recipe id -> the fields that change
     notes: list[tuple[str, str, str]] = field(default_factory=list)  # (add|remove, person, text)
     plan: list[menu.Op] = field(default_factory=list)  # menu changes, written under state/
+    pantry: dict[str, float] = field(default_factory=dict)  # ingredient -> amount at home now
     asked: bool = False  # the person asked for exactly this: no yes/no round
     raw: dict = field(default_factory=dict)  # JSON-safe, kept while the bot waits for a yes
 
@@ -156,7 +157,7 @@ OWN = {"avoid", "swaps", "training_days"}
 def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
     """Check a proposed change against the allow-list, for the household member who asked. Raises
     ChangeError with the reason."""
-    known = {"set", "recipe", "recipes", "notes", "plan", "asked"}
+    known = {"set", "recipe", "recipes", "notes", "plan", "pantry", "asked"}
     if set(raw) - known:
         raise ChangeError(
             f"unknown keys {sorted(set(raw) - known)}; use {', '.join(sorted(known))}"
@@ -259,8 +260,31 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
             out.plan = menu.parse(raw["plan"], data, (out.recipe or {}).get("id"))
         except menu.MenuError as e:
             raise ChangeError(str(e)) from None
-    if not (out.edits or out.recipe is not None or out.recipes or out.notes or out.plan):
+    out.pantry = _pantry(raw.get("pantry"), data)
+    if not (
+        out.edits or out.recipe is not None or out.recipes or out.notes or out.plan or out.pantry
+    ):
         raise ChangeError("the change is empty")
+    return out
+
+
+PANTRY_MAX = 100_000  # g, ml or units of one ingredient: more is a typo
+
+
+def _pantry(raw, data: Data) -> dict[str, float]:
+    """`pantry: {<ingredient id>: <amount at home now, in its unit>}`; 0 means it ran out."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        raise ChangeError("pantry must map an ingredient id to the amount at home now")
+    out = {}
+    for iid, qty in raw.items():
+        if iid not in data.ingredients:
+            raise ChangeError(f"no ingredient {iid}")
+        if isinstance(qty, bool) or not isinstance(qty, int | float) or not 0 <= qty <= PANTRY_MAX:
+            unit = data.ingredients[iid].unit
+            raise ChangeError(f"pantry.{iid} is an amount in {unit}, 0 to {PANTRY_MAX}")
+        out[str(iid)] = float(qty)
     return out
 
 
@@ -423,7 +447,17 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
         name = data.household.person(pid).name
         lines.append("• " + t(f"change_note_{op}", name=name, text=text))
     new = {p.recipe["id"]: p.recipe.get("name")} if p.recipe else None
-    return lines + menu.describe(p.plan, data, t, new)
+    lines += menu.describe(p.plan, data, t, new)
+    from .portions import fmt_qty
+
+    for iid, qty in p.pantry.items():  # last: these, like the menu, are not part of a commit
+        ing = data.ingredients[iid]
+        if qty:
+            line = t("change_pantry", name=ing.name, amount=fmt_qty(ing, qty, data.locale))
+        else:
+            line = t("change_pantry_out", name=ing.name)
+        lines.append(f"• {line}")
+    return lines
 
 
 def _swaps(value, data: Data, t) -> str:

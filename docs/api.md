@@ -63,6 +63,7 @@ not expire; it ends when someone takes the phone away with `/devices` (`/disposi
 | `GET /list/ticks?d=` | Only the week's ticks, as below: small enough to ask every few seconds while the list is open, so a tick made on another phone or on the web page shows at once |
 | `POST /list/tick` | `{"ingredient", "on", "d"}` — tick one off this week's list, or put it back. Answers the week's ticks, as below |
 | `POST /list/have` | `{"ingredient", "on"}` — «I have it at home»: off every list until it goes back |
+| `GET /pantry` | What is at home (see below): `{"day", "items": [{"ingredient", "name", "qty", "unit", "amount", "since", "expires"}], "have": [{"ingredient", "name"}]}` |
 | `POST /rate` | `{"recipe", "vote": 1 \| -1 \| 0, "person"?}` |
 | `POST /log` | `{"kg"?, "waist_cm"?, "hunger"?, "craving"?, "nausea"?, "water"?, "binge"?, "stool"?, "pills_lunch"?, "note"?, "person"?, "day"?}` — the Log page as JSON. Numbers out of range are clamped, as the page does; an impossible weight is a `400` |
 | `GET /progress` | Each person's last readings, the smoothed trend, the current target and the flags, already in the household's language |
@@ -91,6 +92,10 @@ first, in the section's usual order, then the ticked ones, the first ticked firs
 
 So an app can reorder a section by itself the moment a tick changes, here or from `GET /list/ticks`,
 without asking for the whole list again.
+
+### The pantry
+
+A tick through `POST /list/tick` feeds the pantry exactly as a tick on the web page does: it brings in what the line buys, and unticking takes it back out. `GET /pantry` lists what is at home now, by name: `qty` in the ingredient's `unit`, `amount` as the page writes it, `since` the day it came in, and `expires` the first day it is no longer good (`null` for food that keeps until it is used up). `have` is what «I have it» keeps off the lists, in an amount nobody counted. `GET /list` also says which of the week's ingredients the pantry already holds enough of: `stocked`, a list of ids that are not among the lines.
 
 ### The meal of the moment
 

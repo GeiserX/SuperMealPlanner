@@ -232,6 +232,34 @@ def without(plan: Plan, hidden: set[dt.date]) -> Plan:
     return Plan(start=plan.start, weeks=plan.weeks, seed=plan.seed, days=days, sessions=ordered)
 
 
+class Plans:
+    """The plans on disk, read once, and each day as the household sees it (paused days hidden)."""
+
+    def __init__(self, data: Data):
+        self.data = data
+        self.paused = paused_days(data)
+        self.raw = [load_plan(p) for p in sorted(plans_dir(data).glob("*.yaml"))]
+        self._seen: dict[int, Plan] = {}
+
+    def plan(self, day: dt.date, raw: bool = False) -> Plan | None:
+        """The newest plan that covers `day` (plan_for, without reading the files again)."""
+        best = None
+        for i, p in enumerate(self.raw):
+            if p.start <= day < p.end:
+                best = i
+        if best is None:
+            return None
+        if raw:
+            return self.raw[best]
+        if best not in self._seen:
+            self._seen[best] = without(self.raw[best], self.paused)
+        return self._seen[best]
+
+    def day(self, day: dt.date) -> Day | None:
+        plan = self.plan(day)
+        return plan.day(day) if plan else None
+
+
 MEALS = ("breakfast", "lunch", "side", "snack", "dinner")  # in eating order
 # When each meal is the one to show: from, until (local time). The today page and the app open the
 # meal whose hours hold the clock and fold the rest.

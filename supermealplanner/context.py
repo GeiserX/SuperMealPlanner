@@ -104,6 +104,12 @@ Three facts have their own setting, so the plan acts on them; set it instead of 
 - Training days (strength training): that person's energy target rises on those days by their
   training extra, shown below; the extra itself is set by hand.
 
+What is at home is the pantry in the data below. When someone says something ran out or how much
+of it there is ("the oil is finished", "there is a kilo of rice"), set it with `pantry`: the amount
+at home now, in the ingredient's unit (g, ml or units), 0 when it ran out. The app keeps the rest
+true by itself: a tick on the list adds what it bought, the days the plan cooks take their
+ingredients out, and fresh food goes off; the list does not ask for what the pantry has enough of.
+
 Facts the household tells you about a person that matter later (a work schedule, a like or
 dislike, how they eat on certain days) you keep as chat notes on that person; they come back in the
 data below as "chat note". Add one when you are told such a fact, and mark that change
@@ -142,6 +148,8 @@ set:
 recipe: {id: <new-id>, name: ..., meals: [lunch], kind: batch, ingredients: [{id: <ingredient id>, qty: 80}], steps: [...], nutrition: {kcal: 550, protein_g: 35}}
 recipes:
   <existing recipe id>: {meals: [snack], tags: [light]}   # only the fields that change, each one whole
+pantry:
+  <ingredient id>: 1000   # what is at home now, in the ingredient's unit; 0: it ran out
 notes:
   - add: {person: <person id>, text: Works 9 to 14 on Tuesdays}
   - remove: {person: <person id>, text: <the exact text of a chat note>}
@@ -361,6 +369,7 @@ def facts(
 
     out += menu_now(data, t, today)
     out += list_now(data, db, today)
+    out += pantry_now(data, db, today)
     out += problems_now(data, db, today)
     out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)
@@ -409,7 +418,7 @@ def list_now(data: Data, db: DB, today: dt.date) -> list[str]:
     plan = plan_for(data, monday)
     if not plan:
         return []
-    shop = shopping_list(data, db, plan, monday)
+    shop = shopping_list(data, db, plan, monday, today=today)
     ticked = db.ticked(monday)
     head = "\n## Shopping list this week (bought = ticked on the list; after a shop, what is still "
     out = [head + "to buy was not found or not bought yet)"]
@@ -445,6 +454,33 @@ def unused_now(data: Data, db: DB, monday: dt.date) -> list[str]:
         "- " + ", ".join(left),
         rule + "say how to keep it (freeze it); ask only if it may already be eaten.",
     ]
+
+
+def pantry_now(data: Data, db: DB, today: dt.date) -> list[str]:
+    """What is at home now (pantry.py), across weeks: each ingredient with its amount, since when
+    and until when it is good, and what «I have it» keeps off the lists without counting it."""
+    from . import pantry
+
+    items = pantry.now(data, db, today)
+    have = sorted(data.ingredients[i].name for i in db.have() if i in data.ingredients)
+    out = [
+        (
+            "\n## Pantry (at home now: what the list's ticks bought and what the chat said, less what "
+            "the plan cooked since and what went off)"
+        )
+    ]
+    for x in items:
+        good = f", good until {x.expires - dt.timedelta(days=1)}" if x.expires else ""
+        out.append(f"- {x.name} [{x.ingredient}]: {x.amount}, since {x.since}{good}")
+    if have:
+        out.append("- at home in an amount nobody counted («I have it»): " + ", ".join(have))
+    out.append(
+        "- Nothing else is at home as far as the app knows; when someone says otherwise, set it "
+        "with `pantry`."
+        if items or have
+        else "- Empty: nothing ticked or said to be at home."
+    )
+    return out
 
 
 def problems_now(data: Data, db: DB, today: dt.date) -> list[str]:
