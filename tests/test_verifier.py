@@ -291,3 +291,12 @@ def test_a_step_done_the_night_before_moves_the_soak_a_day_earlier(data_dir, tmp
     assert "prep:ensalada-garbanzos:2026-10-15" in keys(data, db)  # Wednesday night is too late
     db.add_reminder(-100, "ana", at(D(1), 21), "Remojo", 7, "ensalada-garbanzos", str(D(3)))
     assert "prep:ensalada-garbanzos:2026-10-15" not in keys(data, db)
+
+
+def test_the_check_knows_the_swaps_the_app_already_makes(data_dir, tmp_path):
+    """A person's swap is on their plate already, though the recipe text keeps the original."""
+    raw = yaml.safe_load((data_dir / "household.yaml").read_text())
+    raw["people"][0]["swaps"] = {"tomate": "lechuga"}
+    (data_dir / "household.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    brief = verifier.brief(load(data_dir), MONDAY, "x", [], {}, None)
+    assert "Ana (ana) gets instead, done by the app: tomate -> lechuga" in brief

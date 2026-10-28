@@ -31,6 +31,7 @@ from .portions import (
     plate,
     shopping_list,
     ticked_last,
+    together,
 )
 from .scheduler import tick
 from .targets import current_kcal, day_factor, evaluate, reason_text, trend
@@ -143,6 +144,12 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             for meal, r in menu
             if meal == "nibble"
         ]
+        eaters = {pd.person_id: pd.factor for pd in people}
+        totals = {
+            meal: together(state.data, state.data.recipes[getattr(pday, meal)], eaters)
+            for meal in MEAL_ORDER
+            if pday and getattr(pday, meal) in state.data.recipes
+        }
         if plan:
             for s in plan.sessions:
                 for x in s.dishes:
@@ -162,6 +169,8 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 pday=pday,
                 paused=day in paused_days(state.data),
                 picks=picks,
+                pick_totals=[together(state.data, r, eaters) for r, _ in picks],
+                totals=totals,
                 people=people,
                 names={p.id: p.name for p in state.data.household.people},
                 defrost=defrost,
@@ -333,6 +342,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         for p in state.data.household.people:
             f = day_factor(state.data.household, p, current_kcal(state.db, p), day)
             plates.append((p, plate(state.data, r, f, p.swaps)))
+        total = together(state.data, r, {p.id: pl.factor for p, pl in plates})
         return tpl.TemplateResponse(
             request,
             "recipe.html",
@@ -341,6 +351,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 r=r,
                 day=day,
                 plates=plates,
+                total=total,
                 votes=state.db.ratings(request.cookies.get("who") or "-"),
                 score=state.db.ratings().get(rid, 0),
             ),
