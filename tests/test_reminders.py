@@ -89,6 +89,13 @@ def labels(params):
     return [btn["text"] for btn in buttons(params)]
 
 
+def short(when):
+    """A reminder's time as its buttons show it: "Sun 18, 18:00"."""
+    local = dt.datetime.strptime(when, "%Y-%m-%d %H:%M")
+    day = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][local.weekday()]
+    return f"{day} {local.day}, {local:%H:%M}"
+
+
 # ---------------------------------------------------------------- the offer
 
 
@@ -97,7 +104,7 @@ def test_steps_at_a_time_are_offered_as_reminders_with_buttons_and_the_no_answer
 ):
     b, db = setup(data_dir, tmp_path)
     sunday, _ = ahead(2, 18)
-    saturday, _ = ahead(1, 22)
+    saturday, _ = ahead(2, 22)
     cfg(
         data_dir,
         text="Cook it on Sunday afternoon.\n\n"
@@ -111,7 +118,11 @@ def test_steps_at_a_time_are_offered_as_reminders_with_buttons_and_the_no_answer
     assert "18:00" in offer["text"] and "22:00" in offer["text"]
     assert offer["text"].endswith("If you do not answer, I do nothing.")
     # calendar off by default: only «here» per reminder; untapped, nothing is done anyway
-    assert labels(offer) == ["1 · Reminder here", "2 · Reminder here"]
+    # each button says what it sets, so two reminders' buttons never read the same
+    assert labels(offer) == [
+        f"🔔 {short(sunday)} · Cook Monday's lunch",
+        f"🔔 {short(saturday)} · Move the fish to…",
+    ]
     assert db.reminders(-100) == []  # nothing until a tap
 
 
@@ -136,7 +147,13 @@ def test_reminders_in_the_providers_dict_are_offered_and_past_or_bad_ones_droppe
     offer = offer_of(b)
     assert "Do the shopping" in offer["text"]
     assert "Too late" not in offer["text"] and "Too far" not in offer["text"]
-    assert labels(offer) == ["Reminder here", "In the calendar", "No"]
+    assert labels(offer) == [
+        f"🔔 {short(good)} · Do the shopping",
+        f"📅 {short(good)} · Do the shopping",
+        "✕ No · Do the shopping",
+    ]
+    assert "🔔 a reminder here · 📅 in the calendar" in offer["text"]
+    assert [len(row) for row in offer["reply_markup"]["inline_keyboard"]] == [1, 1, 1]
 
 
 def test_an_answer_without_steps_offers_nothing(data_dir, tmp_path):
@@ -176,7 +193,7 @@ def test_a_tap_on_here_stores_it_and_the_clock_posts_it_once_naming_the_person(
     (r,) = db.reminders(-100)
     assert (r["person"], r["at"], r["text"], r["by"]) == ("ana", at, "Cook Monday's lunch", 7)
     assert "I will remind you here on" in toasts(b)[-1]
-    assert labels(markups(b)[-1]) == ["✓ Reminder here"]
+    assert labels(markups(b)[-1]) == [f"✓ 🔔 {short(when)} · Cook Monday's lunch"]
     run(tap(b, here["callback_data"], 7, mid))  # settled once
     assert len(db.reminders(-100)) == 1
     run(b.tick_once(None))
@@ -222,15 +239,15 @@ def test_nothing_or_no_tap_does_nothing_and_the_buttons_say_so(data_dir, tmp_pat
     _h1, _c1, nothing1, h2, _c2, _n2 = buttons(offer)
     run(tap(b, nothing1["callback_data"], 7, mid_of(b, offer)))
     assert labels(markups(b)[-1]) == [
-        "✓ 1 · No",
-        "2 · Reminder here",
-        "2 · In the calendar",
-        "2 · No",
+        "✓ ✕ No · Cook",
+        f"🔔 {short(two)} · Clean",
+        f"📅 {short(two)} · Clean",
+        "✕ No · Clean",
     ]
     now = time.time()
     monkeypatch.setattr(botmod.time, "time", lambda: now + botmod.REMIND_TTL + 5)
     run(b.expire_offers(None))
-    assert labels(markups(b)[-1]) == ["✓ 1 · No", "✓ 2 · No answer: nothing"]
+    assert labels(markups(b)[-1]) == ["✓ ✕ No · Cook", "✓ No answer · Clean"]
     run(tap(b, h2["callback_data"], 7, mid_of(b, offer)))  # too late
     assert toasts(b)[-1] == "This is no longer waiting for an answer."
     assert db.reminders(-100) == [] and db.get_kv(botmod.REMIND) is None
@@ -310,9 +327,9 @@ def test_in_the_calendar_starts_a_turn_whose_add_at_that_time_the_tap_approves(d
     (decision,) = lines(data_dir, "answers.jsonl")
     assert decision["approved"] is True and decision["by"] == "7"
     said = [p["text"] for p in sends(b, -100)]
-    assert any(t.startswith("Approved with the «In the calendar» button:") for t in said)
+    assert any(t.startswith("Approved with the 📅 (in the calendar) button:") for t in said)
     assert not [p for p in sends(b, -100) if "do you approve" in p["text"]]
-    assert labels(markups(b)[0]) == ["✓ In the calendar"]
+    assert labels(markups(b)[0]) == [f"✓ 📅 {short(when)} · Cook Monday's lunch"]
     assert db.reminders(-100) == []  # not here as well
 
 
@@ -571,3 +588,29 @@ def test_cancels_never_crowd_out_the_new_reminders():
     found = llm.reminders(raw)
     assert {"when": "2026-11-01 09:00", "text": "New", "person": None} in found
     assert len([r for r in found if "cancel" in r]) == 5
+
+
+def test_reminder_buttons_in_spanish_say_the_day_the_time_and_what_they_set(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path, reminder_calendar=True)
+    b.data.settings.locale = "es"
+    one, at1 = ahead(4, 21)
+    two, at2 = ahead(4, 22)
+    cfg(
+        data_dir,
+        text="Dos pasos.\n"
+        + block((one, "Remojo de los garbanzos para el lunes"), (two, "Sacar la merluza")),
+    )
+    run(b.handle(None, msg("@chefbot ¿qué hago?", message_id=1)))
+    offer = next(p for p in sends(b, -100) if p.get("reply_markup"))
+    days = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+    d1, d2 = (dt.datetime.fromtimestamp(a, ZONE) for a in (at1, at2))
+    assert labels(offer) == [
+        f"🔔 {days[d1.weekday()]} {d1.day}, 21:00 · Remojo de los…",
+        f"📅 {days[d1.weekday()]} {d1.day}, 21:00 · Remojo de los…",
+        "✕ No · Remojo de los…",
+        f"🔔 {days[d2.weekday()]} {d2.day}, 22:00 · Sacar la merluza",
+        f"📅 {days[d2.weekday()]} {d2.day}, 22:00 · Sacar la merluza",
+        "✕ No · Sacar la merluza",
+    ]
+    assert "🔔 recordatorio aquí · 📅 en el calendario" in offer["text"]
+    assert max(len(x) for x in labels(offer)) <= 40  # a button on its own row shows it whole
