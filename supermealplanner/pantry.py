@@ -222,7 +222,10 @@ def tick(
     data: Data, db: DB, monday: dt.date, iid: str, on: bool, at: dt.datetime | None = None
 ) -> None:
     """A tick on a week's list, from the web page or a phone: the list keeps it, and the pantry
-    gets what it bought. Unticking takes it out of the pantry again."""
+    gets what it bought. Unticking takes it out of the pantry again. A tick that changes nothing (a
+    phone retrying) leaves both alone, so the purchase keeps its day and what cooking took from it."""
+    if on == (iid in db.ticked(monday)):
+        return
     at = at or dt.datetime.now(dt.UTC)
     db.tick(monday, iid, on, at)
     qty = bought(data, db, monday, iid) if on else None

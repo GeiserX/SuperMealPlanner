@@ -86,6 +86,20 @@ def test_a_tick_brings_in_what_the_line_buys_and_unticking_takes_it_back(data_di
     assert qty(b.data, db, MONDAY, "pollo") == 0 and db.lots() == []
 
 
+def test_a_phone_retrying_a_tick_does_not_bring_the_purchase_in_again(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    day = next(D(n) for n in range(7) if used(b.data, db, "pollo", D(n)))
+    pantry.tick(b.data, db, MONDAY, "pollo", True, at(0, 9))
+    after = day + dt.timedelta(days=1)
+    left = qty(b.data, db, after, "pollo")
+    first = (db.lots()[0]["at"], db.tick_times(MONDAY)["pollo"])
+    pantry.tick(b.data, db, MONDAY, "pollo", True, at((after - MONDAY).days, 9))  # the retry
+    assert (db.lots()[0]["at"], db.tick_times(MONDAY)["pollo"]) == first
+    assert qty(b.data, db, after, "pollo") == left  # what the cooking took stays taken
+    pantry.tick(b.data, db, MONDAY, "espinaca", False, at(0))  # an untick of nothing
+    assert len(db.lots()) == 1
+
+
 def test_with_a_catalogue_a_tick_brings_in_the_whole_packs(data_dir, tmp_path):
     _b, db = setup(data_dir, tmp_path)
     write(data_dir, "stores/store.yaml", dict(CATALOG, store="store"))  # the default store
