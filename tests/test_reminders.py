@@ -493,3 +493,47 @@ def test_the_weekly_review_asks_the_ai_itself_and_answers_the_group(data_dir, tm
     assert "waste" in asked and "what each of us has to do" in asked
     assert sends(b, -100)[-1]["text"] == "The week fits. Buy the fish on Tuesday."
     assert db.was_sent("revision", sunday, "18:00")
+
+
+# ---------------------------------------------------------------- asked for, and made wrong
+
+
+def test_the_block_parser_reads_a_reminder_asked_for_and_a_cancel():
+    _, found = llm.extract_reminders(
+        "Ok\n```reminders\n- 2026-11-01 23:00 | Soak | | set\n- cancel | 12\n- cancel | x\n```"
+    )
+    assert found == [
+        {"when": "2026-11-01 23:00", "text": "Soak", "person": None, "set": True},
+        {"cancel": 12},
+    ]
+
+
+def test_a_reminder_the_person_asked_for_is_set_at_once_without_an_offer(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    when, at = ahead(1, 13)
+    cfg(data_dir, text="Done.\n" + block((when, "Order the shopping", "ana", "set")))
+    run(b.handle(None, msg("@chefbot remind Ana at 13:00 to order the shopping", message_id=1)))
+    (r,) = db.reminders(-100)
+    assert (r["person"], r["at"], r["text"], r["by"]) == ("ana", at, "Order the shopping", 7)
+    assert not [p for p in sends(b, -100) if "If you do not answer" in p["text"]]
+    assert any(p["text"].startswith("⏰ Reminder set for") for p in sends(b, -100))
+
+
+def test_a_reminder_a_change_made_wrong_is_cancelled_and_the_ai_sees_the_chats_reminders(
+    data_dir, tmp_path
+):
+    b, db = setup(data_dir, tmp_path)
+    _, at = ahead(1, 20)
+    stale = db.add_reminder(-100, "ana", at, "Cook the mackerel", 7)
+    elsewhere = db.add_reminder(-200, "ana", at, "Another chat's", 7)
+    assert f"- {stale}: " in b.chat_reminders(-100) and "Cook the mackerel" in b.chat_reminders(
+        -100
+    )
+    assert "Another chat's" not in b.chat_reminders(-100)
+    cfg(
+        data_dir, text="Hake instead.\n" + block(("cancel", str(stale)), ("cancel", str(elsewhere)))
+    )
+    run(b.handle(None, msg("@chefbot no mackerel, hake", message_id=1)))
+    assert db.reminders(-100) == [] and db.reminder(stale)["state"] == "cancelled"
+    assert db.reminder(elsewhere)["state"] == "pending"  # never another chat's
+    assert any("Reminder removed" in p["text"] for p in sends(b, -100))

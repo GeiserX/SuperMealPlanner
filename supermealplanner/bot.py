@@ -1113,6 +1113,7 @@ class Bot:
             facts = await asyncio.to_thread(
                 context.facts, data, db, self.state.today(), viewer, not private
             )
+            facts += self.chat_reminders(chat_id)
             turn = {
                 "conversation": conv.get("id"),
                 "rules": self.rules(),
@@ -2571,7 +2572,10 @@ class Bot:
             if not now + 60 <= at.timestamp() <= now + REMIND_DAYS * 86400:
                 continue
             person = self._person(r.get("person")) or who
-            out.append({"at": at.timestamp(), "text": r["text"], "person": person, "done": None})
+            item = {"at": at.timestamp(), "text": r["text"], "person": person, "done": None}
+            if r.get("set"):
+                item["set"] = True
+            out.append(item)
         return out
 
     def _offers(self) -> list[dict]:
@@ -2596,10 +2600,43 @@ class Bot:
             rows += [first, [(pre + t("remind_nothing"), f"r:{key}:{n}x")]]
         return rows
 
+    def chat_reminders(self, chat_id: int) -> str:
+        """The reminders set in this chat still to come, with their ids, so the AI can cancel the
+        ones a change made wrong instead of asking the household to delete them."""
+        rows = self.state.db.reminders(chat_id)[:20]
+        if not rows:
+            return ""
+        out = ["\n## Reminders set in this chat, still to come (id: when, for whom: text)"]
+        for r in rows:
+            pid = self._person(r["person"])
+            who = f", {self.data.household.person(pid).name}" if pid else ""
+            local = dt.datetime.fromtimestamp(r["at"], self._zone())
+            out.append(f"- {r['id']}: {local:%Y-%m-%d %H:%M}{who}: {r['text']}")
+        return "\n".join(out)
+
     async def offer_reminders(self, client, chat_id, listed, covered, reply_to) -> None:
         """One message with the reminders an answer listed and buttons for each. Nothing happens
-        until a tap; untapped, the offer expires (REMIND_TTL) as nothing."""
-        items = self._offered(listed, covered[-1].who if covered else None)
+        until a tap; untapped, the offer expires (REMIND_TTL) as nothing. Reminders the person
+        asked for ("set") are set at once, and cancelled ones (only this chat's) go, with one
+        message saying both."""
+        t, db = self.t, self.state.db
+        done: list[str] = []
+        for r in listed:
+            old = db.reminder(r["cancel"]) if "cancel" in r else None
+            if old and old["chat"] == chat_id and db.settle_reminder(old["id"], "cancelled"):
+                done.append(t("remind_cancelled", when=self._when(old["at"]), text=old["text"]))
+        uid = covered[-1].uid if covered else None
+        items = self._offered(
+            [r for r in listed if "cancel" not in r], covered[-1].who if covered else None
+        )
+        for r in [r for r in items if r.get("set")] if uid else []:
+            db.add_reminder(chat_id, r["person"], r["at"], r["text"], uid)
+            line = t("remind_set_log", when=self._when(r["at"]), text=r["text"])
+            db.add_chat(chat_id, "assistant", None, line)
+            done.append(line)
+        if done:
+            await self.send(client, chat_id, "\n".join(done), reply_to)
+        items = [r for r in items if not (uid and r.get("set"))]
         if not items:
             return
         t, people = self.t, self.data.settings.bot.people
