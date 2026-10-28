@@ -69,3 +69,6 @@ section.day.today { border-color: var(--acc); }
 .fold > summary::-webkit-details-marker { display: none; }
 .fold > summary h3::before { content: "▾ "; }
 .fold:not([open]) > summary h3::before { content: "▸ "; }
+.fold > summary h2::before { content: "▾ "; }
+.fold:not([open]) > summary h2::before { content: "▸ "; }
+details.meal.fold:not([open]) > summary h2 { margin: 0; }

@@ -3,6 +3,7 @@
 import datetime as dt
 from collections import Counter
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -238,3 +239,30 @@ def test_ticked_lines_go_to_the_bottom_of_their_section_in_the_order_they_were_t
         page = c.get(f"/list?d={MONDAY}").text
         assert next(s for s in sections(page) if set(s) == set(usual)) == [b, *rest, a]
         assert "data-pos=" in page and "place(b)" in page
+
+
+@pytest.mark.parametrize(
+    ("clock", "shown"),
+    [
+        ("08:30", {"breakfast"}),
+        ("12:00", {"lunch", "side"}),
+        ("15:59", {"lunch", "side"}),
+        ("16:00", {"snack"}),
+        ("19:00", {"dinner"}),
+        ("23:59", {"dinner"}),
+    ],
+)
+def test_today_unfolds_only_the_meal_of_the_moment(data_dir, data, monkeypatch, clock, shown):
+    import re
+
+    from supermealplanner.web import App
+
+    at = dt.datetime.combine(MONDAY, dt.time.fromisoformat(clock))
+    monkeypatch.setattr(App, "now", lambda self: at)
+    c, _ = _app(data_dir, data, monkeypatch)
+    with c:
+        page = c.get(f"/?d={MONDAY}").text
+    folds = dict(re.findall(r'<details class="meal fold" data-meal="(\w+)"( open)?>', page))
+    assert {"breakfast", "lunch", "dinner"} <= set(folds)  # every meal is there, folded or not
+    assert {m for m, o in folds.items() if o} == shown & set(folds)
+    assert page.count("<summary><h2>") == len(folds)  # each opens and closes from its title

@@ -233,6 +233,23 @@ def without(plan: Plan, hidden: set[dt.date]) -> Plan:
 
 
 MEALS = ("breakfast", "lunch", "side", "snack", "dinner")  # in eating order
+# When each meal is the one to show: from, until (local time). The today page and the app open the
+# meal whose hours hold the clock and fold the rest.
+MEAL_HOURS = {
+    "breakfast": ("00:00", "12:00"),
+    "lunch": ("12:00", "16:00"),
+    "side": ("12:00", "16:00"),
+    "snack": ("16:00", "19:00"),
+    "dinner": ("19:00", "24:00"),
+}
+
+
+def meals_now(at: dt.time) -> set[str]:
+    """The meals that are open at this time of day; every other one starts folded."""
+    hm = at.strftime("%H:%M")
+    return {m for m, (start, end) in MEAL_HOURS.items() if start <= hm < end}
+
+
 ICONS = {
     "breakfast": "☕",
     "lunch": "🍲",

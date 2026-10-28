@@ -54,7 +54,7 @@ not expire; it ends when someone takes the phone away with `/devices` (`/disposi
 | `GET /ping` | **No token.** `{"app": "supermealplanner", "version", "api"}` — what an app checks before it asks for anything, and how it knows a server is one of ours |
 | `POST /pair` | **No token.** A code for a token, as above |
 | `GET /meta` | The household name, the language, who lives here, the stores, and which device this is |
-| `GET /day?d=&person=` | One day in eating order: every meal, each dish, and a plate per person with its lines, kcal and protein. Plus the day's targets, what to take out of the freezer for tomorrow, what to leave to soak tonight for tomorrow's batch session (`soak_for_tomorrow`: each dish with the ingredient, `qty`, `unit` and the `amount` as the page writes it), and this person's votes |
+| `GET /day?d=&person=` | One day in eating order: every meal, each dish, and a plate per person with its lines, kcal and protein. Plus the day's targets, what to take out of the freezer for tomorrow, what to leave to soak tonight for tomorrow's batch session (`soak_for_tomorrow`: each dish with the ingredient, `qty`, `unit` and the `amount` as the page writes it), and this person's votes. Each meal carries its `hours` (`{"from": "12:00", "until": "16:00"}`, local time) and `open`: whether it is the meal of the moment, by the household's clock at `now` (see below) |
 | `GET /week?d=` | Seven days of dish names from that week's Monday |
 | `GET /tasks?d=` | Each day's kitchen jobs with their times: defrost, batch (with the soaking on the eve of a session), shopping, and one-off reminders set from the chat |
 | `GET /cook?d=` | A batch afternoon: every dish, its servings, its containers and where each one goes |
@@ -91,6 +91,18 @@ first, in the section's usual order, then the ticked ones, the first ticked firs
 
 So an app can reorder a section by itself the moment a tick changes, here or from `GET /list/ticks`,
 without asking for the whole list again.
+
+### The meal of the moment
+
+On the today page every meal is a fold that opens and closes from its title and never disappears.
+When the page opens, only the meal whose hours hold the clock is unfolded: breakfast from 00:00 to
+12:00, lunch and salad from 12:00 to 16:00, snack from 16:00 to 19:00 and dinner from 19:00 to
+24:00. A fold opened or closed by hand stays as it was left while the page is on screen.
+
+`GET /day` sends what an app needs to do the same: each meal's `hours` (`from` included, `until`
+not, as `HH:MM` in the household's timezone), `open` for the meals of the moment, and `now`, the
+`HH:MM` they were judged at. The snacks to nibble on, the batch session, the defrost and soak notes
+and the votes are not folds.
 
 `person` defaults to the person the device is paired to, and may name anyone in the household — one
 phone on the kitchen counter can log for everybody. It may not name anyone else: that is a `400`.

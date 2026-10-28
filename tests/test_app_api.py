@@ -481,3 +481,26 @@ def test_the_time_of_a_tick_is_kept_and_forgotten_with_it(data_dir):
     assert db.tick_times(MONDAY) == {"pollo": "2026-01-05T18:30:00+00:00"}
     db.tick(MONDAY, "pollo", False)
     assert db.tick_times(MONDAY) == {}
+
+
+def test_a_day_says_each_meals_hours_and_which_one_is_open_now(client, data_dir, monkeypatch):
+    from supermealplanner.web import App
+
+    got = pair(client, data_dir)
+    hours = {}
+    for clock, shown in (
+        ("09:00", {"breakfast"}),
+        ("13:30", {"lunch", "side"}),
+        ("20:15", {"dinner"}),
+    ):
+        at = dt.datetime.combine(MONDAY, dt.time.fromisoformat(clock))
+        monkeypatch.setattr(App, "now", lambda self, at=at: at)
+        day = client.get(f"/api/v1/day?d={MONDAY}", headers=auth(got["token"])).json()
+        assert day["now"] == clock
+        assert {m["meal"] for m in day["meals"] if m["open"]} == shown & {
+            m["meal"] for m in day["meals"]
+        }
+        hours = {m["meal"]: m["hours"] for m in day["meals"]}
+    assert hours["breakfast"] == {"from": "00:00", "until": "12:00"}
+    assert hours["lunch"] == {"from": "12:00", "until": "16:00"}
+    assert hours["dinner"] == {"from": "19:00", "until": "24:00"}
