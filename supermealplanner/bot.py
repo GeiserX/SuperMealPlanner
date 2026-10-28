@@ -1180,11 +1180,14 @@ class Bot:
                 db.set_kv(key, {"id": reply.conversation, "seen": seen, "done": sorted(done)})
         else:
             db.set_kv(key, None)
+        made = True  # a reminder made wrong by a change goes only once the change is made
         if change is not None:
-            await self.propose(client, chat_id, anchor.mid, anchor.who, anchor.uid, change)
+            made = await self.propose(client, chat_id, anchor.mid, anchor.who, anchor.uid, change)
         for proposal in reply.proposals:
             await self.offer(client, chat_id, anchor.mid, anchor.who, anchor.uid, proposal)
         if listed:
+            if not made:
+                listed = [r for r in listed if "cancel" not in r]
             await self.offer_reminders(client, chat_id, listed, covered, reply_to)
         return covered
 
@@ -1269,26 +1272,26 @@ class Bot:
         return incoming
 
     # ------------------------------------------------------------- settings changes
-    async def propose(self, client, chat_id, reply_to, asker, user_id, change) -> None:
+    async def propose(self, client, chat_id, reply_to, asker, user_id, change) -> bool:
         """Make a change the person asked for at once; show one the AI came up with on its own and
-        wait for a yes from the person it answered."""
+        wait for a yes from the person it answered. True when the change is made now."""
         t = self.t
         if isinstance(change, str):
             await self.send(client, chat_id, t("change_invalid", error=change), reply_to)
-            return
+            return False
         if asker is None or user_id is None:
             await self.send(client, chat_id, t("change_members_only"), reply_to)
-            return
+            return False
         try:
             proposal = changes.parse(change, self.data, asker)
         except changes.ChangeError as e:
             await self.send(client, chat_id, t("change_invalid", error=e), reply_to)
-            return
+            return False
         name = self.data.household.person(asker).name
         if proposal.asked:
             item = {"change": change, "asker": asker, "name": name}
             await self.send(client, chat_id, await self.apply(item, asked=True), reply_to)
-            return
+            return bool(item.get("applied"))
         lines = changes.describe(proposal, self.data, t)
         msgs: list[int] = []
         sent = await self.send(
@@ -1312,6 +1315,7 @@ class Bot:
         }
         # a newer change from the same person replaces their earlier one ("no, better at 15:00")
         self.wait_for(chat_id, item, lambda i: "change" in i and i.get("asker") == asker)
+        return False
 
     def pending(self, chat_id: int) -> list[dict]:
         """What waits for a yes in this chat, oldest first, without what has expired. A change 0.3.x
@@ -1336,6 +1340,7 @@ class Bot:
     def drop(self, chat_id: int, item: dict) -> None:
         items = [i for i in self.pending(chat_id) if i != item]
         self.state.db.set_kv(WAITING.format(chat_id), items or None)
+        return False
 
     async def answer_pending(self, client, chat_id: int, user: dict, msg: dict, text: str) -> bool:
         """A yes or no from the person a change waits for. True when the message was that answer.
@@ -1817,6 +1822,7 @@ class Bot:
             out.append(t("menu_applied"))
         if asked:
             out.insert(0, t("change_done", lines="\n".join(lines)))
+        pending["applied"] = True  # every way it failed returned above
         return "\n".join(out)
 
     # ------------------------------------------------------------- proposals
@@ -2621,20 +2627,21 @@ class Bot:
         message saying both."""
         t, db = self.t, self.state.db
         done: list[str] = []
+        uid = covered[-1].uid if covered else None
+        member = self.person_of(uid or 0) is not None
         for r in listed:
             old = db.reminder(r["cancel"]) if "cancel" in r else None
-            if old and old["chat"] == chat_id and db.settle_reminder(old["id"], "cancelled"):
+            # the /reminders rule: a stranger let in by group_open cancels only their own
+            mine = old is not None and (member or uid == old["by"])
+            if mine and old["chat"] == chat_id and db.settle_reminder(old["id"], "cancelled"):
                 done.append(t("remind_cancelled", when=self._when(old["at"]), text=old["text"]))
-        uid = covered[-1].uid if covered else None
         items = self._offered(
             [r for r in listed if "cancel" not in r], covered[-1].who if covered else None
         )
         for r in [r for r in items if r.get("set")] if uid else []:
             db.add_reminder(chat_id, r["person"], r["at"], r["text"], uid)
-            line = t("remind_set_log", when=self._when(r["at"]), text=r["text"])
-            db.add_chat(chat_id, "assistant", None, line)
-            done.append(line)
-        if done:
+            done.append(t("remind_set_log", when=self._when(r["at"]), text=r["text"]))
+        if done:  # recorded in the chat by send, so the AI hears it
             await self.send(client, chat_id, "\n".join(done), reply_to)
         items = [r for r in items if not (uid and r.get("set"))]
         if not items:

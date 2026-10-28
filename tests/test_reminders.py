@@ -537,3 +537,37 @@ def test_a_reminder_a_change_made_wrong_is_cancelled_and_the_ai_sees_the_chats_r
     assert db.reminders(-100) == [] and db.reminder(stale)["state"] == "cancelled"
     assert db.reminder(elsewhere)["state"] == "pending"  # never another chat's
     assert any("Reminder removed" in p["text"] for p in sends(b, -100))
+
+
+def test_a_stranger_let_in_by_group_open_cannot_have_the_ai_cancel_a_reminder(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path, group_open=True)
+    _, at = ahead(1, 9)
+    rid = db.add_reminder(-100, "luis", at, "Cook", 7)
+    own = db.add_reminder(-100, None, at, "Theirs", 50)
+    cfg(data_dir, text="Ok.\n" + block(("cancel", str(rid)), ("cancel", str(own))))
+    run(b.handle(None, msg("@chefbot drop them", user=50, message_id=1)))
+    assert [r["id"] for r in db.reminders(-100)] == [rid]  # only the one they set
+
+
+def test_a_reminder_stays_while_the_change_that_made_it_wrong_waits_for_a_yes(data_dir, tmp_path):
+    from .test_conversations import block as change
+
+    b, db = setup(data_dir, tmp_path)
+    _, at = ahead(1, 9)
+    rid = db.add_reminder(-100, "luis", at, "Lunch at 14:00", 7)
+    cfg(
+        data_dir,
+        text=change({"set": {"household.lunch_time": "14:30"}})
+        + "\n"
+        + block(("cancel", str(rid))),
+    )
+    run(b.handle(None, msg("@chefbot hmm", message_id=1)))
+    assert any("Tap Yes or No" in p["text"] for p in sends(b, -100))  # it waits for the yes
+    assert db.reminder(rid)["state"] == "pending"
+
+
+def test_cancels_never_crowd_out_the_new_reminders():
+    raw = [{"cancel": n} for n in range(1, 6)] + [{"when": "2026-11-01 09:00", "text": "New"}]
+    found = llm.reminders(raw)
+    assert {"when": "2026-11-01 09:00", "text": "New", "person": None} in found
+    assert len([r for r in found if "cancel" in r]) == 5
