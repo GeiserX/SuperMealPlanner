@@ -617,7 +617,8 @@ def test_only_some_fields_of_an_existing_recipe_change_and_the_data_must_still_c
     p = changes.parse({"recipes": {"fritura": good}}, data, "luis")
     lines = "\n".join(changes.describe(p, data, Translator("en")))
     assert "Recipe Fritura, name: Fritura → Fritura ligera" in lines
-    assert "steps: 1 steps → 2 steps" in lines and "merluza 120" in lines
+    assert "steps:\n  − 1. Cocinar.\n  + 1. Enharinar.\n  + 2. Freír." in lines
+    assert "merluza 120" in lines
     assert "nutrition: kcal 600.0, protein_g 35.0 → kcal 380, protein_g 30" in lines
     changes.apply(data_dir, p, "chat: ok", "token")
     r = load(data_dir).recipes["fritura"]
@@ -808,3 +809,27 @@ def test_food_bought_that_no_dish_uses_is_put_to_the_assistant_never_wasted(data
     part = facts.split("## Bought and on no dish")[1].split("\n## ")[0]
     assert data.ingredients[spare].name in part and data.ingredients[eaten].name not in part
     assert "Never let it go to waste" in part
+
+
+def test_a_newer_change_on_the_same_thing_takes_the_buttons_off_the_one_still_waiting(
+    data_dir, tmp_path, monkeypatch
+):
+    data = plugin_data(data_dir)
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    week = {"pause": {"from": str(D(1)), "to": str(D(6))}}
+    other = {"pause": {"from": str(D(8)), "to": str(D(9))}}
+    reply(data_dir, text=block({"plan": [week]}))  # proposed: waits for a yes
+    run(b.handle(None, msg("@chefbot ¿qué hay hoy?")))
+    stale = 1000 + len(b.calls)  # the fake's id for the message with its buttons
+    reply(data_dir, text=block({"plan": [other]}))
+    run(b.handle(None, msg("@chefbot ¿y la otra semana?", user=8)))  # Ana's, on other days
+    assert len(b.pending(-100)) == 2  # nothing in common: both wait
+    reply(data_dir, text=block({"asked": True, "plan": [week]}))  # made at once
+    run(b.handle(None, msg("@chefbot pausa esta semana")))
+    (left,) = b.pending(-100)
+    assert left["change"]["plan"] == [other]
+    marked = [p for m, p in b.calls if m == "editMessageReplyMarkup"]
+    assert [
+        (p["message_id"], p["reply_markup"]["inline_keyboard"][0][0]["text"]) for p in marked
+    ] == [(stale, "Replaced by a newer change")]
