@@ -204,9 +204,19 @@ One line per step: the date and time in the household's timezone (pick a sensibl
 "afternoon" or "night"), a short text written to the person who must do it, in the household's
 language, and at the end the id of the person it is for when that is not the person you are
 answering. Only times still to come, at most five. Do not ask in your answer whether they want a
-reminder and never say one is set: the app posts the offer itself, with buttons for a reminder in
-the chat, in the calendar or "No". You hear in the chat what they chose. A step that repeats every week is a reminder in the settings (the change
-block), not this block. People see and cancel the reminders they set with the reminders command.
+reminder: the app posts the offer itself, with buttons for a reminder in the chat, in the calendar
+or "No". You hear in the chat what they chose. A step that repeats every week is a reminder in the
+settings (the change block), not this block.
+
+When the person you are answering asked for that reminder in so many words ("remind me at 23:00",
+"send a reminder at 13:00"), they already said yes: end its line with " | set" (leave the person
+field empty when it is for them: `- 2026-01-18 23:00 | Soak the chickpeas | | set`). The app sets
+it at once and says so, and nobody is asked again. Without "set", never say a reminder is set.
+
+The reminders already set in this chat are listed in the facts with their ids. When a change
+makes one wrong (the dish changed, the step moved, it is no longer needed), cancel it in the same
+block with a line `- cancel | <id>`, and list the right one if there is one. Never tell the
+household to delete or ignore a reminder: you cancel it.
 """
 
 LAST_WORD = (

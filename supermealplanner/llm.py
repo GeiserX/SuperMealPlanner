@@ -70,7 +70,9 @@ household's timezone), or a ```reminders block at the end of the text with one
 posts them in one message with buttons per reminder: a reminder here (the app posts the text in the
 chat at that time), in the calendar (with bot.reminder_calendar: a new turn asks the provider to add
 the event, and that tap approves its first ask of that turn when the ask adds an event at that very
-time), or nothing. An offer nobody taps expires and nothing happens.
+time), or nothing. An offer nobody taps expires and nothing happens. A reminder with "set": true (a
+fourth "| set" field in the block) is one the person asked for: the app sets it at once and says
+so, with no offer. {"cancel": id} (a "- cancel | <id>" line) cancels a reminder set from that chat.
 
 A plugin whose actions need a person's yes while it works defines
       def answer(request: dict, decision: dict, settings: dict) -> dict
@@ -151,12 +153,19 @@ WHEN = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}")
 
 
 def reminders(raw) -> list[dict]:
-    """Well-formed reminders: a time written as YYYY-MM-DD HH:MM, a short text, a person id or None;
-    at most REMINDERS_MAX, anything else is dropped. Whether the time is still to come is the
+    """Well-formed reminders: a time written as YYYY-MM-DD HH:MM, a short text, a person id or None,
+    and "set" when the person asked for it; or {"cancel": id} for a reminder set from the chat that
+    is no longer right. At most REMINDERS_MAX of each, anything else is dropped. Whether the time is still to come is the
     app's to judge when it offers them."""
     out: list[dict] = []
+    cancels: list[dict] = []
     for r in raw if isinstance(raw, list) else []:
         if not isinstance(r, dict):
+            continue
+        gone = str(r.get("cancel") if r.get("cancel") is not None else "").strip()
+        if gone.isdigit():  # a reminder set from the chat that the answer made wrong
+            if {"cancel": int(gone)} not in cancels:
+                cancels.append({"cancel": int(gone)})
             continue
         when = str(r.get("when") or "").strip()
         text = " ".join(str(r.get("text") or "").split())
@@ -168,9 +177,11 @@ def reminders(raw) -> list[dict]:
             "text": text,
             "person": str(person) if isinstance(person, str) and person.strip() else None,
         }
-        if all((o["when"], o["text"]) != (item["when"], item["text"]) for o in out):
+        if r.get("set") is True:  # asked for in so many words: set without an offer
+            item["set"] = True
+        if all((o.get("when"), o.get("text")) != (item["when"], item["text"]) for o in out):
             out.append(item)
-    return out[:REMINDERS_MAX]
+    return out[:REMINDERS_MAX] + cancels[:REMINDERS_MAX]
 
 
 def extract_reminders(text: str) -> tuple[str, list[dict]]:
@@ -184,9 +195,16 @@ def extract_reminders(text: str) -> tuple[str, list[dict]]:
         if not line.startswith(("-", "*")):
             continue
         parts = [x.strip() for x in line[1:].split("|")]
-        if len(parts) >= 2:
+        if len(parts) >= 2 and parts[0].lower() == "cancel":
+            found.append({"cancel": parts[1]})
+        elif len(parts) >= 2:
             found.append(
-                {"when": parts[0], "text": parts[1], "person": parts[2] if len(parts) > 2 else None}
+                {
+                    "when": parts[0],
+                    "text": parts[1],
+                    "person": (parts[2] or None) if len(parts) > 2 else None,
+                    "set": len(parts) > 3 and parts[3].lower() == "set",
+                }
             )
     return REMINDERS.sub("", text).strip(), reminders(found)
 
