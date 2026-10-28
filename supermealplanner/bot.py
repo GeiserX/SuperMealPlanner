@@ -147,6 +147,7 @@ ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft 
 # a chat's turn starts this long after its newest message, so a burst goes together
 DEBOUNCE_S = 2.5
 VOICE_WAIT_S = 30  # a turn waits this long at most for a voice note of its chat still transcribing
+PLAN_EVERY_S = 600  # how often the plan as it stands is checked again (judged only when it changed)
 # A provider that is out of capacity raises an error with `retry_after` (seconds): the chat's messages
 # wait that long, at least BUSY_MIN_S, and are answered then, with nobody writing again.
 BUSY_MIN_S = 60
@@ -265,6 +266,7 @@ class Bot:
         self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
         self.spoken: dict[str, Spoken] = {}  # what was said to the app, by turn id
         self.spoken_rows: dict[int, str] = {}  # chat log row -> the spoken turn it is
+        self.planned_at: float | None = None  # clock() of the last plan check started
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -682,6 +684,10 @@ class Bot:
                 await self.tick_checkup(client)
             except Exception as e:  # noqa: BLE001
                 log.warning("morning checkup failed: %s", safe(e))
+            try:
+                self.tick_plan()
+            except Exception as e:  # noqa: BLE001
+                log.warning("plan check failed: %s", safe(e))
             try:
                 await self.expire_asks(client)
                 await self.expire_offers(client)
@@ -2876,7 +2882,13 @@ class Bot:
                 line = t("doctor_reminder_cancelled", when=self._when(r["at"]), text=r["text"])
                 said.setdefault(r["chat"], []).append(line)
         rest = [p for p in found if p.kind not in ("stale_reminder", "unused")]
-        new = [p for p in rest if before is None or p.key not in before]
+        # in the morning, a recipe nobody can eat is left to the AI: it stays true until someone
+        # edits the recipe, and the household may keep it so on purpose
+        new = (
+            [p for p in rest if p.kind != "avoided"]
+            if before is None
+            else [p for p in rest if p.key not in before]
+        )
         if chat_id is not None and new:
             items = "; ".join(self.problem_line(p) for p in new)
             key = "doctor_morning" if before is None else "doctor_new"
@@ -2906,6 +2918,44 @@ class Bot:
             return
         await self.checkup(client, chat)
         self.state.db.mark_sent("checkup", now.date(), cfg.checkup_at)
+        await self.raise_plan(chat)
+
+    def tick_plan(self) -> None:
+        """Every PLAN_EVERY_S, the checks of the plan as it stands (verifier.check_plan) in the
+        background, never while a turn runs; the judgment runs only for a plan it has not seen."""
+        if self.data.settings.llm.provider == "none" or self.running:
+            return
+        if self.planned_at is not None and self.clock() - self.planned_at < PLAN_EVERY_S:
+            return
+        self.planned_at = self.clock()
+        self.spawn(self.check_plan())
+
+    async def check_plan(self) -> None:
+        try:
+            await verifier.check_plan(self.data, self.state.db, self.state.today())
+        except Exception as e:  # noqa: BLE001
+            log.warning("plan check failed: %s", safe(e))
+
+    async def raise_plan(self, chat: int) -> None:
+        """In the morning, once per plan: a turn the bot asks itself when the plan check found
+        problems, so the chef proposes the fixes in the chat like any change."""
+        db, data = self.state.db, self.data
+        if data.settings.llm.provider == "none":
+            return
+        kept = db.get_kv(verifier.PLAN_KEY) or {}
+        if not kept.get("key") or kept.get("raised") == kept["key"]:
+            return
+        if not await asyncio.to_thread(verifier.plan_findings, data, db, self.state.today()):
+            return
+        db.set_kv(verifier.PLAN_KEY, {**kept, "raised": kept["key"]})
+        self.take(
+            chat,
+            {"first_name": self.t("plan_check_who")},
+            None,
+            None,
+            self.t("plan_check_turn"),
+            True,
+        )
 
     async def cmd_reminders(self, who, arg, user, chat=None):
         """The chat's reminders still to come, each with a button to cancel it."""

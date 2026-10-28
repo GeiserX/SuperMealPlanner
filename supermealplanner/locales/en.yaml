@@ -356,7 +356,9 @@ voice_reminders: "I have offered reminders for it in Telegram; tap there if you 
 voice_failed: "I could not answer that. Try again in a minute."
 voice_heard_group: "🎙️ {name} (by voice): {text}"
 review_who: "weekly review"
-review_turn: "[Weekly review, automatic: nobody wrote this] Check the week of {week} ({d}) before this week's shopping, day by day: that the menu keeps everything we asked for in the chat and in the instructions (what each of us likes and does not, each person's health, guests, the days with no cooking), that nothing bought or at home goes to waste (the bought food no dish uses goes into the menu before it spoils), that each cooking session can be done (soaking, defrosting, time) and that the list is right. Fix what does not fit with menu changes, without asking again what is already decided, and write one short message to the group: what you changed and why, and what each of us has to do this week. If everything fits, say so in one line."
+review_turn: "[Weekly review, automatic: nobody wrote this] Check the week of {week} ({d}) before this week's shopping, day by day: that the menu keeps everything we asked for in the chat and in the instructions (what each of us likes and does not, each person's health, guests, the days with no cooking), that nothing bought or at home goes to waste (the bought food no dish uses goes into the menu before it spoils), that each cooking session can be done (soaking, defrosting, time) and that the list is right, and the problems the app found (in your data). Fix what does not fit with menu changes, without asking again what is already decided, and write one short message to the group: what you changed and why, and what each of us has to do this week. If everything fits, say so in one line."
+plan_check_who: "plan check"
+plan_check_turn: "[Plan check, automatic: nobody wrote this] The check of the plan as it stands found problems in this week and the next (in your data, under «Problems the app found»). Fix them with menu changes, without asking again what is already decided, and write one short message: what you changed and why, and what anyone has to do. A problem you cannot fix alone goes in the message as a question."
 
 # the consistency check (doctor.py): what the app found, after a change and in the morning
 doctor_reminder_cancelled: "🗑 Reminder cancelled, the menu no longer has its dish: {when}: {text}"
@@ -368,6 +370,7 @@ problem_too_old: "lunch on {date} ({dish}) is cooked on {cook} and does not keep
 problem_uncooked: "lunch on {date} ({dish}) says it was cooked on {cook}, but nobody cooked it"
 problem_prep_late: "{dish} on {date} counts on a cooking session before that day, and none comes before"
 problem_prep: "{dish} on {date} needs something done ahead and no reminder for it is set"
+problem_avoided: "{dish} uses {food}, which one of us does not eat, so it never reaches the menu"
 
 # the virtual pantry (pantry.py): the list page's section and changes from the chat
 pantry_title: "🧺 In the pantry"

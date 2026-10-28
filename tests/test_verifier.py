@@ -2,6 +2,7 @@
 menu, a recipe or the batch days before it goes out (verifier.py): on a copy of the data, then one
 judgment call to the provider, then at most one revision in the same conversation."""
 
+import asyncio
 import datetime as dt
 import json
 
@@ -57,7 +58,7 @@ def at(day, hour):
 def test_lunches_cooked_in_a_session_need_no_prep_reminder(data_dir, tmp_path):
     _b, db = setup(data_dir, tmp_path)
     data = soak(data_dir)  # the garbanzo lunches are cooked in sessions: the batch reminder soaks
-    assert doctor.problems(data, db, MONDAY) == []
+    assert [p.kind for p in doctor.problems(data, db, MONDAY) if p.kind != "avoided"] == []
 
 
 def test_a_dinner_with_a_dried_pulse_and_no_soak_reminder_is_flagged_until_one_comes_in_time(
@@ -300,3 +301,130 @@ def test_the_check_knows_the_swaps_the_app_already_makes(data_dir, tmp_path):
     (data_dir / "household.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
     brief = verifier.brief(load(data_dir), MONDAY, "x", [], {}, None)
     assert "Ana (ana) gets instead, done by the app: tomate -> lechuga" in brief
+
+
+# ---------------------------------------------------------------- the plan as it stands
+
+
+def judged(verdict):
+    """A fake provider for the plan check: the verdict it gives, and each call it got."""
+    calls = []
+
+    async def complete(data, system, messages):
+        calls.append({"system": system, "brief": messages[0]["content"]})
+        return json.dumps(verdict)
+
+    return calls, complete
+
+
+def test_the_plan_check_reads_every_recipe_of_the_two_weeks_and_judges_all_of_it(
+    data_dir, tmp_path
+):
+    b, db = vsetup(data_dir, tmp_path)
+    text, key = verifier.plan_brief(b.data, db, MONDAY)
+    plan, end = plan_for(b.data, MONDAY), MONDAY + dt.timedelta(days=13)
+    dishes = {getattr(d, m) for d in plan.days if d.date <= end for m in ("lunch", "dinner")}
+    for rid in dishes:
+        assert f"### {rid}\n" in text  # the whole text, never only the name
+    assert "Not shown" not in text
+    assert key == verifier.plan_brief(b.data, db, MONDAY)[1]  # the clock line is not in the key
+    system = verifier.VERIFY.format(scope=verifier.PLAN_SCOPE, only="")
+    assert "Every real problem in it counts" in system and "never from its name" in system
+    assert verifier.ONLY_PROPOSAL not in system
+
+
+def test_recipes_too_long_to_send_are_named_rather_than_judged_by_name(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    real, verifier.RECIPES_MAX = verifier.RECIPES_MAX, 300
+    try:
+        text, _ = verifier.plan_brief(b.data, db, MONDAY)
+    finally:
+        verifier.RECIPES_MAX = real
+    assert "(Not shown, too long to send: " in text
+
+
+def test_the_plan_is_judged_once_per_version_and_the_ai_sees_what_was_found(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    calls, fake = judged({"health": ["Ana: too much salt on Tuesday"], "timeline": ["Thaw it"]})
+    verifier.llm.complete, real = fake, verifier.llm.complete
+    try:
+        run(verifier.check_plan(b.data, db, MONDAY))
+        run(verifier.check_plan(b.data, db, MONDAY))
+        assert len(calls) == 1  # same plan: not judged again
+        assert verifier.SKIP and "Every real problem" in calls[0]["system"]
+        group = verifier.plan_findings(b.data, db, MONDAY)
+        assert group == ["timeline: Thaw it", "health: Ana: too much salt on Tuesday"] or set(
+            group
+        ) == {"timeline: Thaw it", "health: Ana: too much salt on Tuesday"}
+        # a private chat sees no one's health
+        assert verifier.plan_findings(b.data, db, MONDAY, "luis") == ["timeline: Thaw it"]
+        from supermealplanner import context
+
+        assert "- timeline: Thaw it" in context.facts(b.data, db, MONDAY)
+        dinner(
+            b.data, D(3), "merluza-cena-1"
+        )  # the plan changed: the old findings are not about it
+        assert verifier.plan_findings(b.data, db, MONDAY) == []
+        run(verifier.check_plan(b.data, db, MONDAY))
+        assert len(calls) == 2
+    finally:
+        verifier.llm.complete = real
+
+
+def test_a_failed_plan_check_keeps_nothing_and_runs_again(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+
+    async def boom(*a, **k):
+        raise RuntimeError("down")
+
+    verifier.llm.complete, real = boom, verifier.llm.complete
+    try:
+        assert run(verifier.check_plan(b.data, db, MONDAY)) is None
+    finally:
+        verifier.llm.complete = real
+    assert db.get_kv(verifier.PLAN_KEY) is None
+
+
+def test_the_morning_raises_what_the_plan_check_found_once_per_plan(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    taken = []
+    b.take = lambda chat, user, who, msg, text, asked, **k: taken.append((chat, text))
+    run(b.raise_plan(-100))
+    assert taken == []  # nothing checked yet
+    _calls, fake = judged({"nonsense": ["The oven is used twice at once"]})
+    verifier.llm.complete, real = fake, verifier.llm.complete
+    try:
+        run(verifier.check_plan(b.data, db, MONDAY))
+    finally:
+        verifier.llm.complete = real
+    run(b.raise_plan(-100))
+    run(b.raise_plan(-100))
+    assert taken == [(-100, b.t("plan_check_turn"))]
+
+
+def test_the_plan_check_runs_in_the_background_at_most_every_ten_minutes(data_dir, tmp_path):
+    b, _db = vsetup(data_dir, tmp_path)
+    started, now = [], [1000.0]
+    b.clock = lambda: now[0]
+
+    async def check():
+        started.append(now[0])
+
+    b.check_plan = check
+
+    async def tick():
+        b.tick_plan()
+        await asyncio.gather(*b.tasks)
+
+    async def ticks():
+        await tick()
+        await tick()
+        now[0] += 601
+        b.running[1] = object()  # a turn runs: wait for it
+        await tick()
+        assert started == [1000.0]
+        b.running.clear()
+        await tick()
+
+    run(ticks())
+    assert started == [1000.0, 1601.0]
