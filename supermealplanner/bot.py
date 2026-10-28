@@ -60,7 +60,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import __version__, changes, context, doctor, llm, menu, pantry
+from . import __version__, changes, context, doctor, llm, menu, pantry, verifier
 from .i18n import Translator
 from .model import WEEKDAYS
 from .planner import ICONS, day_menu, paused_days, plan_for
@@ -1135,6 +1135,11 @@ class Bot:
             try:
                 reply = await asyncio.wait_for(
                     llm.converse(data, turn), timeout=data.settings.llm.timeout_s
+                )
+                # a change to the menu, a recipe or the batch days is checked, and fixed once,
+                # before anyone sees it
+                reply = await verifier.review(
+                    data, db, self.state.today(), turn, reply, viewer, last_item.who
                 )
             except Exception as e:  # noqa: BLE001
                 log.warning("AI call failed: %s", safe(e))

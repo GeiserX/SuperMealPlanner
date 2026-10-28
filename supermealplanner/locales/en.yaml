@@ -366,6 +366,8 @@ problem_off_day: "the batch session on {date} is not on a batch day"
 problem_split: "{dish} on {a} and {b} is cooked twice; one cook on {cook} would do"
 problem_too_old: "lunch on {date} ({dish}) is cooked on {cook} and does not keep that long"
 problem_uncooked: "lunch on {date} ({dish}) says it was cooked on {cook}, but nobody cooked it"
+problem_prep_late: "{dish} on {date} counts on a cooking session before that day, and none comes before"
+problem_prep: "{dish} on {date} needs something done ahead and no reminder for it is set"
 
 # the virtual pantry (pantry.py): the list page's section and changes from the chat
 pantry_title: "🧺 In the pantry"

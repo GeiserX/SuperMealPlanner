@@ -365,6 +365,8 @@ problem_off_day: "la sesión de cocina del {date} no cae en un día de cocinar"
 problem_split: "{dish} del {a} y del {b} se cocina dos veces; bastaría con cocinarlo una vez el {cook}"
 problem_too_old: "la comida del {date} ({dish}) se cocina el {cook} y no aguanta tanto"
 problem_uncooked: "la comida del {date} ({dish}) figura como cocinada el {cook}, pero nadie la cocinó"
+problem_prep_late: "{dish} del {date} cuenta con una sesión de cocina antes de ese día, y no hay ninguna antes"
+problem_prep: "{dish} del {date} necesita algo hecho antes y no hay recordatorio para ello"
 
 # the virtual pantry (pantry.py): the list page's section and changes from the chat
 pantry_title: "🧺 En la despensa"

@@ -36,6 +36,9 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
   and compare it with our recipe: say what differs (ingredients, amounts, steps, time).
 - The household's data below is as of now; it changes between messages, so trust it over anything
   said earlier in the chat.
+- What decides a dish is that it is tasty and healthy, made from real food: never ultra-processed
+  products. Preparing raw food at home is cooking, not processing. Having a kitchen device is no
+  reason to use it.
 """
 
 WEB = """
@@ -226,6 +229,9 @@ When a reminder is about a dish of the menu (cook it, defrost it, soak what it n
 `dish <recipe id> <the date it is eaten>` at the end of its line:
 `- 2026-01-17 22:00 | Move the fish to the fridge | <person id> | | dish salmon-bake 2026-01-18`.
 When that day's menu no longer has the dish, the app cancels the reminder by itself and says so.
+A dish that needs something done before its day (a dried pulse to soak the night before, a
+recipe's `ahead` steps, such as cooking the chickpeas or roasting a pepper) needs a reminder for it
+at its time, with that dish field: the app checks that one comes in time.
 
 The reminders already set in this chat are listed in the facts with their ids. When a change
 makes one wrong (the dish changed, the step moved, it is no longer needed), cancel it in the same
@@ -353,6 +359,8 @@ def facts(
         + "."
     )
 
+    out += equipment_now(data)
+
     for day in (today, today + dt.timedelta(days=1)):
         plan = plan_for(data, day)
         if not plan:
@@ -373,6 +381,27 @@ def facts(
     out += problems_now(data, db, today)
     out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)
+
+
+def equipment_now(data: Data) -> list[str]:
+    """The kitchen's devices and tools: recipes use only these, and give the choice where two do
+    the same job."""
+    kit = data.household.equipment
+    if not kit:
+        return []
+    return [
+        "\n## Kitchen equipment",
+        "- " + ", ".join(kit),
+        (
+            "- Recipes and their steps use only this equipment. Where two items do the same job (the "
+            "oven or the air fryer, the pressure cooker or a pot), a step gives both, each with its "
+            "temperature and time, so the household chooses."
+        ),
+        (
+            "- Having a device is no reason to use it: tasty, healthy food without ultra-processed "
+            "products decides."
+        ),
+    ]
 
 
 def menu_now(data: Data, t: Translator, today: dt.date) -> list[str]:

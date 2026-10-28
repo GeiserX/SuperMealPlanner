@@ -89,6 +89,16 @@ class Nutrition(Loose):
     source: str = ""
 
 
+class Ahead(Strict):
+    """A step done before the day the dish is eaten (cook the chickpeas, roast the pepper)."""
+
+    step: str = Field(min_length=1)
+    # done at the latest this many days before the day it is eaten (0: that day, before the meal)
+    days: int = Field(default=0, ge=0, le=3)
+    # True: the recipe counts on the cooking session before that day for it
+    session: bool = False
+
+
 class Recipe(Loose):
     id: str
     name: str
@@ -103,6 +113,8 @@ class Recipe(Loose):
     serves_note: str = ""
     ingredients: list[RecipeItem]
     steps: list[str] = []
+    # done before the day it is eaten; a dried pulse to soak is known from its ingredient
+    ahead: list[Ahead] = []
     nutrition: Nutrition
 
     video: str | None = None  # optional link to someone cooking it
@@ -250,6 +262,8 @@ class Household(Loose):
     batch: Batch = Batch()
     people: list[Person]
     rules: Rules = Rules()
+    # the kitchen's devices and tools, in the household's words: recipes use only these
+    equipment: list[str] = []
 
     def person(self, pid: str) -> Person:
         for p in self.people:
