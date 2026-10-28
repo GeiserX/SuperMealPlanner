@@ -277,6 +277,9 @@ def brief(data: Data, today: dt.date, answer: str, problems: list[str], after: d
             out.append(f"- {p.name} ({p.id}): {note}")
         if p.avoid_ingredients:
             out.append(f"- {p.name} ({p.id}) never eats: {', '.join(p.avoid_ingredients)}")
+        if p.swaps:  # already on their plate and the list: the recipe text stays as written
+            swaps = ", ".join(f"{a} -> {b}" for a, b in p.swaps.items())
+            out.append(f"- {p.name} ({p.id}) gets instead, done by the app: {swaps}")
     if data.settings.llm.instructions:
         out += ["", "### The household's own instructions", data.settings.llm.instructions]
     r = hh.rules
@@ -297,6 +300,10 @@ def brief(data: Data, today: dt.date, answer: str, problems: list[str], after: d
             yaml.safe_dump(health, allow_unicode=True, sort_keys=False),
         ]
     out += ["", "## The menu after the change", *after.get("menu", [])]
+    out.append(
+        "(Only this week and the next are shown. A session may cook for lunches after them: a "
+        "dish missing from this menu is not evidence that it is on no meal.)"
+    )
     if after.get("recipes"):
         out += ["", "## Recipes it touches", *after["recipes"]]
     return "\n".join(out)
