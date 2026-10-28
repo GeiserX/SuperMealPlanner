@@ -277,3 +277,17 @@ def test_a_broken_provider_hands_the_first_answer_on(data_dir, tmp_path):
     finally:
         verifier.llm.complete = real
     assert out is reply
+
+
+def test_a_step_done_the_night_before_moves_the_soak_a_day_earlier(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir, ahead=[{"step": "Cocer los garbanzos", "days": 1}])
+    dinner(data, D(3))  # Thursday 15: cooked on Wednesday night, so soaked on Tuesday
+    (p,) = [p for p in doctor.problems(data, db, MONDAY) if p.kind == "prep"]
+    assert (
+        "the night before 2026-10-14" in p.text and "Cocer los garbanzos (by 2026-10-14)" in p.text
+    )
+    db.add_reminder(-100, "ana", at(D(2), 21), "Remojo", 7, "ensalada-garbanzos", str(D(3)))
+    assert "prep:ensalada-garbanzos:2026-10-15" in keys(data, db)  # Wednesday night is too late
+    db.add_reminder(-100, "ana", at(D(1), 21), "Remojo", 7, "ensalada-garbanzos", str(D(3)))
+    assert "prep:ensalada-garbanzos:2026-10-15" not in keys(data, db)

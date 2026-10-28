@@ -280,9 +280,17 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
                 continue
             session = [a.step for a in r.ahead if a.session]
             before = _sessions_before(plans, d) if session else []
-            # a dried pulse soaks the night before it is cooked: in the session, else that day
-            cooked = before[-1] if before else d
-            deadline = at(cooked) if soak else at(d, MEAL_HOURS[meal][0])
+            # a step `days` ahead is due by the end of that day, one on the day before the meal
+            due = [
+                at(d - dt.timedelta(days=a.days - 1)) if a.days else at(d, MEAL_HOURS[meal][0])
+                for a in r.ahead
+                if not a.session
+            ]
+            # a dried pulse soaks the night before it is cooked: in the session, on the earliest
+            # step's day, else on the day itself
+            first = max((a.days for a in r.ahead if not a.session), default=0)
+            cooked = before[-1] if before else d - dt.timedelta(days=first)
+            deadline = min([at(cooked)] if soak else [at(d, MEAL_HOURS[meal][0]), *due])
             times = linked.get((r.id, d.isoformat()), [])
             if any(
                 at(cooked - dt.timedelta(days=REMINDER_LEAD_DAYS)) <= t <= deadline for t in times
@@ -315,7 +323,14 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
                 [f"soak {', '.join(soak)} the night before {cooked.isoformat()}"] if soak else []
             )
             steps += [
-                a.step + (f" (in the session of {before[-1].isoformat()})" if a.session else "")
+                a.step
+                + (
+                    f" (in the session of {before[-1].isoformat()})"
+                    if a.session
+                    else f" (by {(d - dt.timedelta(days=a.days)).isoformat()})"
+                    if a.days
+                    else ""
+                )
                 for a in r.ahead
             ]
             fix = (

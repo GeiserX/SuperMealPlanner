@@ -292,6 +292,7 @@ ingredients:
 steps:
   - Sweat the onion, carrot and pepper in the oil.
 ahead:                       # optional: what has to be done before the day it is eaten
+  - {step: Cook the chickpeas, days: 1}       # days: at the latest this many days before (0: that day, before the meal)
   - {step: Roast the pepper, session: true}   # session: true counts on the cooking session before that day
 nutrition:                   # per reference serving
   kcal: 520
@@ -302,7 +303,7 @@ nutrition:                   # per reference serving
   source: USDA
 ```
 
-`ahead` lists what has to be ready before the day a dish is eaten, besides its own steps that day: cook the chickpeas, roast a pepper, make a dough. A dried pulse to soak needs no entry: its ingredient's `soak` says so. `session: true` means the recipe counts on the batch session in the 3 days before that day for the step; a session on the day itself counts as after the meal. The consistency check names a dish whose steps no reminder covers in time ([how it works](how-it-works.md#the-consistency-check)).
+`ahead` lists what has to be ready before the day a dish is eaten, besides its own steps that day: cook the chickpeas, roast a pepper, make a dough. A dried pulse to soak needs no entry: its ingredient's `soak` says so, and it soaks the night before the earliest step that cooks it (the session's day, or the day `days` ahead). `session: true` means the recipe counts on the batch session in the 3 days before that day for the step; a session on the day itself counts as after the meal. The consistency check names a dish whose steps no reminder covers in time ([how it works](how-it-works.md#the-consistency-check)).
 
 Tag and protein names can be in your language too: map them in `settings.yaml` under `tags` so the planner knows which of yours mean legume, fish, salad and so on.
 

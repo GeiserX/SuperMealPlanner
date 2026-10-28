@@ -93,6 +93,8 @@ class Ahead(Strict):
     """A step done before the day the dish is eaten (cook the chickpeas, roast the pepper)."""
 
     step: str = Field(min_length=1)
+    # done at the latest this many days before the day it is eaten (0: that day, before the meal)
+    days: int = Field(default=0, ge=0, le=3)
     # True: the recipe counts on the cooking session before that day for it
     session: bool = False
 
