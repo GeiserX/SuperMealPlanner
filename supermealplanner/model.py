@@ -350,6 +350,12 @@ class Bot(Loose):
     # (the group when unset), only when something is wrong; "" turns the report off
     checkup_at: str = Field(default="08:00", pattern=r"^(([01]\d|2[0-3]):[0-5]\d)?$")
     checkup_chat: int | None = None
+    # how answers sound and act in the chat: `style` is the bot's voice, read by the AI after the
+    # formatting guide (gestures.py); `sticker_set` names a Telegram sticker set it may send from
+    # (empty: no stickers); `photos` lets it send an image from the web by its address
+    style: str = ""
+    sticker_set: str = ""
+    photos: bool = False
 
 
 class LLM(Loose):

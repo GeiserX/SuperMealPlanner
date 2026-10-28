@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import html
+import json
 import logging
 import mimetypes
 import os
@@ -60,7 +60,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import __version__, changes, context, doctor, llm, menu, pantry, verifier
+from . import __version__, changes, context, doctor, gestures, llm, menu, pantry, render, verifier
 from .i18n import Translator
 from .model import WEEKDAYS
 from .planner import ICONS, day_menu, paused_days, plan_for
@@ -265,6 +265,7 @@ class Bot:
         self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
         self.spoken: dict[str, Spoken] = {}  # what was said to the app, by turn id
         self.spoken_rows: dict[int, str] = {}  # chat log row -> the spoken turn it is
+        self.stickers: dict = {}  # the settings' sticker set, read once ({"name", "set"})
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -275,17 +276,31 @@ class Bot:
     def t(self) -> Translator:
         return Translator(self.data.locale)
 
-    async def call(self, client: httpx.AsyncClient, method: str, _tries: int = 0, **params):
+    async def call(
+        self, client: httpx.AsyncClient, method: str, _tries: int = 0, _files=None, **params
+    ):
+        """One Bot API call. `_files` ({field: (name, bytes, mime)}) sends it as multipart, the
+        other params as form fields (non-strings as JSON)."""
         try:
-            r = await client.post(
-                API.format(token=self.token, method=method), json=params, timeout=70
-            )
+            if _files:
+                form = {
+                    k: v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+                    for k, v in params.items()
+                    if v is not None
+                }
+                r = await client.post(
+                    API.format(token=self.token, method=method), data=form, files=_files, timeout=70
+                )
+            else:
+                r = await client.post(
+                    API.format(token=self.token, method=method), json=params, timeout=70
+                )
             body = r.json()
         except httpx.ConnectError as e:
             # The request never reached Telegram, so sending it again cannot post it twice.
             if method != "getUpdates" and _tries < 2:
                 await asyncio.sleep(2 * (_tries + 1))
-                return await self.call(client, method, _tries + 1, **params)
+                return await self.call(client, method, _tries + 1, _files, **params)
             raise TelegramError(method, safe(e)) from None
         except (httpx.HTTPError, ValueError) as e:
             raise TelegramError(method, safe(e)) from None
@@ -296,7 +311,7 @@ class Bot:
         )
         if err.code == 429 and method != "getUpdates" and _tries < 2:  # flood control: wait as told
             await asyncio.sleep(min(int(err.params.get("retry_after", 5)), 60))
-            return await self.call(client, method, _tries + 1, **params)
+            return await self.call(client, method, _tries + 1, _files, **params)
         raise err
 
     async def download(self, client, file_id: str) -> tuple[bytes, str]:
@@ -339,7 +354,7 @@ class Bot:
         spoken: what a spoken turn listening in this chat hears instead of `text` ("" for
         nothing), when the message only makes sense on a screen (buttons to tap)."""
         sent = None
-        chunks = list(_chunks(text, fences=markdown))
+        chunks = render.split(text) if markdown else list(_chunks(text))
         for n, chunk in enumerate(chunks):
             params = {"chat_id": chat_id, "disable_web_page_preview": True}
             if buttons and n == len(chunks) - 1:
@@ -1066,6 +1081,8 @@ class Bot:
     def rules(self) -> str:
         """The AI's instructions, with the people's Telegram handles."""
         out = context.rules(self.data)
+        bot = self.data.settings.bot
+        out += "\n\n" + gestures.guide("en", bot.style, bool(bot.sticker_set), bot.photos)
         handles = {p.id: self.mention(p.id) for p in self.data.household.people}
         named = [
             f"{self.data.household.person(pid).name} = {h}"
@@ -1170,15 +1187,19 @@ class Bot:
         reply_to = _reply_to(covered)
         anchor = covered[-1]  # changes and proposals act for the newest message's sender
         text, change = changes.extract(reply.text)
+        text, acts = gestures.extract(text)
         text, offered = llm.extract_options(text)
         offered = reply.options or offered
         text, listed = llm.extract_reminders(text)
         listed = reply.reminders or listed
-        if not text and change is None and not reply.proposals and not listed:
+        acted = acts["react"] or acts["sticker"] or acts["photos"] or acts["documents"]
+        if not text and change is None and not reply.proposals and not listed and not acted:
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return None
         if text:
             await self.answer_text(client, chat_id, text, reply_to, offered, covered)
+        if acted:
+            await self.gesture(client, chat_id, acts, anchor.mid, bool(text), reply_to)
         if reply.conversation:
             last = max((r["id"] for r in rows), default=seen)
             if reply.kept:
@@ -1224,6 +1245,64 @@ class Bot:
             return  # a later rest set a later time and woke itself
         self.resting.pop(chat_id, None)
         await self.drive(client, chat_id)
+
+    async def gesture(self, client, chat_id, acts, to, texted, reply_to=None) -> None:
+        """What the answer's gestures block asks for (gestures.py), each on its own after the text,
+        so a file or a reaction Telegram refuses never loses the answer. A reaction goes on message
+        `to`; when it cannot and the answer had no text, the emoji is said instead."""
+        bot = self.data.settings.bot
+        shown = texted
+        sends = [
+            (
+                "sendDocument",
+                {"caption": d["caption"]},
+                {"document": (d["name"], d["data"], d["mime"])},
+            )
+            for d in acts["documents"]
+        ]
+        if bot.photos:
+            sends += [
+                ("sendPhoto", {"photo": p["url"], "caption": p["caption"]}, None)
+                for p in acts["photos"]
+            ]
+        sticker = await self.sticker(client, acts["sticker"])
+        if sticker:
+            sends.append(("sendSticker", {"sticker": sticker}, None))
+        for method, params, files in sends:
+            try:
+                await self.call(client, method, _files=files, chat_id=chat_id, **params)
+                shown = True
+            except TelegramError as e:
+                log.warning("%s failed: %s", method, e)
+        if not acts["react"]:
+            return
+        if to:
+            try:
+                reaction = [{"type": "emoji", "emoji": acts["react"]}]
+                await self.call(
+                    client, "setMessageReaction", chat_id=chat_id, message_id=to, reaction=reaction
+                )
+                return
+            except TelegramError as e:
+                log.info("reaction failed: %s", e)
+        if not shown:
+            await self.send(client, chat_id, acts["react"], reply_to, who=AI)
+
+    async def sticker(self, client, emoji: str | None) -> str | None:
+        """The file_id of the settings' sticker set (bot.sticker_set) for `emoji`, read once."""
+        name = self.data.settings.bot.sticker_set
+        if not emoji or not name:
+            return None
+        if self.stickers.get("name") != name:
+            try:
+                self.stickers = {
+                    "name": name,
+                    "set": await self.call(client, "getStickerSet", name=name),
+                }
+            except TelegramError as e:
+                log.warning("sticker set failed: %s", e)
+                return None
+        return gestures.sticker_for(self.stickers.get("set"), emoji)
 
     async def answer_text(self, client, chat_id, text, reply_to, offered, covered) -> None:
         """The answer, with the choices it offers as buttons under it."""
@@ -3087,78 +3166,17 @@ def _files(root: Path) -> dict[str, str]:
     return out
 
 
-def _chunks(text: str, size: int = 3500, fences: bool = True):
-    """Pieces Telegram accepts, cut at a line break when there is one, so Markdown stays whole. A
-    code block cut in two is closed at the cut and opened again in the next piece. Plain text
-    (fences=False) is only cut: nothing is added to what was written."""
-    floor = 0  # the reopened fence at the start of the text: a cut must land past it
-    room = size - 4 if fences else size  # for the closing fence a cut may add
+def _chunks(text: str, size: int = 3500):
+    """Plain text in pieces Telegram accepts, cut at a line break when there is one. Nothing is
+    added to what was written (Markdown is cut by render.split, which repairs its fences)."""
     while len(text) > size:
-        cut = text.rfind("\n", floor + 1, room)
-        if cut <= floor:
-            cut = room
+        cut = text.rfind("\n", 1, size)
+        if cut <= 0:
+            cut = size
         head, text = text[:cut], text[cut:].lstrip("\n")
-        fence = _open_fence(head) if fences else None
-        floor = 0
-        if fence is not None:
-            head += "\n```"
-            text = f"{fence}\n{text}"
-            floor = len(fence)
         yield head
     if text:
         yield text
 
 
-def _open_fence(text: str) -> str | None:
-    """The line that opened a code block still open at the end of text, or None."""
-    fence = None
-    for line in text.split("\n"):
-        if line.lstrip().startswith("```"):
-            fence = None if fence is not None else line.strip()[:64] or "```"
-    return fence
-
-
-def to_html(md: str) -> str:
-    """The AI's Markdown as Telegram HTML: bold, italic, strike, code, links, headings, lists.
-    Everything else is escaped, so the text can never break out of the markup."""
-    kept: list[str] = []
-
-    def stash(markup: str) -> str:
-        kept.append(markup)
-        return f"\x00{len(kept) - 1}\x00"
-
-    def inline(s: str) -> str:  # s is already escaped, so every "<" is a tag added here
-        # the text inside may hold whole tags, never half of one: "**a *b** c*" stays crossed
-        # Markdown instead of becoming crossed HTML that Telegram refuses
-        body = r"((?:[^<\n]|<([bs])>[^<\n]*</\2>)+?)"  # one line, as before
-        s = re.sub(r"\*\*(?=\S)" + body + r"(?<=\S)\*\*", r"<b>\1</b>", s)
-        s = re.sub(r"(?<!\w)__(?=\S)" + body + r"(?<=\S)__(?!\w)", r"<b>\1</b>", s)
-        s = re.sub(r"~~(?=\S)" + body + r"(?<=\S)~~", r"<s>\1</s>", s)
-        s = re.sub(r"(?<![\w*])\*(?=[^\s*])" + body + r"(?<=[^\s*])\*(?![\w*])", r"<i>\1</i>", s)
-        return re.sub(r"(?<!\w)_(?=[^\s_])" + body + r"(?<=[^\s_])_(?!\w)", r"<i>\1</i>", s)
-
-    s = md.replace("\x00", "")
-    s = re.sub(
-        r"```[^\n`]*\n?(.*?)```",
-        lambda m: stash(f"<pre>{html.escape(m.group(1).strip(chr(10)), quote=False)}</pre>"),
-        s,
-        flags=re.DOTALL,
-    )
-    s = re.sub(r"`([^`\n]+)`", lambda m: stash(f"<code>{html.escape(m.group(1), False)}</code>"), s)
-    s = re.sub(
-        # one level of parentheses in the URL (Wikipedia's "Paella_(dish)"); a code span is never
-        # part of one
-        r"\[([^\]\n]+)\]\((https?://(?:[^()\s\x00]|\([^()\s\x00]*\))+)\)",
-        lambda m: stash(
-            f'<a href="{html.escape(m.group(2), quote=True)}">'
-            f"{inline(html.escape(m.group(1), quote=False))}</a>"
-        ),
-        s,
-    )
-    s = html.escape(s, quote=False)
-    s = re.sub(r"(?m)^#{1,6}[ \t]+(.+?)[ \t#]*$", r"<b>\1</b>", s)
-    s = re.sub(r"(?m)^([ \t]*)[-*+][ \t]+", r"\1• ", s)
-    s = inline(s)
-    while "\x00" in s:
-        s = re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))], s)
-    return s
+to_html = render.to_html  # the AI's Markdown as Telegram HTML (render.py)
