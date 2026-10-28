@@ -300,7 +300,10 @@ def brief(data: Data, today: dt.date, answer: str, problems: list[str], after: d
             yaml.safe_dump(health, allow_unicode=True, sort_keys=False),
         ]
     out += ["", "## The menu after the change", *after.get("menu", [])]
-    out.append("(Only this week and the next: a session may cook for lunches after them.)")
+    out.append(
+        "(Only this week and the next are shown. A session may cook for lunches after them: a "
+        "dish missing from this menu is not evidence that it is on no meal.)"
+    )
     if after.get("recipes"):
         out += ["", "## Recipes it touches", *after["recipes"]]
     return "\n".join(out)
