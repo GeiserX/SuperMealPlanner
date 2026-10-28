@@ -449,8 +449,11 @@ def unused_now(data: Data, db: DB, monday: dt.date) -> list[str]:
 
 def problems_now(data: Data, db: DB, today: dt.date) -> list[str]:
     """What the consistency check (doctor.py) found, with what to change. Food bought and on no
-    dish has its own section above, so it is not repeated here."""
-    found = [p for p in doctor.problems(data, db, today) if p.kind != "unused"]
+    dish has its own section above, so it is not repeated here. Stale reminders stay out: they
+    may be another chat's (a private one), and the app cancels them itself, saying so in their
+    own chat."""
+    skip = ("unused", "stale_reminder")
+    found = [p for p in doctor.problems(data, db, today) if p.kind not in skip]
     if not found:
         return []
     return [

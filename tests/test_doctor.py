@@ -217,6 +217,14 @@ def test_a_dish_swapped_out_cancels_its_reminder_and_one_line_says_so(data_dir, 
     ]
 
 
+def test_a_stale_reminder_never_reaches_the_facts_of_any_chat(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    _, at = ahead(1, 9)
+    db.add_reminder(8, "ana", at, "Private errand", 8, "gazpacho", str(D(3)))  # Ana's own chat
+    assert "reminder:1" in keys(b.data, db)
+    assert "Private errand" not in context.facts(b.data, db, MONDAY)
+
+
 def test_a_due_reminder_whose_dish_left_the_menu_is_cancelled_not_posted(data_dir, tmp_path):
     b, db = setup(data_dir, tmp_path)
     day = plan_for(b.data, D(3)).day(D(3))

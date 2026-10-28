@@ -87,7 +87,7 @@ The plan, the batch days, the cook dates and the chat's reminders are written at
 - **A reminder about a dish the menu dropped.** A chat reminder linked to a dish and its day, when that day's menu no longer has the dish. The app cancels these itself.
 - **Food bought and on no dish**, as the AI already sees it.
 
-The AI gets what the check found in its facts as "Problems the app found: fix them", each with the menu change that fixes it. Food bought and on no dish keeps its own section there, and is never posted in the chat by the check: once it is frozen it can stay true for days. The AI also gets the limits the app's validation enforces on what a change may set (`sessions_per_week` 1 to 2, a recipe's `fridge_days` 0 to 4, a shift of 1 to 4 weeks, and so on), read from the code that enforces them, so it never proposes a value the app refuses.
+The AI gets what the check found in its facts as "Problems the app found: fix them", each with the menu change that fixes it. Food bought and on no dish keeps its own section there, and is never posted in the chat by the check: once it is frozen it can stay true for days. Reminders about a dish the menu dropped stay out of it, because they may belong to another chat, a private one; the app cancels them and says so in their own chat. The AI also gets the limits the app's validation enforces on what a change may set (`sessions_per_week` 1 to 2, a recipe's `fridge_days` 0 to 4, a shift of 1 to 4 weeks, and so on), read from the code that enforces them, so it never proposes a value the app refuses.
 
 ## Other chat apps
 
