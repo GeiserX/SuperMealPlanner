@@ -234,6 +234,15 @@ plan:
   - undo: true                                                  # the last menu change, alone in the list
 ```
 
+The same block says what is at home with `pantry`: the amount at home now of each ingredient, in its unit (g, ml or units), `0` when it ran out. It is written to the database, not to git, so it needs no token either. It replaces whatever the pantry had of that ingredient; `0` also takes it off «I have it», so the list asks for it again ([how it works](how-it-works.md#the-pantry)).
+
+```yaml
+asked: true
+pantry:
+  rice: 1000      # there is a kilo of rice
+  olive-oil: 0    # the oil ran out
+```
+
 ### Environment
 
 | variable | what it does |
@@ -254,6 +263,7 @@ chicken-thigh:
   kitchen: {name: thigh, g: 110}   # how a cook counts it; optional `plural` when the language rule fails
   flags: []                   # free tags: oxalate-high, gluten, lactose, fish, sweet, contact-irritant...
   soak: false                 # true for a dried pulse left in water the night before (chickpeas, beans)
+  keeps_days: 2               # fresh food: the pantry counts it gone this many days after it came in; leave it out for what keeps until used up (pulses, oil, rice)
 ```
 
 ## recipes/<id>.yaml

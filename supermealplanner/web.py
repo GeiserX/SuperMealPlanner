@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import __version__
+from . import __version__, pantry
 from .api import router as api_router
 from .db import DB
 from .i18n import Translator
@@ -222,7 +222,11 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         m = monday(parse_day(d))
         plan = plan_for(state.data, m)
         t = Translator(state.data.locale)
-        shop = shopping_list(state.data, state.db, plan, m, t, view=store) if plan else None
+        shop = (
+            shopping_list(state.data, state.db, plan, m, t, view=store, today=state.today())
+            if plan
+            else None
+        )
         return tpl.TemplateResponse(
             request,
             "list.html",
@@ -234,6 +238,8 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 store=store,
                 ticked=state.db.tick_order(m),
                 ticked_last=ticked_last,
+                pantry=pantry.now(state.data, state.db, state.today()),
+                one_day=dt.timedelta(days=1),
                 prev=m - dt.timedelta(days=7),
                 next=m + dt.timedelta(days=7),
             ),
@@ -252,7 +258,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             m = monday(dt.date.fromisoformat(week))
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
-        state.db.tick(m, item, on == "1")
+        pantry.tick(state.data, state.db, m, item, on == "1")
         return JSONResponse({"ok": True})
 
     @app.post("/list/have")

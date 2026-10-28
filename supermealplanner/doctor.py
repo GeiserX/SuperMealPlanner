@@ -19,7 +19,10 @@ What it looks at, from today to the end of next week (the menu the AI sees):
   date cooked it for that day. The Cook page never showed it on that date, so nobody cooked it.
 - stale_reminder: a chat reminder linked to a dish (its recipe and the day it is eaten) when that
   day's menu no longer has the dish. The app cancels these itself.
-- unused: food ticked as bought that no dish uses (unused_food), as the AI already sees it.
+- going_off: food in the pantry (pantry.py) that goes off before any planned dish uses it up,
+  the plan cooking as planned up to the end of next week.
+- unused: food ticked as bought that no dish uses (unused_food), as the AI already sees it; food
+  the going_off check names is left out of it, so nothing is said twice.
 """
 
 from __future__ import annotations
@@ -33,15 +36,12 @@ from .planner import (
     MEALS,
     Day,
     Plan,
+    Plans,
     _choose_sessions,
-    load_plan,
-    paused_days,
-    plans_dir,
-    without,
 )
 from .portions import needs
 
-KINDS = ("off_day", "split", "too_old", "uncooked", "stale_reminder", "unused")
+KINDS = ("off_day", "split", "too_old", "uncooked", "stale_reminder", "going_off", "unused")
 
 
 @dataclass(frozen=True)
@@ -57,44 +57,19 @@ def _day(d: dt.date) -> str:
     return f"{WEEKDAYS[d.weekday()]} {d.isoformat()}"
 
 
-class _Plans:
-    """The plans on disk, read once, and each day as the household sees it (paused days hidden)."""
-
-    def __init__(self, data: Data):
-        self.data = data
-        self.paused = paused_days(data)
-        self.raw = [load_plan(p) for p in sorted(plans_dir(data).glob("*.yaml"))]
-        self._seen: dict[int, Plan] = {}
-
-    def plan(self, day: dt.date, raw: bool = False) -> Plan | None:
-        """The newest plan that covers `day` (planner.plan_for, without reading the files again)."""
-        best = None
-        for i, p in enumerate(self.raw):
-            if p.start <= day < p.end:
-                best = i
-        if best is None:
-            return None
-        if raw:
-            return self.raw[best]
-        if best not in self._seen:
-            self._seen[best] = without(self.raw[best], self.paused)
-        return self._seen[best]
-
-    def day(self, day: dt.date) -> Day | None:
-        plan = self.plan(day)
-        return plan.day(day) if plan else None
-
-
 def problems(data: Data, db: DB, today: dt.date) -> list[Problem]:
     """Everything that no longer fits, in a fixed order."""
-    plans = _Plans(data)
+    plans = Plans(data)
     monday = today - dt.timedelta(days=today.weekday())
     end = monday + dt.timedelta(days=13)  # the end of next week
     dates = [today + dt.timedelta(days=i) for i in range((end - today).days + 1)]
     out = _off_days(data, plans, today, end)
     out += _lunches(data, plans, today, dates)
     out += [p for r in db.reminders() if (p := _stale(data, plans, r))]
-    left = unused_food(data, db, monday)
+    off = _going_off(data, db, plans, today, end)
+    out += off
+    named = {p.args["food"] for p in off}
+    left = [x for x in unused_food(data, db, monday) if x not in named]
     if left:
         out.append(
             Problem(
@@ -107,7 +82,7 @@ def problems(data: Data, db: DB, today: dt.date) -> list[Problem]:
     return out
 
 
-def _off_days(data: Data, plans: _Plans, today: dt.date, end: dt.date) -> list[Problem]:
+def _off_days(data: Data, plans: Plans, today: dt.date, end: dt.date) -> list[Problem]:
     batch = data.household.batch
     out = []
     seen: set[tuple[dt.date, bool]] = set()
@@ -166,7 +141,7 @@ def _keeps(data: Data, rid: str, cook: dt.date, eat: dt.date) -> bool:
     return (eat - cook).days <= r.fridge_days or r.freezes
 
 
-def _lunches(data: Data, plans: _Plans, today: dt.date, dates: list[dt.date]) -> list[Problem]:
+def _lunches(data: Data, plans: Plans, today: dt.date, dates: list[dt.date]) -> list[Problem]:
     out = []
     for d in dates:
         day = plans.day(d)
@@ -232,18 +207,18 @@ def _cooked(plan: Plan | None, day: Day) -> bool:
     )
 
 
-def serves(data: Data, recipe: str, date: dt.date, plans: _Plans | None = None) -> bool:
+def serves(data: Data, recipe: str, date: dt.date, plans: Plans | None = None) -> bool:
     """The menu as the household sees it has that recipe in some meal of that day."""
-    day = (plans or _Plans(data)).day(date)
+    day = (plans or Plans(data)).day(date)
     return day is not None and recipe in {getattr(day, m) for m in MEALS}
 
 
 def stale(data: Data, row: dict) -> bool:
     """A reminder linked to a dish that the day's menu no longer has."""
-    return _stale(data, _Plans(data), row) is not None
+    return _stale(data, Plans(data), row) is not None
 
 
-def _stale(data: Data, plans: _Plans, row: dict) -> Problem | None:
+def _stale(data: Data, plans: Plans, row: dict) -> Problem | None:
     if row.get("state", "pending") != "pending" or not row.get("recipe") or not row.get("date"):
         return None
     try:
@@ -261,6 +236,27 @@ def _stale(data: Data, plans: _Plans, row: dict) -> Problem | None:
         {"text": row["text"]},
         reminder=row["id"],
     )
+
+
+def _going_off(data: Data, db: DB, plans: Plans, today: dt.date, end: dt.date) -> list[Problem]:
+    from .pantry import Walk, going_off
+    from .portions import fmt_qty
+
+    out = []
+    for lot, d in going_off(data, db, today, end, Walk(data, db, plans)):
+        ing = data.ingredients[lot.ingredient]
+        last = d - dt.timedelta(days=1)
+        out.append(
+            Problem(
+                "going_off",
+                f"going_off:{lot.ingredient}:{d.isoformat()}",
+                f"{ing.name} [{ing.id}] in the pantry ({fmt_qty(ing, lot.qty, data.locale)} left "
+                f"by then) is good until {_day(last)} and no planned dish uses it up before. Fix: "
+                f"`set` a dish with it on or before {last.isoformat()}, or say to freeze it.",
+                {"food": ing.name, "date": last},
+            )
+        )
+    return out
 
 
 def unused_food(data: Data, db: DB, monday: dt.date) -> list[str]:

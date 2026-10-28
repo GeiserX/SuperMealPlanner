@@ -45,6 +45,19 @@
 {% endif %}
 <p class="sub">{{ t('shopping_note') }}</p>
 {% endif %}
+<section class="shop pantry">
+  <h2>{{ t('pantry_title') }}</h2>
+  {% if pantry %}
+  {% set stocked = (shop.stocked if shop else []) | map(attribute='id') | list %}
+  <ul class="check">
+  {% for x in pantry %}
+    <li><span class="name">{{ x.name }}{% if x.ingredient in stocked %}<br><small>{{ t('pantry_off_list') }}</small>{% endif %}</span>
+      <span class="qty">{{ x.amount }}{% if x.expires %}<br><small>{{ t('pantry_until', date=t.date(x.expires - one_day)) }}</small>{% endif %}</span></li>
+  {% endfor %}
+  </ul>
+  {% else %}<p class="empty">{{ t('pantry_empty') }}</p>{% endif %}
+  <p class="sub">{{ t('pantry_note') }}</p>
+</section>
 <script>
 (function () {
   var folds = document.querySelectorAll('details[data-fold]');

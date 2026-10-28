@@ -60,7 +60,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import __version__, changes, context, doctor, llm, menu
+from . import __version__, changes, context, doctor, llm, menu, pantry
 from .i18n import Translator
 from .model import WEEKDAYS
 from .planner import ICONS, day_menu, paused_days, plan_for
@@ -1782,11 +1782,11 @@ class Bot:
             token = os.environ.get("SMP_GIT_WRITE_TOKEN", "")
             if not token:
                 by_hand = t("change_manual") + "\n\n" + "\n".join(changes.manual(proposal))
-                if not proposal.plan:
+                if not (proposal.plan or proposal.pantry):
                     return by_hand
                 out.append(by_hand)
             else:
-                saved = lines[: len(lines) - len(proposal.plan)]
+                saved = lines[: len(lines) - len(proposal.plan) - len(proposal.pantry)]
                 subject = "; ".join(x.removeprefix("• ") for x in saved)
                 how = "" if asked else " and confirmed there"
                 message = (
@@ -1830,6 +1830,9 @@ class Bot:
                 log.warning("menu change failed: %s", safe(e))
                 return "\n".join([*out, t("change_failed", error=type(e).__name__)])
             out.append(t("menu_applied"))
+        if proposal.pantry:  # the database, like the menu: no token needed
+            await asyncio.to_thread(pantry.correct, self.data, self.state.db, proposal.pantry)
+            out.append(t("pantry_applied"))
         if asked:
             out.insert(0, t("change_done", lines="\n".join(lines)))
         pending["applied"] = True  # every way it failed returned above
@@ -2201,7 +2204,7 @@ class Bot:
         plan = plan_for(self.data, monday)
         if not plan:
             return t("no_plan_week")
-        shop = shopping_list(self.data, self.state.db, plan, monday, t)
+        shop = shopping_list(self.data, self.state.db, plan, monday, t, today=today)
         lines = [t("shopping_title", date=t.date(monday, False))]
         for store in shop.stores:
             lines.append(f"\n{store.name}")

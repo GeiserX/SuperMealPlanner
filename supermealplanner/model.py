@@ -67,6 +67,8 @@ class Ingredient(Loose):
     flags: list[str] = []
     clean_label: str | None = None
     soak: bool = False  # a dried pulse left in water the night before it is cooked
+    # days it keeps once bought (fresh fish 2, salad 5, bread 3); unset keeps until it is used
+    keeps_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 # ---------- recipes ----------

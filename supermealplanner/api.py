@@ -25,7 +25,7 @@ import datetime as dt
 
 from fastapi import APIRouter, HTTPException, Request
 
-from . import __version__, llm
+from . import __version__, llm, pantry
 from .i18n import Translator
 from .planner import MEAL_HOURS, day_menu, meals_now, paused_days, plan_for
 from .portions import (
@@ -437,7 +437,11 @@ def router(state) -> APIRouter:
         t = Translator(state.data.locale)
         m = _monday(_day(d, state.today()))
         plan = plan_for(state.data, m)
-        shop = shopping_list(state.data, state.db, plan, m, t, view=store) if plan else None
+        shop = (
+            shopping_list(state.data, state.db, plan, m, t, view=store, today=state.today())
+            if plan
+            else None
+        )
         ticks = _ticks(state.db, m)
         return {
             "monday": m.isoformat(),
@@ -464,6 +468,8 @@ def router(state) -> APIRouter:
             "ticked_order": ticks["ticked_order"],
             "ticked_at": ticks["ticked_at"],
             "have": sorted(state.db.have()),
+            # needed this week, but the pantry already holds enough: left off the list
+            "stocked": sorted(i.id for i in (shop.stocked if shop else [])),
         }
 
     @api.get("/list/ticks")
@@ -480,8 +486,10 @@ def router(state) -> APIRouter:
         ingredient = str(body.get("ingredient", "")).strip()
         if not ingredient:
             raise HTTPException(400, "ingredient is required")
+        if ingredient not in state.data.ingredients:
+            raise HTTPException(400, "unknown ingredient")
         m = _monday(_day(body.get("d"), state.today()))
-        state.db.tick(m, ingredient, bool(body.get("on", True)))
+        pantry.tick(state.data, state.db, m, ingredient, bool(body.get("on", True)))
         return {"ok": True} | _ticks(state.db, m)
 
     @api.post("/list/have")
@@ -493,6 +501,35 @@ def router(state) -> APIRouter:
             raise HTTPException(400, "ingredient is required")
         state.db.set_have(ingredient, bool(body.get("on", True)))
         return {"ok": True, "have": sorted(state.db.have())}
+
+    # ---------------------------------------------------------------- the pantry
+    @api.get("/pantry")
+    def pantry_now(request: Request):
+        """What is at home: each ingredient the pantry holds, with its amount, since when and the
+        first day it is no longer good; and what «I have it» keeps off the lists, uncounted."""
+        device(request)
+        today = state.today()
+        items = pantry.now(state.data, state.db, today)
+        return {
+            "day": today.isoformat(),
+            "items": [
+                {
+                    "ingredient": x.ingredient,
+                    "name": x.name,
+                    "qty": round(x.qty, 1),
+                    "unit": state.data.ingredients[x.ingredient].unit,
+                    "amount": x.amount,
+                    "since": x.since.isoformat(),
+                    "expires": x.expires.isoformat() if x.expires else None,
+                }
+                for x in items
+            ],
+            "have": [
+                {"ingredient": i, "name": state.data.ingredients[i].name}
+                for i in sorted(state.db.have())
+                if i in state.data.ingredients
+            ],
+        }
 
     # ---------------------------------------------------------------- what people log
     @api.post("/rate")

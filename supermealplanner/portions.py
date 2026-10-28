@@ -18,9 +18,15 @@ from .targets import current_kcal, day_factor
 MEAL_ORDER = MEALS
 
 
-def factors(data: Data, db: DB, day: dt.date) -> dict[str, float]:
+def factors(
+    data: Data, db: DB, day: dt.date, kcal: dict[str, float] | None = None
+) -> dict[str, float]:
+    """Each person's servings that day. kcal: their current targets, when the caller already read
+    them (a walk over many days asks once)."""
     hh = data.household
-    return {p.id: day_factor(hh, p, current_kcal(db, p), day) for p in hh.people}
+    return {
+        p.id: day_factor(hh, p, kcal[p.id] if kcal else current_kcal(db, p), day) for p in hh.people
+    }
 
 
 def plural(name: str, n: float, locale: str = "en", explicit: str | None = None) -> str:
@@ -224,6 +230,7 @@ class Shopping:
     views: list[tuple[str, str]]  # (store id, label) the user can switch to
     labels: dict[str, str] = field(default_factory=dict)
     have: list[Ingredient] = field(default_factory=list)  # needed, but already at home
+    stocked: list[Ingredient] = field(default_factory=list)  # needed, the pantry has enough
 
 
 def servings_by_eater(
@@ -235,8 +242,15 @@ def servings_by_eater(
     Lunch dishes are bought for the week they are cooked in; everything else for the day it is eaten.
     Sunday lunch adds the household's guest servings.
     """
+    return servings_on(data, db, plan, {monday + dt.timedelta(days=i) for i in range(7)})
+
+
+def servings_on(
+    data: Data, db: DB, plan: Plan, days: set[dt.date], kcal: dict[str, float] | None = None
+) -> dict[str, dict[str, float]]:
+    """servings_by_eater for any set of days: the lunch dishes cooked on them, every other meal
+    eaten on them. One day's is what is cooked that day, which the pantry takes its food from."""
     hh = data.household
-    week = {monday + dt.timedelta(days=i) for i in range(7)}
     total: dict[str, dict[str, float]] = {}
 
     def add(rid: str, eaters: dict[str, float]):
@@ -248,14 +262,14 @@ def servings_by_eater(
     guests = hh.guests.get("sunday_lunch", 0)
     for s in plan.sessions:
         for x in s.dishes:
-            if x.cook in week:
+            if x.cook in days:
                 for e in x.eat:
-                    add(x.recipe, factors(data, db, e))
+                    add(x.recipe, factors(data, db, e, kcal))
                     if e.weekday() == 6:
                         add(x.recipe, {"guests": guests})
     for d in plan.days:
-        if d.date in week:
-            f = factors(data, db, d.date)
+        if d.date in days:
+            f = factors(data, db, d.date, kcal)
             for meal in ("breakfast", "dinner", "snack", "side"):
                 rid = getattr(d, meal)
                 if rid:
@@ -272,8 +286,13 @@ def servings_for_week(data: Data, db: DB, plan: Plan, monday: dt.date) -> dict[s
 
 def needs(data: Data, db: DB, plan: Plan, monday: dt.date) -> dict[str, float]:
     """Ingredient quantities for the week, in each ingredient's unit, with each person's swaps."""
+    return ingredients_of(data, servings_by_eater(data, db, plan, monday))
+
+
+def ingredients_of(data: Data, servings: dict[str, dict[str, float]]) -> dict[str, float]:
+    """The ingredient quantities of some servings (recipe -> eater -> servings)."""
     need: dict[str, float] = {}
-    for rid, row in servings_by_eater(data, db, plan, monday).items():
+    for rid, row in servings.items():
         if rid not in data.recipes:
             continue
         for iid, q in amounts(data, data.recipes[rid], row).items():
@@ -281,11 +300,21 @@ def needs(data: Data, db: DB, plan: Plan, monday: dt.date) -> dict[str, float]:
     return need
 
 
-def shopping_list(data: Data, db: DB, plan: Plan, monday: dt.date, t=None, view: str | None = None):
+def shopping_list(
+    data: Data,
+    db: DB,
+    plan: Plan,
+    monday: dt.date,
+    t=None,
+    view: str | None = None,
+    today: dt.date | None = None,
+):
     """The week's list, grouped by store and section, with the product to buy where a catalogue has one.
 
     view: a store id to write the whole list for that store (e.g. an online order); by default the
     configured primary store, with each ingredient under the store its entry names.
+    today: leave off what the pantry already holds enough of (pantry.covered); without it, the
+    list asks for everything the week cooks.
     """
     from .i18n import Translator
     from .stores import catalogs, pick
@@ -302,12 +331,22 @@ def shopping_list(data: Data, db: DB, plan: Plan, monday: dt.date, t=None, view:
     groups: dict[str, dict[str, list[ShopLine]]] = {}
     at_home = db.have()
     have: list[Ingredient] = []
+    stocked: list[Ingredient] = []
+    if today is not None:
+        from .pantry import covered
+
+        in_pantry = covered(data, db, monday, today)
+    else:
+        in_pantry = set()
     for iid, q in sorted(
         needs(data, db, plan, monday).items(), key=lambda kv: data.ingredients[kv[0]].name
     ):
         ing = data.ingredients[iid]
         if iid in at_home:
             have.append(ing)
+            continue
+        if iid in in_pantry:
+            stocked.append(ing)
             continue
         store = view or ing.store
         line = ShopLine(ing, q, data.locale)
@@ -336,7 +375,9 @@ def shopping_list(data: Data, db: DB, plan: Plan, monday: dt.date, t=None, view:
         sl.total = round(sl.total, 2)
         stores.append(sl)
     views = [(sid, labels.get(sid, sid)) for sid in cats]
-    return Shopping(view=view, stores=stores, views=views, labels=labels, have=have)
+    return Shopping(
+        view=view, stores=stores, views=views, labels=labels, have=have, stocked=stocked
+    )
 
 
 def ticked_last(lines: list, ticked: list[str]) -> list:

@@ -49,6 +49,13 @@ CREATE TABLE IF NOT EXISTS rating (
   recipe TEXT NOT NULL, person TEXT NOT NULL, vote INTEGER NOT NULL, day TEXT NOT NULL,
   PRIMARY KEY (recipe, person)
 );
+-- What came into the pantry: a tick on a week's list (week set; unticking deletes it) or the amount
+-- the chat said is at home (source 'set', which replaces what was there). pantry.py works out what
+-- is left from these, the plan and each ingredient's keeps_days; nothing else is stored.
+CREATE TABLE IF NOT EXISTS pantry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ingredient TEXT NOT NULL, qty REAL NOT NULL,
+  at TEXT NOT NULL, source TEXT NOT NULL, week TEXT
+);
 -- A phone that has been paired. `token_hash` is sha256 of the bearer the app keeps in its keychain:
 -- the token itself is shown once, at pairing, and is never stored here or logged.
 CREATE TABLE IF NOT EXISTS device (
@@ -66,6 +73,7 @@ HAVE = "shop.have"  # ingredient ids the household has at home: left off every l
 TICKED = "shop.ticked"  # {monday: [ingredient ids]} ticked that week, in tick order, on every phone
 TICKED_AT = "shop.ticked_at"  # {monday: {ingredient id: when it was ticked}}, beside TICKED
 TICKED_WEEKS = 8
+PANTRY_DAYS = 120  # pantry entries older than this are forgotten
 
 
 class DB:
@@ -438,6 +446,43 @@ class DB:
             mine[ingredient] = when.isoformat(timespec="seconds")
         times[week] = mine
         self.set_kv(TICKED_AT, {k: times[k] for k in keep if k in times})
+
+    # the pantry's entries (pantry.py decides what they mean)
+    def add_lot(
+        self, ingredient: str, qty: float, at: dt.datetime, source: str, week: dt.date | None = None
+    ) -> None:
+        """A tick's entry replaces that week's earlier one for the ingredient; entries older than
+        PANTRY_DAYS are dropped, so the table never grows."""
+        with self.conn() as c:
+            if week is not None:
+                c.execute(
+                    "DELETE FROM pantry WHERE source='tick' AND week=? AND ingredient=?",
+                    (week.isoformat(), ingredient),
+                )
+            c.execute(
+                "INSERT INTO pantry(ingredient, qty, at, source, week) VALUES (?,?,?,?,?)",
+                (
+                    ingredient,
+                    qty,
+                    at.astimezone(dt.UTC).isoformat(timespec="seconds"),
+                    source,
+                    week.isoformat() if week else None,
+                ),
+            )
+            old = (at - dt.timedelta(days=PANTRY_DAYS)).astimezone(dt.UTC)
+            c.execute("DELETE FROM pantry WHERE at < ?", (old.isoformat(timespec="seconds"),))
+
+    def drop_tick_lot(self, week: dt.date, ingredient: str) -> None:
+        with self.conn() as c:
+            c.execute(
+                "DELETE FROM pantry WHERE source='tick' AND week=? AND ingredient=?",
+                (week.isoformat(), ingredient),
+            )
+
+    def lots(self) -> list[dict]:
+        """Every entry, the oldest first."""
+        with self.conn() as c:
+            return [dict(r) for r in c.execute("SELECT * FROM pantry ORDER BY at, id").fetchall()]
 
     # paired phones (see devices.py: this class only stores what that module decides)
     def add_device(self, name: str, person: str | None, token_hash: str, now: dt.datetime) -> int:
