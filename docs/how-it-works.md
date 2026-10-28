@@ -101,11 +101,22 @@ The plan, the batch days, the cook dates and the chat's reminders are written at
 - **One dish cooked twice.** One recipe is lunch on two days in a row, cooked on two different days, when one cook still to come keeps for both. The Cook page shows it as two dishes.
 - **A lunch that does not keep.** A lunch eaten today or later is cooked longer before its day than the recipe keeps in the fridge, and it does not freeze.
 - **A lunch nobody cooked.** A lunch eaten today or later says it was cooked on a day already past, and no session of that day cooked that dish for that day. The Cook page never showed it on that day, so nobody made it.
+- **A dish that counts on a session after it.** A dish whose recipe has `ahead` steps for the cooking session before its day, when no session comes in the 3 days before (a session on that day counts as after the meal), and no reminder has someone do it at home instead.
+- **Prep with no reminder.** A dish that needs something done before its day (a dried pulse to soak the night before it is cooked, an `ahead` step before the meal) and no reminder linked to that dish and day, set or already sent in any chat, comes in time. When it is already too late, the fix it gives is to move the dish. Lunches cooked in a batch session are left out: the batch sheet and the batch reminder carry them.
 - **A reminder about a dish the menu dropped.** A chat reminder linked to a dish and its day, when that day's menu no longer has the dish. The app cancels these itself.
 - **Food that goes off in the pantry.** Food the pantry holds that goes off, by its `keeps_days`, before the plan cooking as planned up to the end of next week uses it up.
 - **Food bought and on no dish**, as the AI already sees it, without the food the line above already names.
 
 The AI gets what the check found in its facts as "Problems the app found: fix them", each with the menu change that fixes it. Food bought and on no dish keeps its own section there, and is never posted in the chat by the check: once it is frozen it can stay true for days. Reminders about a dish the menu dropped stay out of it, because they may belong to another chat, a private one; the app cancels them and says so in their own chat. The AI also gets the limits the app's validation enforces on what a change may set (`sessions_per_week` 1 to 2, a recipe's `fridge_days` 0 to 4, a shift of 1 to 4 weeks, and so on), read from the code that enforces them, so it never proposes a value the app refuses.
+
+## The verifier
+
+An answer whose change block touches the menu (`plan`), a recipe (`recipe`, `recipes`) or the batch days is checked before anyone sees it. Other answers go out as they are.
+
+1. **Structural, plain code.** The change is made on a copy of the data folder, and the consistency check runs on the copy, with the reminders the answer offers counted as set. What it finds that was not there before is the change's doing, and so is a change the app would refuse.
+2. **Judgment, one call to the same AI provider.** Three checks, each answered on its own: does it match what the household asked for (each person's notes and chat notes, the household's own instructions, the weekly rules); the timeline (what is cooked when, which session prepares what, what is soaked, defrosted or cooked ahead, each with a reminder at the right time); health (the health export's allergies, intolerances, diet rules, medicines' food rules and fasting). A fourth catches plain nonsense, such as a step with equipment the kitchen does not have, an oven step without the air-fryer alternative, or ultra-processed food where real food would do.
+
+When either finds something, the answer goes back to the AI once, in the same conversation, with the problems, and its new answer replaces the first. One check and at most one revision per answer: what the revision cannot fix, it says in its answer, and a change that still leaves a structural problem gets the consistency check's line once it is made. When the check or the revision fails, the first answer goes out as it was. The verifier logs only how many problems each check found, never their text.
 
 ## Other chat apps
 

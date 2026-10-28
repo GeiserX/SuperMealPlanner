@@ -69,6 +69,7 @@ people:
     goal: {mode: maintain, band_kg: [58, 61]}
     kcal: {start: 1800, floor: 1500, step: 100}
     protein_g: {target: 90, floor: 70}
+equipment: [oven, air fryer, microwave, induction hob, pressure cooker, steamer basket, hand blender, toaster, pots and pans]   # recipes use only these; optional
 rules:                        # per 7 days; the plan validator enforces them
   legumes_min: 4
   fish_min: 3
@@ -80,6 +81,8 @@ rules:                        # per 7 days; the plan validator enforces them
 `swaps` changes an ingredient for one person only: their plate and the shopping list use the other ingredient in the same quantity, the recipe text stays as written, and nobody else's plate changes. Both ids must be in `ingredients.yaml`, in the same unit, and the one eaten instead must not be among the person's avoided foods. On a day in `training_days` the person's energy target is their calorie target plus `training_extra_kcal` (0 to 600; 150, roughly what 45 to 60 minutes of strength training uses above resting, when left out), so every plate of that day grows a little. `batch.avoid_days` may not hold all seven days. A week whose Monday to Wednesday, or Thursday to Sunday, are all avoided gets one session; the morning cook on the first Monday of a new plan, for that day's lunch, is the one exception to the rule.
 
 A pill with `days` shows, and counts for the lunch pills reminder, only on those weekdays. With `settings.health_export` (below), a person the export lists takes their pills from it instead of from here.
+
+`equipment` is the kitchen's devices and tools, in your own words. The AI writes and changes recipes with only these, and where two of them do the same job (the oven and the air fryer, the pressure cooker and a pot) a step gives both, each with its temperature and time, so the cook chooses. Having a device is never a reason to use it: the rules say tasty, healthy food from real ingredients decides, never ultra-processed products, and the verifier checks it (see [how it works](how-it-works.md#the-verifier)).
 
 `goal.mode` is `lose`, `maintain` or `gain`. `glp1` is optional: with it, plates are a little smaller for the three days after the weekly injection and a little larger from day 4, and lighter dishes are preferred early in the week.
 
@@ -146,7 +149,7 @@ health_export:                # optional: each person's pills from a file anothe
   timeout_s: 5
 ```
 
-**Health export.** Another service (a health record, a doctor's app) can own the household's medicines and supplements. `health_export.url` points at a YAML file of this shape; every other key in it is ignored:
+**Health export.** Another service (a health record, a doctor's app) can own the household's medicines and supplements. `health_export.url` points at a YAML file of this shape; every other key in it is ignored except the ones the verifier reads (below):
 
 ```yaml
 people:
@@ -156,6 +159,8 @@ people:
       - {name: Weekly shot, dose: 1 mg, slot: waking, days: [monday]}
       - {name: Sleep aid, dose: 5 mg, slot: as_needed}
 ```
+
+The verifier also reads `allergies`, `intolerances`, `diet` and `fasting` of each person, and each medicine's `food` rule, from the last good copy, to check a menu change against them ([how it works](how-it-works.md#the-verifier)). They go only to the AI provider, in a private chat only the asker's.
 
 `slot` is one of the pill slots (`waking`, `breakfast`, `lunch`, `dinner`, `bedtime`) or `as_needed`, which is taken when needed and so never shows as a daily pill. `days` is `daily` or a list of weekdays. `food` becomes the pill's note. A slot or a day the app cannot place stops the data from loading, with a clear error from `smp check`; the file is then not kept. A person listed with `meds` takes their pills from the export (an empty list means none), and household.yaml's pills stay the fallback for a person the export leaves out.
 
@@ -286,6 +291,8 @@ ingredients:
   - {id: olive-oil, qty: 8}
 steps:
   - Sweat the onion, carrot and pepper in the oil.
+ahead:                       # optional: what has to be done before the day it is eaten
+  - {step: Roast the pepper, session: true}   # session: true counts on the cooking session before that day
 nutrition:                   # per reference serving
   kcal: 520
   protein_g: 28
@@ -294,6 +301,8 @@ nutrition:                   # per reference serving
   salt_g: 1.0
   source: USDA
 ```
+
+`ahead` lists what has to be ready before the day a dish is eaten, besides its own steps that day: cook the chickpeas, roast a pepper, make a dough. A dried pulse to soak needs no entry: its ingredient's `soak` says so. `session: true` means the recipe counts on the batch session in the 3 days before that day for the step; a session on the day itself counts as after the meal. The consistency check names a dish whose steps no reminder covers in time ([how it works](how-it-works.md#the-consistency-check)).
 
 Tag and protein names can be in your language too: map them in `settings.yaml` under `tags` so the planner knows which of yours mean legume, fish, salad and so on.
 

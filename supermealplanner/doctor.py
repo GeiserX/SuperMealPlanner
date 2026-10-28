@@ -19,6 +19,12 @@ What it looks at, from today to the end of next week (the menu the AI sees):
   date cooked it for that day. The Cook page never showed it on that date, so nobody cooked it.
 - stale_reminder: a chat reminder linked to a dish (its recipe and the day it is eaten) when that
   day's menu no longer has the dish. The app cancels these itself.
+- prep_late: a dish whose recipe counts on a cooking session before its day (`ahead` steps with
+  `session: true`) when no session comes in the AHEAD_KEEPS_DAYS before that day (a session on the
+  day itself is after the meal), and no reminder has someone do it at home instead.
+- prep: a dish that needs something done before its day (a dried pulse to soak the night before,
+  an `ahead` step) and no reminder linked to that dish and day comes in time. Lunches cooked in a
+  batch session are left out: the session's sheet and the batch reminder carry them.
 - going_off: food in the pantry (pantry.py) that goes off before any planned dish uses it up,
   the plan cooking as planned up to the end of next week.
 - unused: food ticked as bought that no dish uses (unused_food), as the AI already sees it; food
@@ -29,10 +35,12 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo
 
 from .db import DB
 from .model import WEEKDAYS, Data
 from .planner import (
+    MEAL_HOURS,
     MEALS,
     Day,
     Plan,
@@ -41,7 +49,21 @@ from .planner import (
 )
 from .portions import needs
 
-KINDS = ("off_day", "split", "too_old", "uncooked", "stale_reminder", "going_off", "unused")
+KINDS = (
+    "off_day",
+    "split",
+    "too_old",
+    "uncooked",
+    "prep_late",
+    "prep",
+    "stale_reminder",
+    "going_off",
+    "unused",
+)
+AHEAD_KEEPS_DAYS = (
+    3  # what a session cooks for a later dish (pulses, a roast pepper) keeps this long
+)
+REMINDER_LEAD_DAYS = 3  # a reminder further ahead than this of its step is not about that dish
 
 
 @dataclass(frozen=True)
@@ -57,14 +79,17 @@ def _day(d: dt.date) -> str:
     return f"{WEEKDAYS[d.weekday()]} {d.isoformat()}"
 
 
-def problems(data: Data, db: DB, today: dt.date) -> list[Problem]:
-    """Everything that no longer fits, in a fixed order."""
+def problems(data: Data, db: DB, today: dt.date, offered: list[dict] | tuple = ()) -> list[Problem]:
+    """Everything that no longer fits, in a fixed order. offered: reminders an answer offers and
+    nobody has tapped yet ({"when": "YYYY-MM-DD HH:MM", "recipe", "date"}, as llm.reminders gives
+    them), counted as set, so a proposal can be checked before it goes out."""
     plans = Plans(data)
     monday = today - dt.timedelta(days=today.weekday())
     end = monday + dt.timedelta(days=13)  # the end of next week
     dates = [today + dt.timedelta(days=i) for i in range((end - today).days + 1)]
     out = _off_days(data, plans, today, end)
     out += _lunches(data, plans, today, dates)
+    out += _prep(data, db, plans, dates, offered)
     out += [p for r in db.reminders() if (p := _stale(data, plans, r))]
     off = _going_off(data, db, plans, today, end)
     out += off
@@ -193,6 +218,120 @@ def _lunches(data: Data, plans: Plans, today: dt.date, dates: list[dt.date]) -> 
                     f"Fix: `set` it again with `cook:` a day from {today.isoformat()} on, or "
                     "without cook (cooked that morning).",
                     {"dish": r.name, "date": d, "cook": cook},
+                )
+            )
+    return out
+
+
+def _linked(data: Data, db: DB, offered) -> dict[tuple[str, str], list[float]]:
+    """(recipe, the day it is eaten) -> when each reminder about that dish goes, set or already
+    sent, in any chat, plus the ones offered."""
+    zone = ZoneInfo(data.household.timezone)
+    out: dict[tuple[str, str], list[float]] = {}
+    for state in ("pending", "sent"):
+        for r in db.reminders(state=state):
+            if r.get("recipe") and r.get("date"):
+                out.setdefault((r["recipe"], r["date"]), []).append(r["at"])
+    for r in offered:
+        if not r.get("recipe") or not r.get("date") or "when" not in r:
+            continue
+        try:
+            when = dt.datetime.strptime(r["when"], "%Y-%m-%d %H:%M").replace(tzinfo=zone)
+        except ValueError:
+            continue
+        out.setdefault((r["recipe"], r["date"]), []).append(when.timestamp())
+    return out
+
+
+def _sessions_before(plans: Plans, d: dt.date) -> list[dt.date]:
+    """The batch sessions in the AHEAD_KEEPS_DAYS before d, soonest first."""
+    out = []
+    for i in range(AHEAD_KEEPS_DAYS, 0, -1):
+        x = d - dt.timedelta(days=i)
+        plan = plans.plan(x)
+        if plan and x not in plans.paused and any(s.date == x for s in plan.sessions):
+            out.append(x)
+    return out
+
+
+def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> list[Problem]:
+    zone = ZoneInfo(data.household.timezone)
+    linked = _linked(data, db, offered)
+
+    def at(d: dt.date, hm: str = "00:00") -> float:
+        h, m = (int(x) for x in hm.split(":"))
+        return dt.datetime(d.year, d.month, d.day, h, m, tzinfo=zone).timestamp()
+
+    out = []
+    for d in dates:
+        day = plans.day(d)
+        if day is None:
+            continue
+        for meal in MEALS:
+            r = data.recipes.get(getattr(day, meal) or "")
+            if r is None or (meal == "lunch" and _cooked(plans.plan(d), day)):
+                continue
+            soak = [
+                data.ingredients[i.id].name
+                for i in r.ingredients
+                if i.id in data.ingredients and data.ingredients[i.id].soak
+            ]
+            if not soak and not r.ahead:
+                continue
+            session = [a.step for a in r.ahead if a.session]
+            before = _sessions_before(plans, d) if session else []
+            # a dried pulse soaks the night before it is cooked: in the session, else that day
+            cooked = before[-1] if before else d
+            deadline = at(cooked) if soak else at(d, MEAL_HOURS[meal][0])
+            times = linked.get((r.id, d.isoformat()), [])
+            if any(
+                at(cooked - dt.timedelta(days=REMINDER_LEAD_DAYS)) <= t <= deadline for t in times
+            ):
+                continue
+            what = r.name + f" [{r.id}], {meal} on {_day(d)}"
+            link = f"`dish {r.id} {d.isoformat()}`"
+            if session and not before:
+                plan = plans.plan(d)
+                same = plan is not None and any(s.date == d for s in plan.sessions)
+                when = (
+                    "the session that day comes after the meal"
+                    if same
+                    else f"no session comes in the {AHEAD_KEEPS_DAYS} days before"
+                )
+                out.append(
+                    Problem(
+                        "prep_late",
+                        f"prep_late:{r.id}:{d.isoformat()}",
+                        f"{what}, counts on a cooking session before that day for: "
+                        f"{'; '.join(session)}. But {when}, and no reminder has someone do it at "
+                        f"home before. Fix: `set` the dish on a day a session comes before, or a "
+                        f"reminders line to do it before the meal (on {d.isoformat()} or the day "
+                        f"before), with {link}.",
+                        {"dish": r.name, "date": d},
+                    )
+                )
+                continue
+            steps = (
+                [f"soak {', '.join(soak)} the night before {cooked.isoformat()}"] if soak else []
+            )
+            steps += [
+                a.step + (f" (in the session of {before[-1].isoformat()})" if a.session else "")
+                for a in r.ahead
+            ]
+            fix = (
+                f"It is too late for that day: `swap` it with a later day's {meal} or `set` another "
+                "dish, and remind them for the new day"
+                if deadline <= at(dates[0])
+                else f"a reminders line for each step at its time, with {link}, or `set` another "
+                "dish that day"
+            )
+            out.append(
+                Problem(
+                    "prep",
+                    f"prep:{r.id}:{d.isoformat()}",
+                    f"{what}, needs doing ahead: {'; '.join(steps)}. No reminder about it comes in "
+                    f"time. Fix: {fix}.",
+                    {"dish": r.name, "date": d},
                 )
             )
     return out
