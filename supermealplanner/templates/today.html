@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_sheet.html" import vote with context %}
+{% from "_sheet.html" import vote, together with context %}
 {% block main %}
 <header class="bar">
   <a href="/?d={{ prev }}" aria-label="previous day">‹</a>
@@ -23,6 +23,7 @@
         <p class="sub">{% if gap == 0 %}{{ t('lunch_fresh') }}{% elif gap <= recipes[rid].fridge_days %}{{ t('lunch_fridge', date=t.date(pday.lunch_cook)) }}{% else %}{{ t('lunch_freezer', date=t.date(pday.lunch_cook)) }}{% endif %}</p>
       {% endif %}
       {% if recipes[rid].steps %}<details class="steps"><summary>{{ t('recipe_steps') }}</summary><ol>{% for s in recipes[rid].steps %}<li>{{ s }}</li>{% endfor %}</ol></details>{% endif %}
+      {% if people | length > 1 %}{{ together(totals[meal]) }}{% endif %}
       <div class="people">
       {% for pd in people %}
         <div class="who">
@@ -40,6 +41,7 @@
     {% for r, plates in picks %}
     <a class="dish" href="/recipe/{{ r.id }}?d={{ day }}">{{ r.name }}</a>
     {% if r.steps %}<details class="steps"><summary>{{ t('recipe_steps') }}</summary><ol>{% for s in r.steps %}<li>{{ s }}</li>{% endfor %}</ol></details>{% endif %}
+    {% if people | length > 1 %}{{ together(pick_totals[loop.index0]) }}{% endif %}
     <div class="people">
     {% for pd in people %}
       <div class="who">

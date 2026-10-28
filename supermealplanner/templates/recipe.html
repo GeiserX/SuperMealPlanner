@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_sheet.html" import vote with context %}
+{% from "_sheet.html" import vote, together with context %}
 {% block title %}{{ r.name }}{% endblock %}
 {% block main %}
 <header class="bar"><a href="javascript:history.back()">‹</a><h1>{{ r.name }}</h1><span></span></header>
@@ -7,6 +7,7 @@
  · {{ t('recipe_reference', kcal=r.nutrition.kcal | int, protein=r.nutrition.protein_g | int) }}</p>
 {{ vote(r.id) }}
 {% if score %}<p class="sub">{{ t('vote_score_up', n=score) if score > 0 else t('vote_score_down', n=-score) }}</p>{% endif %}
+{% if plates | length > 1 %}{{ together(total) }}{% endif %}
 <div class="people">
 {% for p, pl in plates %}
   <div class="who">

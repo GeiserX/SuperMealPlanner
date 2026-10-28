@@ -32,3 +32,10 @@
   <p class="sub vote">{{ t('vote_as') }} {% for p in hh.people %}<a href="/who/{{ p.id }}?back={{ here | urlencode }}">{{ p.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
   {% endif %}
 {% endmacro %}
+
+{% macro together(pl) %}
+  <div class="who all">
+    <h3>{{ t('everyone_total') }} <small>×{{ '%.2f' | format(pl.factor) }}</small></h3>
+    <ul>{% for line in pl.lines %}<li>{{ line }}</li>{% endfor %}</ul>
+  </div>
+{% endmacro %}
