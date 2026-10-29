@@ -283,10 +283,55 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
         day = plans.day(monday + dt.timedelta(days=i))
         if day:
             dishes |= {getattr(day, m) for m in MEALS}
-    after = {"menu": doctor_menu(data, t, today), "recipes": recipe_texts(data, dishes)}
+    after = {
+        "menu": doctor_menu(data, t, today),
+        "sessions": sessions_now(data, plans, monday),
+        "reminders": reminders_now(data, db),
+        "recipes": recipe_texts(data, dishes),
+    }
     text = brief(data, today, PLAN_ANSWER, problems, after, None)
     body = text.split("\n", 1)[1]
     return text, hashlib.sha256(body.encode()).hexdigest()
+
+
+def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
+    """The cooking sessions of the two weeks: when each one is and what it cooks for which days.
+    The menu alone does not say it, and a timeline judged without it guesses."""
+    at = [x for r in data.settings.reminders if r.kind == "batch" and r.enabled for x in r.at]
+    evening = (
+        f"in the evening, from the cooking reminder at {', '.join(at)}" if at else "after lunch"
+    )
+    out, seen = [], set()
+    for i in range(14):
+        plan = plans.plan(monday + dt.timedelta(days=i))
+        for s in plan.sessions if plan else []:
+            if s.date != monday + dt.timedelta(days=i) or (s.date, s.morning) in seen:
+                continue
+            seen.add((s.date, s.morning))
+            dishes = "; ".join(
+                f"{x.recipe} for {', '.join(e.isoformat() for e in x.eat)}" for x in s.dishes
+            )
+            when = "in the morning, before lunch" if s.morning else evening
+            out.append(f"- {s.date:%A} {s.date.isoformat()}, {when}: {dishes}")
+    if not out:
+        return []
+    return ["", "## Cooking sessions (each lunch is cooked in the one that lists its day)", *out]
+
+
+def reminders_now(data: Data, db: DB) -> list[str]:
+    """The reminders already set in the household chat, still to come: a step one of them covers
+    is not missing."""
+    chat = data.settings.bot.chat_id
+    rows = db.reminders(chat) if chat is not None else []
+    if not rows:
+        return []
+    zone = ZoneInfo(data.household.timezone)
+    out = ["", "## Reminders already set in the household chat, still to come"]
+    for r in rows:
+        local = dt.datetime.fromtimestamp(r["at"], zone)
+        dish = f" (about {r['recipe']} on {r['date']})" if r.get("recipe") else ""
+        out.append(f"- {local:%A %Y-%m-%d %H:%M}: {r['text']}{dish}")
+    return out
 
 
 async def check_plan(data: Data, db: DB, today: dt.date) -> dict | None:
@@ -409,6 +454,7 @@ def brief(data: Data, today: dt.date, answer: str, problems: list[str], after: d
         "(Only this week and the next are shown. A session may cook for lunches after them: a "
         "dish missing from this menu is not evidence that it is on no meal.)"
     )
+    out += after.get("sessions", []) + after.get("reminders", [])
     if after.get("recipes"):
         out += ["", "## Recipes it touches", *after["recipes"]]
     return "\n".join(out)

@@ -2541,28 +2541,27 @@ class Bot:
         return None
 
     def batch_reminder(self, plan, day: dt.date) -> str | None:
-        """Today's afternoon session, or tomorrow morning's when today is paused."""
+        """Today's afternoon session and tomorrow morning's: a session cooked the morning a lunch
+        is eaten (a Saturday before lunch, the first day back from a pause) is said the evening
+        before, or nobody hears of it."""
         t, data = self.t, self.data
+        said = []
         for s in plan.sessions:
             if s.date == day and not s.morning:
                 dishes = self.batch_text(data, plan, day, s)
-                if not dishes:  # every dish was deleted: nothing to remind about yet
-                    continue
-                return t(
-                    "reminder_batch", dishes=dishes, url=self.url(f"/batch?d={day.isoformat()}")
-                )
+                if dishes:  # every dish deleted: nothing to remind about yet
+                    url = self.url(f"/batch?d={day.isoformat()}")
+                    said.append(t("reminder_batch", dishes=dishes, url=url))
+                    break
         tomorrow = day + dt.timedelta(days=1)
-        if day in paused_days(data):  # the first day back cooks that morning: say so the day before
-            for s in plan.sessions:
-                if s.date == tomorrow and s.morning:
-                    dishes = self.batch_text(data, plan, tomorrow, s)
-                    if dishes:
-                        return t(
-                            "reminder_batch_morning",
-                            dishes=dishes,
-                            url=self.url(f"/batch?d={tomorrow.isoformat()}"),
-                        )
-        return None
+        for s in plan.sessions:
+            if s.date == tomorrow and s.morning and tomorrow not in paused_days(data):
+                dishes = self.batch_text(data, plan, tomorrow, s)
+                if dishes:
+                    url = self.url(f"/batch?d={tomorrow.isoformat()}")
+                    said.append(t("reminder_batch_morning", dishes=dishes, url=url))
+                    break
+        return "\n\n".join(said) or None
 
     def soak_text(self, day: dt.date) -> str | None:
         """The eve of a batch session: the dried pulses to leave in water tonight, even when

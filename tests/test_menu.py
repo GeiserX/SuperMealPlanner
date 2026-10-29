@@ -288,6 +288,27 @@ def test_the_batch_reminder_sounds_the_eve_of_the_first_day_back_from_a_pause(da
     assert b.reminder_text(batch, D(6)) is None
 
 
+def test_the_batch_reminder_sounds_the_eve_of_a_session_cooked_the_morning_of_its_lunch(
+    data_dir, tmp_path
+):
+    data = bot_data(data_dir)
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["reminders"].append({"id": "batch", "kind": "batch", "at": ["21:30"]})
+    (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    data = load(data_dir)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    batch = next(r for r in data.settings.reminders if r.id == "batch")
+    assert not any(s.date in (D(2), D(3)) for s in plan_for(data, D(3)).sessions)
+    assert b.reminder_text(batch, D(2)) is None  # nothing cooks on Wednesday or Thursday
+    lunch = data.recipes[plan_for(data, D(3)).day(D(3)).lunch]
+    change(
+        data, {"set": {"date": str(D(3)), "meal": "lunch", "recipe": lunch.id, "cook": str(D(3))}}
+    )
+    assert any(s.date == D(3) and s.morning for s in plan_for(data, D(3)).sessions)
+    said = b.reminder_text(batch, D(2))  # not a paused day: the eve still says it
+    assert said and said.startswith("🍲 Batch cooking tomorrow morning") and lunch.name in said
+
+
 def test_the_shopping_reminder_goes_when_part_of_the_week_is_still_planned(data_dir, tmp_path):
     data = bot_data(data_dir)
     raw = yaml.safe_load((data_dir / "settings.yaml").read_text())

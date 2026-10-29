@@ -333,6 +333,26 @@ def test_the_plan_check_reads_every_recipe_of_the_two_weeks_and_judges_all_of_it
     assert verifier.ONLY_PROPOSAL not in system
 
 
+def test_the_plan_check_sees_when_each_session_cooks_and_the_reminders_already_set(
+    data_dir, tmp_path
+):
+    b, db = vsetup(data_dir, tmp_path)
+    text, key = verifier.plan_brief(b.data, db, MONDAY)
+    plan = plan_for(b.data, MONDAY)
+    s = next(s for s in plan.sessions if not s.morning and s.date > MONDAY)
+    x = s.dishes[0]
+    eat = ", ".join(e.isoformat() for e in x.eat)
+    assert f"{s.date.isoformat()}, after lunch: " in text and f"{x.recipe} for {eat}" in text
+    assert "## Reminders already set" not in text
+    at = dt.datetime.combine(s.date, dt.time(21, 30), ZONE).timestamp()
+    db.add_reminder(
+        b.data.settings.bot.chat_id, "ana", at, "Remojo", recipe=x.recipe, date=eat[:10]
+    )
+    text, again = verifier.plan_brief(b.data, db, MONDAY)
+    assert f"{s.date.isoformat()} 21:30: Remojo (about {x.recipe} on {eat[:10]})" in text
+    assert again != key  # a reminder set since is a new plan to check
+
+
 def test_recipes_too_long_to_send_are_named_rather_than_judged_by_name(data_dir, tmp_path):
     b, db = vsetup(data_dir, tmp_path)
     real, verifier.RECIPES_MAX = verifier.RECIPES_MAX, 300
