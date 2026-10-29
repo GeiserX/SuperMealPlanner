@@ -225,22 +225,57 @@ def test_a_message_during_the_answer_joins_it(data_dir, tmp_path):
     assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["luis: @chefbot gracias"]
 
 
-def test_a_message_the_answer_did_not_take_makes_the_next_turn(data_dir, tmp_path):
+def test_an_answer_that_missed_a_message_is_not_sent_and_is_written_again_with_it(
+    data_dir, tmp_path
+):
     b, _ = setup(data_dir, tmp_path)
-    cfg(data_dir, listen=3, until=1, cover=False)
+    cfg(data_dir, listen=3, until=1, cover=False, text="first draft")
 
     async def go():
         first = asyncio.create_task(b.handle(None, msg("hola", chat=7, user=7, message_id=1)))
         await until(lambda: running(data_dir))
-        cfg(data_dir)  # the next turn listens to nothing
+        cfg(data_dir, text="both")  # the next turn listens to nothing
         await b.handle(None, msg("y mañana?", chat=7, user=7, message_id=2))
         await first
 
     run(go())
     first, second = lines(data_dir, "turns.jsonl")
-    assert first["new"] == ["luis: hola"]
-    assert second["new"] == ["luis: y mañana?"]
-    assert [p.get("reply_parameters", {}).get("message_id") for p in sends(b, 7)] == [1, 2]
+    assert first["new"] == ["luis: hola"] and first["incoming"] == ["luis: y mañana?"]
+    *said, note = second["new"]
+    assert said == ["luis: hola\nluis: y mañana?"] and "never sent" in note
+    # one answer for both, plain; the draft never went out
+    (answer,) = sends(b, 7)
+    assert answer["text"] == "both" and "reply_parameters" not in answer
+
+
+def test_a_rewritten_answer_that_misses_again_is_sent_and_the_rest_makes_the_next_turn(
+    data_dir, tmp_path
+):
+    b, _ = setup(data_dir, tmp_path)
+    cfg(data_dir, listen=3, until=1, cover=False)
+    started, ask = [], b.ask
+
+    async def counted(*args):
+        started.append(1)
+        return await ask(*args)
+
+    b.ask = counted
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("hola", chat=7, user=7, message_id=1)))
+        await until(lambda: running(data_dir))
+        await b.handle(None, msg("y mañana?", chat=7, user=7, message_id=2))
+        await until(lambda: len(started) == 2 and running(data_dir))  # the rewrite runs
+        cfg(data_dir)
+        await b.handle(None, msg("y pasado?", chat=7, user=7, message_id=3))
+        await first
+
+    run(go())
+    turns = lines(data_dir, "turns.jsonl")
+    assert len(turns) == 3  # the draft, its rewrite (sent, once in a row), the message it missed
+    assert turns[1]["incoming"] == ["luis: y pasado?"] and "never sent" in turns[1]["new"][-1]
+    assert turns[2]["new"] == ["luis: y pasado?"]
+    assert [p.get("reply_parameters", {}).get("message_id") for p in sends(b, 7)] == [None, 3]
 
 
 def test_a_voice_note_still_transcribing_holds_the_turn(data_dir, tmp_path):
@@ -262,6 +297,68 @@ def test_a_voice_note_still_transcribing_holds_the_turn(data_dir, tmp_path):
     run(go())
     (turn,) = lines(data_dir, "turns.jsonl")
     assert turn["new"] == ["luis: hoy cenamos pescado\nluis: 🎤 y de postre fruta"]
+
+
+def test_a_second_voice_note_that_transcribes_slowly_still_joins_the_first(data_dir, tmp_path):
+    # Two notes a minute apart, the second taking longer to transcribe than a fixed wait allowed:
+    # both go to one answer, because a note holds the turn for as long as its audio needs.
+    b, _ = setup(data_dir, tmp_path)
+    b.debounce, b.voice_wait = 0.05, 0.05
+    took = {"a": 0.05, "b": 0.5}
+
+    async def transcribe(client, voice):
+        await asyncio.sleep(took[voice["file_id"]])
+        return {"a": "faltan garbanzos", "b": "y la freidora de aire"}[voice["file_id"]]
+
+    b.transcribe = transcribe
+
+    async def go():
+        a = asyncio.create_task(
+            b.handle(
+                None, msg(chat=7, user=7, message_id=1, voice={"file_id": "a", "duration": 10})
+            )
+        )
+        await asyncio.sleep(0.01)
+        await b.handle(
+            None, msg(chat=7, user=7, message_id=2, voice={"file_id": "b", "duration": 47})
+        )
+        await a
+
+    run(go())
+    (turn,) = lines(data_dir, "turns.jsonl")
+    assert turn["new"] == ["luis: 🎤 faltan garbanzos\nluis: 🎤 y la freidora de aire"]
+
+
+def test_a_voice_note_holds_the_turn_no_longer_than_transcription_may_take(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)
+    assert b.hold_for({"duration": 47}) == 30 + 3 * 47
+    assert b.hold_for({}) == 30  # Telegram did not say how long it is
+    assert b.hold_for({"duration": 3600}) == b.data.settings.transcription.timeout_s
+
+
+def test_a_voice_note_whose_transcription_fails_lets_the_turn_go_at_once(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)
+    b.debounce = 0.05
+
+    async def fails(client, voice):
+        await asyncio.sleep(0.1)
+        raise RuntimeError("akou is down")
+
+    b.transcribe = fails
+
+    async def go():
+        note = asyncio.create_task(
+            b.handle(None, msg(chat=7, user=7, voice={"file_id": "f", "duration": 600}))
+        )
+        await asyncio.sleep(0.02)
+        await asyncio.wait_for(
+            b.handle(None, msg("hoy cenamos pescado", chat=7, user=7, message_id=2)), 3
+        )
+        await note
+
+    run(go())
+    (turn,) = lines(data_dir, "turns.jsonl")
+    assert turn["new"] == ["luis: hoy cenamos pescado"]
 
 
 # ---------------------------------------------------------------- yes or no with buttons
