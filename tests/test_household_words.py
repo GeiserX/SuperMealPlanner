@@ -64,8 +64,8 @@ def test_the_batch_and_soak_reminders_link_each_dishs_recipe(data_dir, tmp_path)
 
 
 def test_the_morning_menu_says_what_a_dish_still_needs_bought_after_the_shop(data_dir, tmp_path):
-    # 29-10: a side salad needed a green pepper, the list still asked for it unticked after
-    # Monday's shop, and nothing told the cook until she was making it.
+    # A dish needs food the week's list still asks for, unticked, after its shopping day: the
+    # morning menu must say so before anyone starts cooking.
     b, data = bot(data_dir, tmp_path)
     db = b.state.db
     plan = plan_for(data, MONDAY)
