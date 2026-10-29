@@ -369,6 +369,30 @@ def test_a_reminder_already_sent_still_covers_its_step(data_dir, tmp_path):
     assert "Otro chat" in verifier.plan_brief(b.data, db, MONDAY)[0]
 
 
+def test_the_plan_check_knows_the_cooking_reminder_says_what_to_take_out_of_the_freezer(
+    data_dir, tmp_path
+):
+    b, db = vsetup(data_dir, tmp_path)
+    plan = plan_for(b.data, MONDAY)
+    iid = b.data.recipes[plan.day(MONDAY + dt.timedelta(days=1)).lunch].ingredients[0].id
+    name = b.data.ingredients[iid].name
+    ings = yaml.safe_load((data_dir / "ingredients.yaml").read_text())
+    ings[iid]["frozen"] = True
+    (data_dir / "ingredients.yaml").write_text(yaml.safe_dump(ings, allow_unicode=True))
+    b.state.data = load(data_dir)
+    assert (
+        "take out of the freezer" not in verifier.plan_brief(b.data, db, MONDAY)[0]
+    )  # no reminder
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["reminders"].append({"id": "batch", "kind": "batch", "at": ["21:30"]})
+    (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    b.state.data = load(data_dir)
+    text, _ = verifier.plan_brief(b.data, db, MONDAY)
+    assert "## Said by the app itself" in text
+    assert "at 21:30, the cooking reminder says what to take out of the freezer" in text
+    assert f"next day's meals: {name}." in text
+
+
 def test_a_long_finding_is_cut_at_a_sentence_end_never_mid_sentence():
     first = "Mueve el remojo al viernes a las 21:30. " * 15
     long = first + "Y esta frase sigue y sigue sin acabar nunca " * 10

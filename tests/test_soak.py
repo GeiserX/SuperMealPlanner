@@ -88,3 +88,46 @@ def test_the_soaking_shows_on_the_tasks_page_and_through_the_api(data_dir, monke
     assert any("• Garbanzo" in t["text"] for t in texts)
     assert all(y["ingredient"] == "garbanzo" for y in other["soak_for_tomorrow"])
     assert data.ingredients["lenteja"].soak is False
+
+
+def test_the_batch_reminder_says_what_to_take_out_of_the_freezer_the_evening_before(
+    data_dir, tmp_path
+):
+    bot_data(data_dir)
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["reminders"].append({"id": "batch", "kind": "batch", "at": ["21:30"]})
+    (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    ings = yaml.safe_load((data_dir / "ingredients.yaml").read_text())
+    ings["merluza"]["frozen"] = True
+    (data_dir / "ingredients.yaml").write_text(yaml.safe_dump(ings, allow_unicode=True))
+    data = planned(data_dir)
+    plan = plan_for(data, MONDAY)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    batch = next(r for r in data.settings.reminders if r.id == "batch")
+
+    def frozen_in(d):
+        return [
+            (meal, getattr(d, meal))
+            for meal in ("breakfast", "lunch", "side", "snack", "dinner")
+            if getattr(d, meal)
+            and any(i.id == "merluza" for i in data.recipes[getattr(d, meal)].ingredients)
+        ]
+
+    days = [d for d in plan.days if d.date > MONDAY]
+    hit = next(d for d in days if frozen_in(d))
+    miss = next(d for d in days if not frozen_in(d))
+    eve = hit.date - dt.timedelta(days=1)
+    said = b.reminder_text(batch, eve)
+    assert said and "🧊 Tonight, take out of the freezer" in said
+    lines = [x for x in said.splitlines() if x.startswith("• Merluza: ")]
+    assert len(lines) == len(frozen_in(hit))  # one line per meal that uses it
+    meal, rid = frozen_in(hit)[0]
+    assert f"({meal.capitalize()}: {data.recipes[rid].name})" in lines[0]
+    assert int(lines[0].split(": ")[1].split(" g")[0]) >= 150  # every eater's share
+    assert f"/?d={hit.date}" in said
+    after = said.splitlines()[said.splitlines().index(lines[0]) + 1]
+    assert after.strip().endswith(f"/recipe/{rid}?d={hit.date}")  # the dish's recipe, one tap away
+    assert "🧊" not in (b.reminder_text(batch, miss.date - dt.timedelta(days=1)) or "")
+    # tomorrow paused: nothing is eaten, nothing to take out
+    change(data, {"pause": {"from": str(hit.date), "to": str(hit.date)}}, today=eve)
+    assert "🧊" not in (b.reminder_text(batch, eve) or "")

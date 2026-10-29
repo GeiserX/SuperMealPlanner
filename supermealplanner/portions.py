@@ -491,6 +491,37 @@ def soak_for(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[Soak
     return out
 
 
+@dataclass
+class Thaw:
+    recipe: Recipe
+    meal: str
+    ingredient: Ingredient
+    qty: float
+    amount: str
+
+
+def thaw_for(data: Data, db: DB, plan: Plan, day: dt.date) -> list[Thaw]:
+    """What to take out of the freezer the evening before `day`: the ingredients marked `frozen`
+    in each of that day's meals, in the quantity everyone eating it needs (Sunday lunch's guests
+    too)."""
+    d = plan.day(day)
+    if d is None:
+        return []
+    out = []
+    for meal in MEALS:
+        r = data.recipes.get(getattr(d, meal) or "")
+        if r is None:
+            continue
+        eaters = factors(data, db, day)
+        if meal == "lunch" and day.weekday() == 6 and data.household.guests.get("sunday_lunch"):
+            eaters["guests"] = data.household.guests["sunday_lunch"]
+        for iid, qty in amounts(data, r, eaters).items():
+            ing = data.ingredients[iid]
+            if ing.frozen:
+                out.append(Thaw(r, meal, ing, qty, fmt_qty(ing, qty, data.locale)))
+    return out
+
+
 def batch_dish_text(t, b: BatchDish, names: dict[str, str]) -> str:
     """A batch dish for the chat: whole servings, when it is cooked, which lunches it is for, and
     the split by person (the only place with decimals)."""
