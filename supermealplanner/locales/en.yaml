@@ -349,6 +349,7 @@ shopping_have: I have it
 shopping_have_title: At home, left off the list
 shopping_have_back: Put back on the list
 reminder_day: "📅 Today, {date}:"
+reminder_day_missing: "🛒 Still to buy for today (unticked on the list): {items}. List: {url}"
 bot_upgraded: "Now running version {version} (was {previous})."
 bot_upgraded_first: "Now running version {version}."
 # talking to the chef from the app (POST /api/v1/chef): what the chat shows, what is read out

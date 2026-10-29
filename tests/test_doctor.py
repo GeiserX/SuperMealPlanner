@@ -263,7 +263,8 @@ def test_a_due_reminder_whose_dish_left_the_menu_is_cancelled_not_posted(data_di
     run(b.tick_once(None))
     texts = [p["text"] for p in sends(b, -100)]
     assert db.reminder(rid)["state"] == "cancelled" and not any("Thaw it" in x for x in texts[1:])
-    assert db.reminder(keep)["state"] == "sent" and "⏰ Cook it" in texts
+    link = f"https://meals.example/recipe/{day.lunch}?d={D(3)}"  # a dish's reminder ends with it
+    assert db.reminder(keep)["state"] == "sent" and f"⏰ Cook it\n{link}" in texts
 
 
 def test_old_reminder_rows_keep_working_after_the_new_columns(tmp_path):

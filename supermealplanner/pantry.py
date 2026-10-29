@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from .db import DB
-from .model import Data
+from .model import WEEKDAYS, Data, Ingredient, Recipe
 from .planner import Plans, plan_for
 from .portions import fmt_qty, ingredients_of, needs, servings_on
 from .targets import current_kcal
@@ -189,6 +189,36 @@ def covered(
         if q > EPS and good + EPS >= q:
             out.add(iid)
     return out
+
+
+def unbought(data: Data, db: DB, plan, day: dt.date) -> list[tuple[Ingredient, Recipe]]:
+    """What a dish of `day` needs that its week's list still asks for, unticked, once that week's
+    shopping day has passed, and that the pantry does not hold enough of for that day's cooking:
+    the shop came and went without it. With the recipe it is for, the first one that day that uses
+    it."""
+    from .portions import amounts, shopping_list
+
+    monday = day - dt.timedelta(days=day.weekday())
+    shop_day = monday + dt.timedelta(days=WEEKDAYS.index(data.household.shopping_day))
+    if day <= shop_day:
+        return []
+    shop = shopping_list(data, db, plan, monday, today=day)
+    asked = {x.ingredient.id for s in shop.stores for x in s.lines} - db.ticked(monday)
+    walk = Walk(data, db)
+    stock, _ = walk.run(day)
+    need = walk.uses(day)
+    asked = {
+        iid for iid in asked if sum(x.qty for x in stock.get(iid, [])) + EPS < need.get(iid, 0)
+    }
+    out: dict[str, tuple[Ingredient, Recipe]] = {}
+    for rid, row in servings_on(data, db, plan, {day}).items():
+        rec = data.recipes.get(rid)
+        if rec is None:
+            continue
+        for iid in amounts(data, rec, row):
+            if iid in asked and iid not in out:
+                out[iid] = (data.ingredients[iid], rec)
+    return sorted(out.values(), key=lambda x: x[0].name)
 
 
 def going_off(

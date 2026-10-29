@@ -2126,8 +2126,11 @@ class Bot:
                 llm.act(self.data, pending["proposal"]), timeout=ACT_TIMEOUT
             )
             if out.text:
-                try:
-                    await self.send(client, chat_id, out.text, reply_to)
+                try:  # a plugin's text may carry Markdown and run long: rendered and folded,
+                    # never shown raw or cut (the plugin writes it for the household)
+                    await self.send(
+                        client, chat_id, render.brief(out.text), reply_to, markdown=True
+                    )
                 except TelegramError as e:  # what follows still runs: the work is already done
                     log.warning("could not say how a proposal went: %s", safe(e))
             for proposal in out.proposals:
@@ -2684,8 +2687,18 @@ class Bot:
         soaks = soak_for(self.data, self.state.db, plan, tomorrow) if plan else []
         if not soaks:
             return None
+        eaten = {
+            b.recipe.id: b.containers[0].eat
+            for b in batch_sheet(self.data, self.state.db, plan, tomorrow)
+            if b.containers
+        }
         items = "\n".join(
             t("reminder_soak_item", name=x.ingredient.name, amount=x.amount, dish=x.recipe.name)
+            + (
+                f"\n  {self.recipe_url(x.recipe.id, eaten[x.recipe.id])}"
+                if x.recipe.id in eaten
+                else ""
+            )
             for x in soaks
         )
         return t("reminder_soak", items=items, url=self.url(f"/batch?d={tomorrow.isoformat()}"))
@@ -2718,7 +2731,21 @@ class Bot:
         ids = {x.recipe for x in session.dishes}
         names = {p.id: p.name for p in data.household.people}
         sheet = batch_sheet(data, self.state.db, plan, day)
-        return "\n\n".join(batch_dish_text(self.t, b, names) for b in sheet if b.recipe.id in ids)
+        return "\n\n".join(
+            batch_dish_text(self.t, b, names)
+            + "\n"
+            + self.recipe_url(b.recipe.id, b.containers[0].eat)
+            if b.containers
+            else batch_dish_text(self.t, b, names)
+            for b in sheet
+            if b.recipe.id in ids
+        )
+
+    def recipe_url(self, recipe: str, eaten) -> str:
+        """The recipe's page for the day the dish is eaten: every reminder about a dish ends with
+        it, so the cook has the recipe one tap away."""
+        day = eaten.isoformat() if isinstance(eaten, dt.date) else str(eaten)
+        return self.url(f"/recipe/{recipe}?d={day}")
 
     def menu_text(self, plan, day: dt.date) -> str | None:
         """The whole day's menu in a few lines, with where lunch comes from and the day's page."""
@@ -2747,6 +2774,15 @@ class Bot:
             lines.append(line)
         if picks:
             lines.append(f"{ICONS['nibble']} {t('nibble_title')}: {', '.join(picks)}")
+        missing = pantry.unbought(data, self.state.db, plan, day)
+        if missing:
+            lines.append(
+                t(
+                    "reminder_day_missing",
+                    items=", ".join(f"{ing.name} ({rec.name})" for ing, rec in missing),
+                    url=self.url(f"/list?d={day.isoformat()}"),
+                )
+            )
         lines.append(self.url(f"/?d={day.isoformat()}"))
         return "\n".join(lines)
 
@@ -3066,6 +3102,8 @@ class Bot:
             text = f"⏰ {self.mention(pid)}: {r['text']}" if pid else f"⏰ {r['text']}"
             if now - r["at"] > LATE_S:
                 text += "\n" + self.t("reminder_late", when=self._when(r["at"]))
+            if r.get("recipe") in self.data.recipes and r.get("date"):  # the dish it is about
+                text += "\n" + self.recipe_url(r["recipe"], r["date"])
             try:
                 await self.send(client, r["chat"], text)
             except TelegramError as e:
