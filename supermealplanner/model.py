@@ -350,6 +350,14 @@ class Bot(Loose):
     # (the group when unset), only when something is wrong; "" turns the report off
     checkup_at: str = Field(default="08:00", pattern=r"^(([01]\d|2[0-3]):[0-5]\d)?$")
     checkup_chat: int | None = None
+    # how answers sound and act in the chat: `style` is the bot's voice, read by the AI after the
+    # formatting guide (gestures.py); `sticker_set` names a Telegram sticker set it may send from
+    # (empty: no stickers); `photo_hosts` are the hosts (and subdomains) it may send an image from by
+    # its address. Telegram fetches that address with no tap, so only hosts the household trusts: an
+    # open list would let a page the AI read send the household's data to any server in the URL
+    style: str = ""
+    sticker_set: str = ""
+    photo_hosts: list[str] = []
 
 
 class LLM(Loose):

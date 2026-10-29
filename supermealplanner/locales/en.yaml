@@ -153,6 +153,7 @@ bot_file_failed: "I couldn't download that file. Could you send it again?"
 bot_file_unseen: "I can't look at photos or files with the AI set up here. Tell me in words?"
 bot_thinking: Thinking…
 bot_error: Something went wrong. Try again in a minute.
+file_name: "file"  # a file the AI sends whose name has no letter left
 bot_busy: "I can't answer right now: I have no capacity left for {wait}. I'll answer everything then, with no need to repeat anything."
 busy_minutes: "about {n} minutes"
 busy_hours: "about {n} hours"

@@ -152,6 +152,7 @@ bot_file_failed: "No he podido descargar ese archivo. ¿Me lo mandas otra vez?"
 bot_file_unseen: "Con la IA que hay configurada no puedo ver fotos ni archivos. ¿Me lo cuentas con palabras?"
 bot_thinking: Pensando…
 bot_error: Algo ha fallado. Prueba otra vez en un minuto.
+file_name: "archivo"  # a file the AI sends whose name has no letter left
 bot_busy: "Ahora no puedo contestar: no me queda capacidad hasta dentro de {wait}. Entonces contesto a todo, sin que haga falta repetir nada."
 busy_minutes: "unos {n} minutos"
 busy_hours: "unas {n} horas"

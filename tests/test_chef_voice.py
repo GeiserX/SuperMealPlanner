@@ -97,6 +97,17 @@ def test_a_spoken_question_is_answered_in_the_chat_and_read_back(chef, data_dir)
     assert "[voice]" in turn["rules"]  # the AI is told how to answer one
 
 
+def test_a_long_answer_is_folded_in_the_chat_and_read_back_whole(chef, data_dir):
+    client, b = chef
+    me = token(data_dir, client)
+    detail = "\n".join(f"- Day {i}: a dish with its side" for i in range(40))
+    reply(data_dir, text=f"The week is planned.\n\n{detail}")
+    got = answer(client, me, say(client, me, "plan the week"))
+    assert "Day 39" in got["text"] and "fold" not in got["text"]
+    said = sent(b)[-1]["text"]
+    assert said.startswith("The week is planned.\n<blockquote expandable>") and "Day 39" in said
+
+
 def test_a_change_asked_for_by_voice_is_made_at_once(chef, data_dir):
     client, b = chef
     me = token(data_dir, client)
