@@ -51,13 +51,13 @@ import yaml
 from . import changes, doctor, llm, menu
 from .db import DB
 from .i18n import Translator
-from .model import Data, DataError, load
+from .model import WEEKDAYS, Data, DataError, load
 from .planner import MEALS, Plans
 
 log = logging.getLogger(__name__)
 
 CHECKS = ("wishes", "timeline", "health", "nonsense")
-PROBLEMS_MAX, PROBLEM_CHARS = 8, 400  # per check: a long list is noise, not a check
+PROBLEMS_MAX, PROBLEM_CHARS = 8, 800  # per check: a long list is noise, not a check
 RECIPES_MAX = 150_000  # characters of recipe text the judgment gets; the two weeks fit in it
 PLAN_KEY = "verifier.plan"  # the plan check's findings, with the key of the plan they are about
 PLAN_SEEN = ("timeline", "nonsense")  # what a private chat sees of them: no one's notes or health
@@ -283,10 +283,76 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
         day = plans.day(monday + dt.timedelta(days=i))
         if day:
             dishes |= {getattr(day, m) for m in MEALS}
-    after = {"menu": doctor_menu(data, t, today), "recipes": recipe_texts(data, dishes)}
+    after = {
+        "menu": doctor_menu(data, t, today),
+        "sessions": sessions_now(data, plans, monday),
+        "reminders": reminders_now(data, db, monday),
+        "recipes": recipe_texts(data, dishes),
+    }
     text = brief(data, today, PLAN_ANSWER, problems, after, None)
     body = text.split("\n", 1)[1]
     return text, hashlib.sha256(body.encode()).hexdigest()
+
+
+def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
+    """The cooking sessions of the two weeks: when each one is and what it cooks for which days.
+    The menu alone does not say it, and a timeline judged without it guesses."""
+    batch = [r for r in data.settings.reminders if r.kind == "batch" and r.enabled]
+
+    def evening(d: dt.date) -> str:
+        at = [
+            x for r in batch if r.days == "daily" or WEEKDAYS[d.weekday()] in r.days for x in r.at
+        ]
+        return (
+            f"in the evening, from the cooking reminder at {', '.join(at)}" if at else "after lunch"
+        )
+
+    out, seen = [], set()
+    for i in range(14):
+        plan = plans.plan(monday + dt.timedelta(days=i))
+        for s in plan.sessions if plan else []:
+            if s.date != monday + dt.timedelta(days=i) or (s.date, s.morning) in seen:
+                continue
+            seen.add((s.date, s.morning))
+            dishes = "; ".join(
+                f"{x.recipe} for {', '.join(e.isoformat() for e in x.eat)}" for x in s.dishes
+            )
+            when = "in the morning, before lunch" if s.morning else evening(s.date)
+            out.append(f"- {s.date:%A} {s.date.isoformat()}, {when}: {dishes}")
+    if not out:
+        return []
+    return ["", "## Cooking sessions (each lunch is cooked in the one that lists its day)", *out]
+
+
+def household_chat(data: Data, db: DB) -> int | None:
+    """The group the reminders go to: the one Telegram moved it to while settings still name the
+    old one, as the bot resolves it."""
+    configured = data.settings.bot.chat_id
+    m = db.get_kv("bot.migrated_chat")
+    if isinstance(m, dict) and configured is not None and configured == m.get("from"):
+        return m["to"]
+    return configured
+
+
+def reminders_now(data: Data, db: DB, monday: dt.date) -> list[str]:
+    """The reminders set in the household chat for the two weeks, still to come or already sent:
+    a step one of them covers is not missing. Each one as JSON, so its text is data."""
+    chat = household_chat(data, db)
+    if chat is None:
+        return []
+    zone = ZoneInfo(data.household.timezone)
+    since = dt.datetime.combine(monday, dt.time(), zone).timestamp()
+    rows = [r for r in db.reminders(chat, "sent") if r["at"] >= since] + db.reminders(chat)
+    if not rows:
+        return []
+    out = ["", "## Reminders set in the household chat (sent, or still to come)"]
+    for r in rows:
+        local = dt.datetime.fromtimestamp(r["at"], zone)
+        row = {"when": f"{local:%A %Y-%m-%d %H:%M}", "state": r["state"], "text": r["text"]}
+        if r.get("recipe"):
+            row |= {"recipe": r["recipe"], "date": r["date"]}
+        out.append("- " + json.dumps(row, ensure_ascii=False))
+    return out
 
 
 async def check_plan(data: Data, db: DB, today: dt.date) -> dict | None:
@@ -339,6 +405,18 @@ def answered(text: str) -> bool:
         return False
 
 
+def clip(text: str) -> str:
+    """A finding cut to PROBLEM_CHARS at the last sentence end within it, never mid-sentence; at
+    the last word when no sentence ends in time."""
+    if len(text) <= PROBLEM_CHARS:
+        return text
+    head = text[: PROBLEM_CHARS + 1]
+    ends = [m.end() for m in re.finditer(r"[.!?…](?=\s)", head)]
+    if ends:
+        return head[: ends[-1]]
+    return head[: head.rfind(" ")].rstrip(" ,;:") + "…" if " " in head else text[:PROBLEM_CHARS]
+
+
 def parse(text: str) -> dict[str, list[str]]:
     """The checks' problems from the provider's JSON; a check it left out, or anything that is not
     a list of texts, counts as none."""
@@ -351,7 +429,7 @@ def parse(text: str) -> dict[str, list[str]]:
     for check in CHECKS:
         items = raw.get(check) if isinstance(raw, dict) else None
         kept = [
-            " ".join(str(x).split())[:PROBLEM_CHARS]
+            clip(" ".join(str(x).split()))
             for x in (items if isinstance(items, list) else [])
             if isinstance(x, str) and x.strip()
         ]
@@ -409,6 +487,7 @@ def brief(data: Data, today: dt.date, answer: str, problems: list[str], after: d
         "(Only this week and the next are shown. A session may cook for lunches after them: a "
         "dish missing from this menu is not evidence that it is on no meal.)"
     )
+    out += after.get("sessions", []) + after.get("reminders", [])
     if after.get("recipes"):
         out += ["", "## Recipes it touches", *after["recipes"]]
     return "\n".join(out)
