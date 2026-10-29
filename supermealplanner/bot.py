@@ -147,6 +147,8 @@ ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft 
 # a chat's turn starts this long after its newest message, so a burst goes together
 DEBOUNCE_S = 2.5
 VOICE_WAIT_S = 30  # a turn waits this long at most for a voice note of its chat still transcribing
+PLAN_RAISED = "verifier.plan_raised"  # {"key", "on"}: the plan last raised in the chat, and the day
+PLAN_RAISE_H = 2  # hours after bot.checkup_at a finished plan check may still raise its problems
 PLAN_EVERY_S = 600  # how often the plan as it stands is checked again (judged only when it changed)
 # A provider that is out of capacity raises an error with `retry_after` (seconds): the chat's messages
 # wait that long, at least BUSY_MIN_S, and are answered then, with nobody writing again.
@@ -686,6 +688,7 @@ class Bot:
                 log.warning("morning checkup failed: %s", safe(e))
             try:
                 self.tick_plan()
+                await self.raise_plan(client)
             except Exception as e:  # noqa: BLE001
                 log.warning("plan check failed: %s", safe(e))
             try:
@@ -2918,7 +2921,6 @@ class Bot:
             return
         await self.checkup(client, chat)
         self.state.db.mark_sent("checkup", now.date(), cfg.checkup_at)
-        await self.raise_plan(chat)
 
     def tick_plan(self) -> None:
         """Every PLAN_EVERY_S, the checks of the plan as it stands (verifier.check_plan) in the
@@ -2936,26 +2938,33 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             log.warning("plan check failed: %s", safe(e))
 
-    async def raise_plan(self, chat: int) -> None:
-        """In the morning, once per plan: a turn the bot asks itself when the plan check found
-        problems, so the chef proposes the fixes in the chat like any change."""
-        db, data = self.state.db, self.data
-        if data.settings.llm.provider == "none":
+    async def raise_plan(self, client) -> None:
+        """Once a day, in the PLAN_RAISE_H after the morning checkup: when the plan check found
+        problems in the plan as it is, a turn the bot asks itself in bot.checkup_chat, so the chef
+        proposes the fixes in the chat like any change. A check that ends after the checkup still
+        gets its turn that morning; a plan raised once is not raised again."""
+        db, data, cfg = self.state.db, self.data, self.data.settings.bot
+        chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
+        if data.settings.llm.provider == "none" or not cfg.checkup_at or chat is None:
             return
-        kept = db.get_kv(verifier.PLAN_KEY) or {}
-        if not kept.get("key") or kept.get("raised") == kept["key"]:
+        now = dt.datetime.now(self._zone())
+        h, m = (int(x) for x in cfg.checkup_at.split(":"))
+        when = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if not when <= now < when + dt.timedelta(hours=PLAN_RAISE_H):
+            return
+        if not db.was_sent("checkup", now.date(), cfg.checkup_at):
+            return  # after the checkup's own line
+        kept, raised = db.get_kv(verifier.PLAN_KEY) or {}, db.get_kv(PLAN_RAISED) or {}
+        if not kept.get("key") or raised.get("on") == now.date().isoformat():
+            return
+        if raised.get("key") == kept["key"]:
             return
         if not await asyncio.to_thread(verifier.plan_findings, data, db, self.state.today()):
             return
-        db.set_kv(verifier.PLAN_KEY, {**kept, "raised": kept["key"]})
-        self.take(
-            chat,
-            {"first_name": self.t("plan_check_who")},
-            None,
-            None,
-            self.t("plan_check_turn"),
-            True,
-        )
+        db.set_kv(PLAN_RAISED, {"key": kept["key"], "on": now.date().isoformat()})
+        user = {"first_name": self.t("plan_check_who")}
+        self.take(chat, user, None, None, self.t("plan_check_turn"), True)
+        self.spawn(self.drive(client, chat))
 
     async def cmd_reminders(self, who, arg, user, chat=None):
         """The chat's reminders still to come, each with a button to cancel it."""

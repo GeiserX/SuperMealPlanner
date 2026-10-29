@@ -270,7 +270,9 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
     """The brief of the plan check and its key. The key leaves out the brief's clock line, so the
     same plan with the same data and the same problems gives the same key all day."""
     found = doctor.problems(data, db, today)
-    problems = [p.text for p in found if p.kind not in SKIP]
+    # a recipe nobody can have is about the library, not this plan, and names someone's food: the
+    # findings of this check reach private chats, so it stays out of the brief
+    problems = [p.text for p in found if p.kind not in (*SKIP, "avoided")]
     t = Translator(data.locale)
     monday = today - dt.timedelta(days=today.weekday())
     plans = Plans(data)
@@ -301,6 +303,9 @@ async def check_plan(data: Data, db: DB, today: dt.date) -> dict | None:
     except Exception as e:  # noqa: BLE001  tried again at the next tick
         log.warning("plan check failed: %s", type(e).__name__)
         return None
+    if not answered(out):
+        log.warning("plan check: the provider gave no verdict")
+        return None  # nothing kept: tried again at the next tick
     found = parse(out)
     log.info("plan check: %s", {c: len(ps) for c, ps in found.items()})
     kept = {"key": key, "found": found, "at": dt.datetime.now(dt.UTC).isoformat()}
@@ -321,6 +326,15 @@ def plan_findings(data: Data, db: DB, today: dt.date, viewer=None) -> list[str]:
         if viewer is None or c in PLAN_SEEN
         for p in ps
     ]
+
+
+def answered(text: str) -> bool:
+    """The provider gave a JSON object, even an empty one: a verdict, not a failure."""
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    try:
+        return isinstance(json.loads(m.group(0)), dict) if m else False
+    except ValueError:
+        return False
 
 
 def parse(text: str) -> dict[str, list[str]]:

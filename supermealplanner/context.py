@@ -519,7 +519,8 @@ def problems_now(data: Data, db: DB, today: dt.date, viewer: str | None = None) 
     chat's (a private one), and the app cancels them itself, saying so in their own chat."""
     from .verifier import plan_findings
 
-    skip = ("unused", "stale_reminder")
+    # a recipe one person cannot have names the food: in a private chat it may be someone else's
+    skip = ("unused", "stale_reminder") + (("avoided",) if viewer is not None else ())
     found = [p.text for p in doctor.problems(data, db, today) if p.kind not in skip]
     found += plan_findings(data, db, today, viewer)
     if not found:

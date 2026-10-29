@@ -385,21 +385,66 @@ def test_a_failed_plan_check_keeps_nothing_and_runs_again(data_dir, tmp_path):
     assert db.get_kv(verifier.PLAN_KEY) is None
 
 
-def test_the_morning_raises_what_the_plan_check_found_once_per_plan(data_dir, tmp_path):
+def test_the_morning_raises_what_the_plan_check_found_once_a_day(data_dir, tmp_path):
     b, db = vsetup(data_dir, tmp_path)
-    taken = []
+    now = dt.datetime.now(ZONE)
+    b.data.settings.bot.checkup_at = f"{now:%H:%M}"
+    taken, driven = [], []
     b.take = lambda chat, user, who, msg, text, asked, **k: taken.append((chat, text))
-    run(b.raise_plan(-100))
-    assert taken == []  # nothing checked yet
+
+    async def drive(client, chat):
+        driven.append(chat)
+
+    b.drive = drive
+
+    async def raise_plan():
+        await b.raise_plan(None)
+        await asyncio.gather(*b.tasks)
+
     _calls, fake = judged({"nonsense": ["The oven is used twice at once"]})
     verifier.llm.complete, real = fake, verifier.llm.complete
     try:
+        run(raise_plan())
+        assert taken == []  # nothing checked yet
         run(verifier.check_plan(b.data, db, MONDAY))
+        run(raise_plan())
+        assert taken == []  # the checkup's own line goes first
+        db.mark_sent("checkup", now.date(), b.data.settings.bot.checkup_at)
+        run(raise_plan())  # a check that ended after the checkup still gets its turn
+        run(raise_plan())
+        assert taken == [(-100, b.t("plan_check_turn"))] and driven == [-100]
+        dinner(b.data, D(3), "merluza-cena-1")  # a new plan the same day waits for tomorrow
+        run(verifier.check_plan(b.data, db, MONDAY))
+        run(raise_plan())
+        assert len(taken) == 1
     finally:
         verifier.llm.complete = real
-    run(b.raise_plan(-100))
-    run(b.raise_plan(-100))
-    assert taken == [(-100, b.t("plan_check_turn"))]
+
+
+def test_a_verdict_that_is_not_json_is_not_kept_as_a_check(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+
+    async def garbled(*a, **k):
+        return "I could not check it"
+
+    verifier.llm.complete, real = garbled, verifier.llm.complete
+    try:
+        assert run(verifier.check_plan(b.data, db, MONDAY)) is None
+        assert db.get_kv(verifier.PLAN_KEY) is None
+        _calls, fake = judged({})
+        verifier.llm.complete = fake
+        assert run(verifier.check_plan(b.data, db, MONDAY))["found"] == {}  # all clear is kept
+    finally:
+        verifier.llm.complete = real
+
+
+def test_a_food_someone_avoids_stays_out_of_private_chats_and_the_plan_check(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    from supermealplanner import context
+
+    assert "uses espinaca" in context.facts(b.data, db, MONDAY)  # the group
+    assert "uses espinaca" not in context.facts(b.data, db, MONDAY, "ana")
+    assert "uses espinaca" not in verifier.plan_brief(b.data, db, MONDAY)[0]
 
 
 def test_the_plan_check_runs_in_the_background_at_most_every_ten_minutes(data_dir, tmp_path):
