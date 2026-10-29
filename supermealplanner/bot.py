@@ -158,6 +158,9 @@ DEBOUNCE_S = 2.5
 # a fixed 30 s let a second note miss the turn it belonged to.
 VOICE_WAIT_S = 30
 VOICE_PER_S = 3
+PLAN_RAISED = "verifier.plan_raised"  # {"key", "on"}: the plan last raised in the chat, and the day
+PLAN_RAISE_H = 2  # hours after bot.checkup_at a finished plan check may still raise its problems
+PLAN_EVERY_S = 600  # how often the plan as it stands is checked again (judged only when it changed)
 # A provider that is out of capacity raises an error with `retry_after` (seconds): the chat's messages
 # wait that long, at least BUSY_MIN_S, and are answered then, with nobody writing again.
 BUSY_MIN_S = 60
@@ -279,6 +282,7 @@ class Bot:
         self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
         self.spoken: dict[str, Spoken] = {}  # what was said to the app, by turn id
         self.spoken_rows: dict[int, str] = {}  # chat log row -> the spoken turn it is
+        self.planned_at: float | None = None  # clock() of the last plan check started
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -696,6 +700,11 @@ class Bot:
                 await self.tick_checkup(client)
             except Exception as e:  # noqa: BLE001
                 log.warning("morning checkup failed: %s", safe(e))
+            try:
+                self.tick_plan()
+                await self.raise_plan(client)
+            except Exception as e:  # noqa: BLE001
+                log.warning("plan check failed: %s", safe(e))
             try:
                 await self.expire_asks(client)
                 await self.expire_offers(client)
@@ -2973,7 +2982,13 @@ class Bot:
                 line = t("doctor_reminder_cancelled", when=self._when(r["at"]), text=r["text"])
                 said.setdefault(r["chat"], []).append(line)
         rest = [p for p in found if p.kind not in ("stale_reminder", "unused")]
-        new = [p for p in rest if before is None or p.key not in before]
+        # in the morning, a recipe nobody can eat is left to the AI: it stays true until someone
+        # edits the recipe, and the household may keep it so on purpose
+        new = (
+            [p for p in rest if p.kind != "avoided"]
+            if before is None
+            else [p for p in rest if p.key not in before]
+        )
         if chat_id is not None and new:
             items = "; ".join(self.problem_line(p) for p in new)
             key = "doctor_morning" if before is None else "doctor_new"
@@ -3003,6 +3018,54 @@ class Bot:
             return
         await self.checkup(client, chat)
         self.state.db.mark_sent("checkup", now.date(), cfg.checkup_at)
+
+    def tick_plan(self) -> None:
+        """Every PLAN_EVERY_S, the checks of the plan as it stands (verifier.check_plan) in the
+        background, never while a turn runs; the judgment runs only for a plan it has not seen."""
+        if self.data.settings.llm.provider == "none" or self.running:
+            return
+        if self.planned_at is not None and self.clock() - self.planned_at < PLAN_EVERY_S:
+            return
+        self.planned_at = self.clock()
+        self.spawn(self.check_plan())
+
+    async def check_plan(self) -> None:
+        try:
+            await verifier.check_plan(self.data, self.state.db, self.state.today())
+        except Exception as e:  # noqa: BLE001
+            log.warning("plan check failed: %s", safe(e))
+
+    async def raise_plan(self, client) -> None:
+        """Once a day, in the PLAN_RAISE_H after the morning checkup: when the plan check found
+        problems in the plan as it is, a turn the bot asks itself in bot.checkup_chat, so the chef
+        proposes the fixes in the chat like any change. A check that ends after the checkup still
+        gets its turn that morning; a plan raised once is not raised again."""
+        db, data, cfg = self.state.db, self.data, self.data.settings.bot
+        chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
+        if data.settings.llm.provider == "none" or not cfg.checkup_at or chat is None:
+            return
+        now = dt.datetime.now(self._zone())
+        h, m = (int(x) for x in cfg.checkup_at.split(":"))
+        when = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if not when <= now < when + dt.timedelta(hours=PLAN_RAISE_H):
+            return
+        if not db.was_sent("checkup", now.date(), cfg.checkup_at):
+            return  # after the checkup's own line
+        kept, raised = db.get_kv(verifier.PLAN_KEY) or {}, db.get_kv(PLAN_RAISED) or {}
+        if not kept.get("key") or raised.get("on") == now.date().isoformat():
+            return
+        if raised.get("key") == kept["key"]:
+            return
+        if not await asyncio.to_thread(verifier.plan_findings, data, db, self.state.today()):
+            return
+        # a private checkup chat: the turn is that person's, so it sees only what they may see
+        who = self.person_of(chat) if chat > 0 else None
+        if chat > 0 and who is None:
+            return  # a private chat of no one in the household
+        db.set_kv(PLAN_RAISED, {"key": kept["key"], "on": now.date().isoformat()})
+        user = {"first_name": self.t("plan_check_who")}
+        self.take(chat, user, who, None, self.t("plan_check_turn"), True)
+        self.spawn(self.drive(client, chat))
 
     async def cmd_reminders(self, who, arg, user, chat=None):
         """The chat's reminders still to come, each with a button to cancel it."""
