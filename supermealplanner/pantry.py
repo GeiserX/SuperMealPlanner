@@ -193,20 +193,23 @@ def covered(
 
 def unbought(data: Data, db: DB, plan, day: dt.date) -> list[tuple[Ingredient, Recipe]]:
     """What a dish of `day` needs that its week's list still asks for, unticked, once that week's
-    shopping day has passed: the shop came and went without it, and nothing at home covers it. With
-    the recipe it is for, the first one that day that uses it."""
+    shopping day has passed, and that the pantry does not hold enough of for that day's cooking:
+    the shop came and went without it. With the recipe it is for, the first one that day that uses
+    it."""
     from .portions import amounts, shopping_list
 
     monday = day - dt.timedelta(days=day.weekday())
     shop_day = monday + dt.timedelta(days=WEEKDAYS.index(data.household.shopping_day))
     if day <= shop_day:
         return []
+    shop = shopping_list(data, db, plan, monday, today=day)
+    asked = {x.ingredient.id for s in shop.stores for x in s.lines} - db.ticked(monday)
+    walk = Walk(data, db)
+    stock, _ = walk.run(day)
+    need = walk.uses(day)
     asked = {
-        x.ingredient.id
-        for s in shopping_list(data, db, plan, monday, today=day).stores
-        for x in s.lines
+        iid for iid in asked if sum(x.qty for x in stock.get(iid, [])) + EPS < need.get(iid, 0)
     }
-    asked -= db.ticked(monday)
     out: dict[str, tuple[Ingredient, Recipe]] = {}
     for rid, row in servings_on(data, db, plan, {day}).items():
         rec = data.recipes.get(rid)

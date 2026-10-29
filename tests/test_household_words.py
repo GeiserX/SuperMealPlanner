@@ -6,11 +6,12 @@ cut."""
 import asyncio
 import datetime as dt
 import time
+from zoneinfo import ZoneInfo
 
 from supermealplanner import llm, pantry
 from supermealplanner.db import DB
 from supermealplanner.planner import plan_for
-from supermealplanner.portions import shopping_list
+from supermealplanner.portions import ingredients_of, servings_on, shopping_list
 
 from .conftest import MONDAY
 from .test_menu import planned
@@ -20,6 +21,11 @@ from .test_soak import soaking
 
 def D(n):
     return MONDAY + dt.timedelta(days=n)
+
+
+def at(d, hour=7):
+    """Early on day `d`, before its cooking, as the household's clock reads it."""
+    return dt.datetime(d.year, d.month, d.day, hour, tzinfo=ZoneInfo("Europe/Madrid"))
 
 
 def bot(data_dir, tmp_path, today=MONDAY):
@@ -75,6 +81,12 @@ def test_the_morning_menu_says_what_a_dish_still_needs_bought_after_the_shop(dat
     text = b.menu_text(plan, day)
     assert "🛒" in text and f"{ing.name} ({rec.name})" in text
     assert f"https://meals.example/list?d={day}" in text
+    # enough at home for today's cooking (but not the week's): not missing either
+    used_today = ingredients_of(data, servings_on(data, db, plan, {day}))[ing.id]
+    pantry.correct(data, db, {ing.id: used_today + 1}, at(day))
+    still = shopping_list(data, db, plan, MONDAY, today=day)
+    assert ing.id in {x.ingredient.id for s in still.stores for x in s.lines}  # the week still asks
+    assert ing.id not in {i.id for i, _ in pantry.unbought(data, db, plan, day)}
     # bought: ticked on the list, it is no longer missing
     for iid, _ in [(i.id, r) for i, r in missing]:
         db.tick(MONDAY, iid, True)
