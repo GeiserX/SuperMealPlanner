@@ -162,6 +162,8 @@ reminder_batch: "🍲 Esta tarde toca cocinar por adelantado:\n\n{dishes}\n\nHoj
 reminder_batch_morning: "🍲 Mañana por la mañana toca cocinar por adelantado:\n\n{dishes}\n\nHoja: {url}"
 reminder_soak: "🫘 Esta noche deja en remojo para cocinar mañana por adelantado:\n{items}\nHoja: {url}"
 reminder_soak_item: "• {name}: {amount}, para {dish}"
+reminder_thaw: "🧊 Esta noche saca del congelador lo de mañana y déjalo descongelar en la nevera o en la encimera (el pan también se puede tostar congelado justo antes de comer):\n{items}\nDía: {url}"
+reminder_thaw_item: "• {name}: {amount} ({meal}: {dish})"
 reminder_meal: "🍽️ {meal} de hoy: {dish}. {where}\n{url}"
 reminder_shopping: "🛒 Hoy toca compra. Lista: {url}"
 reminder_pills_lunch: "💊 {name}, ¿te has tomado las pastillas de la comida? Responde /pastillas cuando lo hagas."

@@ -67,7 +67,14 @@ from . import __version__, changes, context, doctor, gestures, llm, menu, pantry
 from .i18n import Translator
 from .model import WEEKDAYS
 from .planner import ICONS, day_menu, paused_days, plan_for
-from .portions import batch_dish_text, batch_sheet, person_days, shopping_list, soak_for
+from .portions import (
+    batch_dish_text,
+    batch_sheet,
+    person_days,
+    shopping_list,
+    soak_for,
+    thaw_for,
+)
 
 log = logging.getLogger("supermealplanner.bot")
 API = "https://api.telegram.org/bot{token}/{method}"
@@ -2565,7 +2572,11 @@ class Bot:
                 return None
             return t("reminder_shopping", url=self.url(f"/list?d={day.isoformat()}"))
         if r.kind == "batch":
-            said = [x for x in (self.batch_reminder(plan, day), self.soak_text(day)) if x]
+            said = [
+                x
+                for x in (self.batch_reminder(plan, day), self.soak_text(day), self.thaw_text(day))
+                if x
+            ]
             return "\n\n".join(said) or None
         if not plan:
             return None
@@ -2678,6 +2689,29 @@ class Bot:
             for x in soaks
         )
         return t("reminder_soak", items=items, url=self.url(f"/batch?d={tomorrow.isoformat()}"))
+
+    def thaw_text(self, day: dt.date) -> str | None:
+        """The evening before a day whose meals use something kept frozen (bread): take it out
+        tonight, even when today is paused."""
+        t = self.t
+        tomorrow = day + dt.timedelta(days=1)
+        if tomorrow in paused_days(self.data):
+            return None
+        plan = plan_for(self.data, tomorrow)
+        thaws = thaw_for(self.data, self.state.db, plan, tomorrow) if plan else []
+        if not thaws:
+            return None
+        items = "\n".join(
+            t(
+                "reminder_thaw_item",
+                name=x.ingredient.name,
+                amount=x.amount,
+                meal=t("meal_" + x.meal),
+                dish=x.recipe.name,
+            )
+            for x in thaws
+        )
+        return t("reminder_thaw", items=items, url=self.url(f"/?d={tomorrow.isoformat()}"))
 
     def batch_text(self, data, plan, day: dt.date, session) -> str:
         """The session's dishes, one block each: servings, cooking time, lunches, split by person."""

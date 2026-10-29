@@ -286,7 +286,7 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
     after = {
         "menu": doctor_menu(data, t, today),
         "sessions": sessions_now(data, plans, monday),
-        "reminders": reminders_now(data, db, monday),
+        "reminders": reminders_now(data, db, monday) + thaw_now(data, dishes),
         "recipes": recipe_texts(data, dishes),
     }
     text = brief(data, today, PLAN_ANSWER, problems, after, None)
@@ -353,6 +353,35 @@ def reminders_now(data: Data, db: DB, monday: dt.date) -> list[str]:
             row |= {"recipe": r["recipe"], "date": r["date"]}
         out.append("- " + json.dumps(row, ensure_ascii=False))
     return out
+
+
+def thaw_now(data: Data, dishes: set[str]) -> list[str]:
+    """What the app's own cooking reminder says every evening without a chat reminder: what to
+    take out of the freezer for the next day's meals. A thaw it says is not missing."""
+    at = sorted(
+        {
+            x
+            for r in data.settings.reminders
+            if r.kind == "batch" and r.enabled and r.days == "daily"
+            for x in r.at
+        }
+    )
+    frozen = sorted(
+        {
+            data.ingredients[i.id].name
+            for rid in dishes
+            if rid in data.recipes
+            for i in data.recipes[rid].ingredients
+            if data.ingredients[i.id].frozen
+        }
+    )
+    if not at or not frozen:
+        return []
+    said = (
+        f"- The evening before, at {', '.join(at)}, the cooking reminder says what to take out of"
+        f" the freezer for the next day's meals: {', '.join(frozen)}."
+    )
+    return ["", "## Said by the app itself", said]
 
 
 async def check_plan(data: Data, db: DB, today: dt.date) -> dict | None:
