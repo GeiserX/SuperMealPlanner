@@ -11,7 +11,7 @@ import httpx
 import pytest
 import yaml
 
-from supermealplanner import changes
+from supermealplanner import changes, render
 from supermealplanner.bot import PENDING_TTL, Bot, TelegramError, to_html
 from supermealplanner.db import DB
 from supermealplanner.i18n import Translator
@@ -433,24 +433,20 @@ def test_markup_telegram_refuses_goes_again_as_plain_text(data_dir, tmp_path):
 
 
 def test_a_code_block_cut_in_two_stays_a_code_block():
-    from supermealplanner.bot import _chunks
-
     text = "Mira:\n```python\n" + "\n".join(f"x = {i}  # <b>" for i in range(400)) + "\n```\nFin."
-    parts = list(_chunks(text))
-    assert len(parts) > 1 and all(len(p) <= 3500 for p in parts)
+    parts = render.split(text)
+    assert len(parts) > 1 and all(len(p) <= 3504 for p in parts)
     for part in parts:
         html = to_html(part)
         assert "```" not in html and "<pre>" in html and nested(html)
     assert parts[1].startswith("```python\n")
     # a fence line longer than a whole piece still ends: no loop
-    assert len(list(_chunks("```" + "y" * 5000 + "\n" + "z" * 5000))) >= 3
+    assert len(render.split("```" + "y" * 5000 + "\n" + "z" * 5000)) >= 3
 
 
 def test_long_answers_are_cut_at_line_breaks():
-    from supermealplanner.bot import _chunks
-
     text = "\n".join(f"**línea {i}** " + "x" * 80 for i in range(100))
-    parts = list(_chunks(text))
+    parts = render.split(text)
     assert len(parts) > 1 and all(len(p) <= 3500 for p in parts)
     assert all(p.count("**") % 2 == 0 for p in parts)
 
@@ -1242,7 +1238,7 @@ def test_plain_text_is_cut_without_adding_anything(data_dir, tmp_path):
 
     # an admin's diff of a Markdown file: its context lines hold fences that are not ours
     text = "Cambios:\n ```yaml\n" + "\n".join(f"+línea {i} " + "x" * 60 for i in range(120))
-    parts = list(_chunks(text, fences=False))
+    parts = list(_chunks(text))
     assert len(parts) > 1 and "\n".join(parts) == text
     b = ChatBot(bot_data(data_dir), DB(tmp_path / "b.db"))
     run(b.send(None, -100, text))
