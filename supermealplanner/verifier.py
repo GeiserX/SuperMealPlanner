@@ -100,7 +100,9 @@ ONLY_PROPOSAL = (
 )
 PLAN_SCOPE = """
 Here there is no proposal: the menu of this week and the next is checked as it stands, the plan
-the app made and every change since. Every real problem in it counts.
+the app made and every change since. Every real problem in it counts. What you put in timeline
+and nonsense is read by every person, in their own chat too: never name there anyone's notes,
+health or the foods they avoid; those go in wishes or health.
 """
 
 REVISE = """[The app checked your answer before anyone saw it; nobody has seen it yet.] It found:

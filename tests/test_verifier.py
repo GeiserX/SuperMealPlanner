@@ -421,6 +421,35 @@ def test_the_morning_raises_what_the_plan_check_found_once_a_day(data_dir, tmp_p
         verifier.llm.complete = real
 
 
+def test_a_private_checkup_chat_gets_the_plan_turn_as_its_person_or_not_at_all(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    now = dt.datetime.now(ZONE)
+    cfg = b.data.settings.bot
+    cfg.checkup_at = f"{now:%H:%M}"
+    db.mark_sent("checkup", now.date(), cfg.checkup_at)
+    taken = []
+    b.take = lambda chat, user, who, msg, text, asked, **k: taken.append((chat, who))
+
+    async def drive(client, chat):
+        pass
+
+    b.drive = drive
+    _calls, fake = judged({"nonsense": ["The oven is used twice at once"]})
+    verifier.llm.complete, real = fake, verifier.llm.complete
+    try:
+        run(verifier.check_plan(b.data, db, MONDAY))
+        cfg.checkup_chat = 99  # a private chat of no one in the household
+        run(b.raise_plan(None))
+        assert taken == [] and db.get_kv("verifier.plan_raised") is None
+        cfg.checkup_chat = cfg.people["ana"]
+        run(b.raise_plan(None))
+        assert taken == [(cfg.people["ana"], "ana")]
+    finally:
+        verifier.llm.complete = real
+    system = verifier.VERIFY.format(scope=verifier.PLAN_SCOPE, only="")
+    assert "never name there anyone's notes" in system
+
+
 def test_a_verdict_that_is_not_json_is_not_kept_as_a_check(data_dir, tmp_path):
     b, db = vsetup(data_dir, tmp_path)
 

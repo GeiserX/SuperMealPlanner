@@ -3058,9 +3058,13 @@ class Bot:
             return
         if not await asyncio.to_thread(verifier.plan_findings, data, db, self.state.today()):
             return
+        # a private checkup chat: the turn is that person's, so it sees only what they may see
+        who = self.person_of(chat) if chat > 0 else None
+        if chat > 0 and who is None:
+            return  # a private chat of no one in the household
         db.set_kv(PLAN_RAISED, {"key": kept["key"], "on": now.date().isoformat()})
         user = {"first_name": self.t("plan_check_who")}
-        self.take(chat, user, None, None, self.t("plan_check_turn"), True)
+        self.take(chat, user, who, None, self.t("plan_check_turn"), True)
         self.spawn(self.drive(client, chat))
 
     async def cmd_reminders(self, who, arg, user, chat=None):
