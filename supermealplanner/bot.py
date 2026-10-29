@@ -2722,6 +2722,7 @@ class Bot:
                 meal=t("meal_" + x.meal),
                 dish=x.recipe.name,
             )
+            + f"\n  {self.recipe_url(x.recipe.id, tomorrow)}"
             for x in thaws
         )
         return t("reminder_thaw", items=items, url=self.url(f"/?d={tomorrow.isoformat()}"))

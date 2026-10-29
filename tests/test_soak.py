@@ -125,6 +125,8 @@ def test_the_batch_reminder_says_what_to_take_out_of_the_freezer_the_evening_bef
     assert f"({meal.capitalize()}: {data.recipes[rid].name})" in lines[0]
     assert int(lines[0].split(": ")[1].split(" g")[0]) >= 150  # every eater's share
     assert f"/?d={hit.date}" in said
+    after = said.splitlines()[said.splitlines().index(lines[0]) + 1]
+    assert after.strip().endswith(f"/recipe/{rid}?d={hit.date}")  # the dish's recipe, one tap away
     assert "🧊" not in (b.reminder_text(batch, miss.date - dt.timedelta(days=1)) or "")
     # tomorrow paused: nothing is eaten, nothing to take out
     change(data, {"pause": {"from": str(hit.date), "to": str(hit.date)}}, today=eve)
