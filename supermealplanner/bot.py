@@ -181,6 +181,7 @@ OPTIONS_TTL = 12 * 3600  # a choice can be tapped this long
 OPTIONS_KEEP = 20
 REMIND = "bot.remind"  # reminders offered with buttons and not yet settled, across every chat
 REMIND_TTL = 1800  # an offer can be tapped this long; then nothing is done
+REMIND_WHAT = 20  # characters of a reminder's text on its buttons
 REMIND_DAYS = 60  # the furthest ahead a reminder may be
 LATE_S = 600  # a reminder posted this much after its time says so
 # A spoken turn from the app (POST /api/v1/chef): the message it becomes carries its id under this
@@ -2706,23 +2707,31 @@ class Bot:
         return [o for o in self.state.db.get_kv(REMIND) or [] if isinstance(o, dict)]
 
     def _remind_rows(self, key: str, items: list[dict]) -> list[list[tuple[str, str]]]:
-        """Each reminder's buttons (here, in the calendar, nothing), or one inert button saying
-        what became of it. Without the calendar only «here» is offered: an offer nobody taps
-        does nothing anyway, and the offer says so."""
-        t, rows = self.t, []
+        """Each reminder's buttons (here, in the calendar, nothing), each on its own row and saying
+        what it sets (_remind_label), or one inert button saying what became of it. Without the
+        calendar only «here» is offered: an offer nobody taps does nothing anyway, and the offer
+        says so."""
+        rows = []
         calendar = self.data.settings.bot.reminder_calendar
         for n, r in enumerate(items):
-            pre = f"{n + 1} · " if len(items) > 1 else ""
             if r.get("done"):
-                rows.append([(f"✓ {pre}{t('remind_' + r['done'])}", "x")])
+                rows.append([("✓ " + self._remind_label(r, r["done"]), "x")])
                 continue
-            first = [(pre + t("remind_here"), f"r:{key}:{n}h")]
-            if not calendar:
-                rows.append(first)
-                continue
-            first.append((pre + t("remind_calendar"), f"r:{key}:{n}c"))
-            rows += [first, [(pre + t("remind_nothing"), f"r:{key}:{n}x")]]
+            rows.append([(self._remind_label(r, "here"), f"r:{key}:{n}h")])
+            if calendar:
+                rows.append([(self._remind_label(r, "calendar"), f"r:{key}:{n}c")])
+                rows.append([(self._remind_label(r, "nothing"), f"r:{key}:{n}x")])
         return rows
+
+    def _remind_label(self, r: dict, choice: str) -> str:
+        """A reminder button: "🔔 Mon 2, 21:30 · Soak the chickpeas", so two reminders' buttons
+        never read the same. Short enough for a button on its own row (REMIND_WHAT)."""
+        local = dt.datetime.fromtimestamp(r["at"], self._zone())
+        when = f"{self.t.raw('days_short')[local.weekday()]} {local.day}, {local:%H:%M}"
+        what = " ".join(str(r.get("text") or "").split())
+        if len(what) > REMIND_WHAT:
+            what = what[: REMIND_WHAT - 1].rsplit(" ", 1)[0].rstrip(" ,.;:") + "…"
+        return self.t(f"remind_{choice}", when=when, what=what)
 
     def chat_reminders(self, chat_id: int) -> str:
         """The reminders set in this chat still to come, with their ids, so the AI can cancel the
@@ -2775,6 +2784,8 @@ class Bot:
             (f"{n + 1}. " if many else "") + f"{self._when(r['at'])}: {r['text']}"
             for n, r in enumerate(items)
         ]
+        if self.data.settings.bot.reminder_calendar:  # what the two buttons' signs mean
+            lines.append(t("remind_legend"))
         persons = list(dict.fromkeys(r["person"] for r in items if r["person"]))
         names = ", ".join(self.mention(p) for p in persons)
         key = secrets.token_hex(4)
