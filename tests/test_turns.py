@@ -410,7 +410,9 @@ def test_choices_are_buttons_a_tap_is_the_askers_next_message(data_dir, tmp_path
     cfg(data_dir, text="¿Cuál prefieres el lunes?\n\n```options\n- Lentejas\n- Garbanzos\n```")
     run(b.handle(None, msg("@chefbot ¿qué hago el lunes?", message_id=1)))
     answer = sends(b, -100)[-1]
-    assert "```options" not in answer["text"] and "Or tell me something else." in answer["text"]
+    assert "```options" not in answer["text"]
+    # the buttons say what they do: no extra line under the question
+    assert answer["text"].endswith("¿Cuál prefieres el lunes?")
     lentejas, garbanzos = buttons(answer)
     assert lentejas["text"] == "Lentejas"
     mid = 1000 + len(b.calls)

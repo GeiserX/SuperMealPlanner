@@ -1380,7 +1380,7 @@ class Bot:
         sent = await self.send(
             client,
             chat_id,
-            f"{shown}\n\n_{self.t('options_hint')}_",
+            shown,
             reply_to,
             markdown=True,
             who=AI,
