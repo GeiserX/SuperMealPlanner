@@ -343,14 +343,40 @@ def test_the_plan_check_sees_when_each_session_cooks_and_the_reminders_already_s
     x = s.dishes[0]
     eat = ", ".join(e.isoformat() for e in x.eat)
     assert f"{s.date.isoformat()}, after lunch: " in text and f"{x.recipe} for {eat}" in text
-    assert "## Reminders already set" not in text
+    assert "## Reminders set in the household chat" not in text
     at = dt.datetime.combine(s.date, dt.time(21, 30), ZONE).timestamp()
     db.add_reminder(
         b.data.settings.bot.chat_id, "ana", at, "Remojo", recipe=x.recipe, date=eat[:10]
     )
     text, again = verifier.plan_brief(b.data, db, MONDAY)
-    assert f"{s.date.isoformat()} 21:30: Remojo (about {x.recipe} on {eat[:10]})" in text
+    row = {"when": f"{s.date:%A} {s.date.isoformat()} 21:30", "state": "pending", "text": "Remojo"}
+    assert json.dumps(row | {"recipe": x.recipe, "date": eat[:10]}, ensure_ascii=False) in text
     assert again != key  # a reminder set since is a new plan to check
+
+
+def test_a_reminder_already_sent_still_covers_its_step(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    chat = b.data.settings.bot.chat_id
+    at = dt.datetime.combine(MONDAY, dt.time(9, 0), ZONE).timestamp()
+    before = dt.datetime.combine(MONDAY - dt.timedelta(days=1), dt.time(9, 0), ZONE).timestamp()
+    db.settle_reminder(db.add_reminder(chat, "ana", at, "Remojo hecho"), "sent")
+    db.settle_reminder(db.add_reminder(chat, "ana", before, "Semana pasada"), "sent")
+    db.add_reminder(chat + 1, "ana", at, "Otro chat")
+    text, _ = verifier.plan_brief(b.data, db, MONDAY)
+    assert '"state": "sent", "text": "Remojo hecho"' in text
+    assert "Semana pasada" not in text and "Otro chat" not in text
+    db.set_kv("bot.migrated_chat", {"from": chat, "to": chat + 1})  # the group moved
+    assert "Otro chat" in verifier.plan_brief(b.data, db, MONDAY)[0]
+
+
+def test_a_long_finding_is_cut_at_a_sentence_end_never_mid_sentence():
+    first = "Mueve el remojo al viernes a las 21:30. " * 15
+    long = first + "Y esta frase sigue y sigue sin acabar nunca " * 10
+    out = verifier.parse(json.dumps({"timeline": [long, "Corto."]}))["timeline"]
+    assert len(out[0]) <= verifier.PROBLEM_CHARS and out[0].endswith("21:30.")
+    assert out[1] == "Corto."
+    words = verifier.clip("palabra " * 200)
+    assert len(words) <= verifier.PROBLEM_CHARS + 1 and words.endswith("palabra…")
 
 
 def test_recipes_too_long_to_send_are_named_rather_than_judged_by_name(data_dir, tmp_path):

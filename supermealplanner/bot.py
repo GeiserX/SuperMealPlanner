@@ -2481,7 +2481,7 @@ class Bot:
                 return None
             return t("reminder_shopping", url=self.url(f"/list?d={day.isoformat()}"))
         if r.kind == "batch":
-            said = [x for x in (plan and self.batch_reminder(plan, day), self.soak_text(day)) if x]
+            said = [x for x in (self.batch_reminder(plan, day), self.soak_text(day)) if x]
             return "\n\n".join(said) or None
         if not plan:
             return None
@@ -2543,10 +2543,11 @@ class Bot:
     def batch_reminder(self, plan, day: dt.date) -> str | None:
         """Today's afternoon session and tomorrow morning's: a session cooked the morning a lunch
         is eaten (a Saturday before lunch, the first day back from a pause) is said the evening
-        before, or nobody hears of it."""
+        before, or nobody hears of it. Not when the chat already set its own reminder about it
+        for that evening."""
         t, data = self.t, self.data
         said = []
-        for s in plan.sessions:
+        for s in plan.sessions if plan else []:
             if s.date == day and not s.morning:
                 dishes = self.batch_text(data, plan, day, s)
                 if dishes:  # every dish deleted: nothing to remind about yet
@@ -2554,14 +2555,30 @@ class Bot:
                     said.append(t("reminder_batch", dishes=dishes, url=url))
                     break
         tomorrow = day + dt.timedelta(days=1)
-        for s in plan.sessions:
-            if s.date == tomorrow and s.morning and tomorrow not in paused_days(data):
-                dishes = self.batch_text(data, plan, tomorrow, s)
+        later = plan_for(data, tomorrow)  # tomorrow may start the next plan
+        for s in later.sessions if later and tomorrow not in paused_days(data) else []:
+            if s.date == tomorrow and s.morning and not self._session_reminded(s, day):
+                dishes = self.batch_text(data, later, tomorrow, s)
                 if dishes:
                     url = self.url(f"/batch?d={tomorrow.isoformat()}")
                     said.append(t("reminder_batch_morning", dishes=dishes, url=url))
                     break
         return "\n\n".join(said) or None
+
+    def _session_reminded(self, session, day: dt.date) -> bool:
+        """A reminder set in the chat about one of the session's dishes (its recipe and a day it
+        is eaten), due the evening of `day`: the chat already said it."""
+        zone = self._zone()
+        start = dt.datetime.combine(day, dt.time(12, 0), zone).timestamp()
+        end = dt.datetime.combine(day + dt.timedelta(days=1), dt.time(), zone).timestamp()
+        dishes = {(x.recipe, e.isoformat()) for x in session.dishes for e in x.eat}
+        rows = [
+            *self.state.db.reminders(self.chat_id),
+            *self.state.db.reminders(self.chat_id, "sent"),
+        ]
+        return any(
+            start <= r["at"] < end and (r.get("recipe"), r.get("date")) in dishes for r in rows
+        )
 
     def soak_text(self, day: dt.date) -> str | None:
         """The eve of a batch session: the dried pulses to leave in water tonight, even when

@@ -307,6 +307,10 @@ def test_the_batch_reminder_sounds_the_eve_of_a_session_cooked_the_morning_of_it
     assert any(s.date == D(3) and s.morning for s in plan_for(data, D(3)).sessions)
     said = b.reminder_text(batch, D(2))  # not a paused day: the eve still says it
     assert said and said.startswith("🍲 Batch cooking tomorrow morning") and lunch.name in said
+    # the chat set its own reminder about that session for this evening: it is not said twice
+    at = dt.datetime.combine(D(2), dt.time(21, 30), b._zone()).timestamp()
+    b.state.db.add_reminder(b.chat_id, "ana", at, "Mañana cocinas", recipe=lunch.id, date=str(D(3)))
+    assert b.reminder_text(batch, D(2)) is None
 
 
 def test_the_shopping_reminder_goes_when_part_of_the_week_is_still_planned(data_dir, tmp_path):
