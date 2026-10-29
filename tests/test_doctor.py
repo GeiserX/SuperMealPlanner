@@ -24,8 +24,12 @@ def D(n):
     return MONDAY + dt.timedelta(days=n)
 
 
+# the synthetic library keeps a lunch with a food luis avoids, to show the planner leaves it out
+AVOIDED = "avoided:espinacas-con-garbanzos:espinaca"
+
+
 def keys(data, db, today=MONDAY):
-    return [p.key for p in doctor.problems(data, db, today)]
+    return [p.key for p in doctor.problems(data, db, today) if p.key != AVOIDED]
 
 
 def household(data_dir, **batch):
@@ -43,8 +47,34 @@ def edit_plan(data, fn):
 
 def test_a_fresh_plan_has_no_problems(data_dir, tmp_path):
     b, db = setup(data_dir, tmp_path)
-    assert doctor.problems(b.data, db, MONDAY) == []
-    assert "Problems the app found" not in context.facts(b.data, db, MONDAY)
+    assert keys(b.data, db) == []
+    retire(data_dir, "espinacas-con-garbanzos")
+    assert doctor.problems(load(data_dir), db, MONDAY) == []
+    assert "Problems the app found" not in context.facts(load(data_dir), db, MONDAY)
+
+
+def retire(data_dir, rid, **fields):
+    path = data_dir / "recipes" / f"{rid}.yaml"
+    raw = yaml.safe_load(path.read_text())
+    path.write_text(yaml.safe_dump({**raw, "meals": [], **fields}, allow_unicode=True))
+
+
+# ---------------------------------------------------------------- recipes nobody can have
+
+
+def test_a_recipe_with_a_food_someone_avoids_is_flagged_without_saying_who(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    (p,) = [p for p in doctor.problems(b.data, db, MONDAY) if p.kind == "avoided"]
+    assert p.key == AVOIDED and "espinacas-con-garbanzos" in p.text
+    line = b.problem_line(p)
+    assert "Espinaca" in line and "luis" not in (p.text + line).lower()
+    assert "espinacas-con-garbanzos uses espinaca" in context.facts(b.data, db, MONDAY)
+    # swapping the food clears it; so does retiring the recipe
+    items = [{"id": "tomate", "qty": 100}, {"id": "garbanzo", "qty": 70}]
+    retire(data_dir, "espinacas-con-garbanzos", meals=["lunch"], ingredients=items)
+    assert AVOIDED not in [p.key for p in doctor.problems(load(data_dir), db, MONDAY)]
+    retire(data_dir, "espinacas-con-garbanzos")
+    assert not [p for p in doctor.problems(load(data_dir), db, MONDAY) if p.kind == "avoided"]
 
 
 # ---------------------------------------------------------------- batch days

@@ -1334,3 +1334,23 @@ def test_a_version_nobody_was_told_about_is_tried_again_at_the_next_start(
     later = ChatBot(data, db)
     run(later.announce_version(None))
     assert ChatBot.texts(later) == ["Now running version 3.0.0."]
+
+
+def test_a_recipe_change_shows_the_steps_that_change_not_only_how_many(data_dir):
+    data = load(data_dir)
+    rid = next(iter(data.recipes))
+    long = "Asa el pimiento en la freidora de aire a 200 grados durante quince minutos, " * 3
+    p = changes.parse({"recipes": {rid: {"steps": ["Cocinar en el horno.", long]}}}, data, "luis")
+    head, *steps = changes.describe(p, data, Translator("es"))
+    assert head.endswith(", pasos:")
+    assert steps == [
+        "  − 1. Cocinar.",
+        "  + 1. Cocinar en el horno.",
+        f"  + 2. {long[:89].rstrip()}…",
+    ]
+    same = changes.parse({"recipes": {rid: {"steps": ["Cocinar."]}}}, data, "luis")
+    assert changes.describe(same, data, Translator("es"))[0].endswith(": los mismos pasos")
+    many = [f"Paso {n}." for n in range(9)]
+    p = changes.parse({"recipes": {rid: {"steps": many}}}, data, "luis")
+    lines = changes.describe(p, data, Translator("es"))
+    assert len(lines) == 1 + 6 + 1 and lines[-1] == "  … y 4 más"

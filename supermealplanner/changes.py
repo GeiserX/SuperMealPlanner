@@ -438,6 +438,13 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
         r = data.recipes[rid]
         for key, value in fields.items():
             old = getattr(r, key, None)
+            if key == "steps" and isinstance(value, list):  # the steps that change, in words
+                what = "• " + t(
+                    "change_recipe_edit", name=r.name, field=t(f"change_recipe_field_{key}")
+                )
+                diff = _steps_diff(_plain(old) or [], value, t)
+                lines += [f"{what}:", *diff] if diff else [f"{what}: {t('change_steps_same')}"]
+                continue
             lines.append(
                 "• "
                 + t("change_recipe_edit", name=r.name, field=t(f"change_recipe_field_{key}"))
@@ -479,13 +486,11 @@ def _plain(value):
 
 
 def _recipe_value(key: str, value, t) -> str:
-    """A recipe field in a line of chat: the long ones as a count, the rest in full."""
+    """A recipe field in a line of chat (the steps have their own lines, _steps_diff)."""
     if value is None or value in ("", []):
         return t("change_none")
     if key == "meals" and isinstance(value, list):
         return ", ".join(t(f"meal_{m}").lower() if m in MEALS else str(m) for m in value)
-    if key == "steps" and isinstance(value, list):
-        return t("change_recipe_steps", n=len(value))
     if key == "ingredients" and isinstance(value, list):
         return ", ".join(
             f"{i.get('id')} {i.get('qty'):g}" if isinstance(i.get("qty"), int | float) else str(i)
@@ -498,6 +503,45 @@ def _recipe_value(key: str, value, t) -> str:
 
 
 MEALS = ("breakfast", "lunch", "dinner", "snack")
+
+
+STEP_CLIP = 90  # characters of a changed step shown in a change's summary
+STEP_LINES = 6  # changed steps shown per recipe; the rest are counted
+
+
+def _steps_diff(old: list, new: list, t) -> list[str]:
+    """The steps a recipe change removes (−) and adds (+), numbered, each clipped to STEP_CLIP."""
+    old, new = [str(x) for x in old], [str(x) for x in new]
+    out = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=old, b=new, autojunk=False).get_opcodes():
+        if op == "equal":
+            continue
+        out += [f"  − {n + 1}. {_clip(old[n])}" for n in range(i1, i2)]
+        out += [f"  + {n + 1}. {_clip(new[n])}" for n in range(j1, j2)]
+    if len(out) > STEP_LINES:
+        out = [*out[:STEP_LINES], "  " + t("change_more_lines", n=len(out) - STEP_LINES)]
+    return out
+
+
+def _clip(text: str) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= STEP_CLIP else text[: STEP_CLIP - 1].rstrip() + "…"
+
+
+def touches(p: Proposal) -> set[tuple]:
+    """What a change sets, so a newer change can tell which waiting one it outdates."""
+    out: set[tuple] = {("set", e.file, *e.keys) for e in p.edits}
+    if p.recipe is not None:
+        out.add(("recipe", str(p.recipe.get("id"))))
+    out |= {("recipe", rid) for rid in p.recipes}
+    out |= {("note", pid, text) for _op, pid, text in p.notes}
+    for op in p.plan:
+        if op.kind == "set":
+            out.add(("plan", str(op.args["date"]), op.args["meal"]))
+        else:
+            out.add(("plan", op.kind, *sorted(f"{k}={v}" for k, v in op.args.items())))
+    out |= {("pantry", iid) for iid in p.pantry}
+    return out
 
 
 def _text_diff(old: str, new: str) -> list[str]:

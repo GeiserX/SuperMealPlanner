@@ -256,7 +256,9 @@ change_recipe_field_video: vídeo
 change_recipe_field_steps: pasos
 change_recipe_field_ingredients: ingredientes
 change_recipe_field_nutrition: valores nutricionales
-change_recipe_steps: "{n} pasos"
+change_steps_same: "los mismos pasos"
+change_more_lines: "… y {n} más"
+change_replaced: "Sustituido por un cambio más reciente"
 change_note_add: "Nota sobre {name}: {text}"
 change_note_remove: "Nota sobre {name} eliminada: {text}"
 recipe_replan_failed: "La receta está guardada, pero no he podido quitarla de los días ya planificados: la mantienen hasta que me pidáis cambiarlos."
@@ -296,14 +298,15 @@ ask_edited: "Has editado tu mensaje, así que no he hecho este cambio. No he cam
 # recordatorios que ofrece la IA, /recordatorios
 remind_offer: "{name}, ¿quieres que te lo recuerde?\n{lines}\n\nSi no respondes, no hago nada."
 remind_offer_nobody: "¿Quieres que lo recuerde?\n{lines}\n\nSi no respondes, no hago nada."
-remind_here: "Recordatorio aquí"
-remind_calendar: "En el calendario"
-remind_nothing: "No"
-remind_timeout: "Sin respuesta: nada"
+remind_here: "🔔 {when} · {what}"
+remind_legend: "🔔 recordatorio aquí · 📅 en el calendario"
+remind_calendar: "📅 {when} · {what}"
+remind_nothing: "✕ No · {what}"
+remind_timeout: "Sin respuesta · {what}"
 remind_set: "Te lo recuerdo aquí el {when}."
 remind_set_log: "⏰ Recordatorio puesto para el {when}: {text}"
 remind_cancelled: "🗑 Recordatorio quitado, ya no vale: {when}: {text}"
-remind_calendar_turn: "Añade al calendario un evento para este recordatorio, una sola vez, el {when} ({iso}): «{text}». Te lo pido con el botón «En el calendario» del recordatorio."
+remind_calendar_turn: "Añade al calendario un evento para este recordatorio, una sola vez, el {when} ({iso}): «{text}». Te lo pido con el botón 📅 (en el calendario) del recordatorio."
 reminder_when: "{date}, {time}"
 reminder_late: "(con retraso: era para el {when})"
 reminders_none: "No hay recordatorios pendientes en este chat. Los avisos fijos están en /presentacion."
@@ -312,7 +315,7 @@ reminders_cancel: "Cancelar {n}"
 reminders_cancelled: "Cancelado {n}"
 reminder_cancelled: "Cancelado."
 reminder_cancelled_log: "⏰ Recordatorio cancelado: {when}: {text}"
-ask_preapproved: "Aprobado al pulsar «En el calendario»:\n{summary}"
+ask_preapproved: "Aprobado al pulsar 📅 (en el calendario):\n{summary}"
 bot_about_once: "⏰ Recordatorios\nCuando os digo que hagáis algo a una hora, os ofrezco un recordatorio con botones; si no respondéis, no hago nada. /recordatorios enseña los que hay y deja cancelarlos."
 bot_cmd_reminders: "Los recordatorios pendientes, para cancelarlos"
 reminder_not_yours: "Solo la casa o quien lo puso puede cancelar un recordatorio."
@@ -357,7 +360,9 @@ voice_reminders: "Te he propuesto recordatorios en Telegram; tócalos allí si l
 voice_failed: "No he podido contestar a eso. Prueba otra vez en un minuto."
 voice_heard_group: "🎙️ {name} (por voz): {text}"
 review_who: "revisión semanal"
-review_turn: "[Revisión semanal, automática: no lo ha escrito nadie] Revisa la semana del {week} ({d}) antes de la compra de la semana, día a día: que el menú cumple todo lo que hemos pedido en el chat y en las instrucciones (lo que le gusta y no le gusta a cada uno, la salud de cada uno, los invitados, los días sin cocinar), que no se desperdicia nada de lo comprado o de lo que hay en casa (lo comprado que no usa ningún plato entra en el menú antes de que se estropee), que cada sesión de cocinar por adelantado se puede hacer (remojo, descongelar, tiempo) y que la lista está bien. Arregla con cambios del menú lo que no cumpla, sin volver a preguntar lo ya decidido, y escribe un solo mensaje corto al grupo: qué has cambiado y por qué, y qué tiene que hacer cada uno esta semana. Si todo cuadra, dilo en una línea."
+review_turn: "[Revisión semanal, automática: no lo ha escrito nadie] Revisa la semana del {week} ({d}) antes de la compra de la semana, día a día: que el menú cumple todo lo que hemos pedido en el chat y en las instrucciones (lo que le gusta y no le gusta a cada uno, la salud de cada uno, los invitados, los días sin cocinar), que no se desperdicia nada de lo comprado o de lo que hay en casa (lo comprado que no usa ningún plato entra en el menú antes de que se estropee), que cada sesión de cocinar por adelantado se puede hacer (remojo, descongelar, tiempo) y que la lista está bien, y los problemas que ha encontrado la app (en tus datos). Arregla con cambios del menú lo que no cumpla, sin volver a preguntar lo ya decidido, y escribe un solo mensaje corto al grupo: qué has cambiado y por qué, y qué tiene que hacer cada uno esta semana. Si todo cuadra, dilo en una línea."
+plan_check_who: "revisión del plan"
+plan_check_turn: "[Revisión del plan, automática: no lo ha escrito nadie] La revisión del plan tal como está ha encontrado problemas en esta semana y la siguiente (en tus datos, en «Problems the app found»). Arréglalos con cambios del menú, sin volver a preguntar lo ya decidido, y escribe un solo mensaje corto: qué has cambiado y por qué, y qué tiene que hacer cada uno. Lo que no puedas arreglar tú solo va en el mensaje como pregunta."
 
 # the consistency check (doctor.py): what the app found, after a change and in the morning
 doctor_reminder_cancelled: "🗑 Recordatorio cancelado, el menú ya no tiene ese plato: {when}: {text}"
@@ -369,6 +374,7 @@ problem_too_old: "la comida del {date} ({dish}) se cocina el {cook} y no aguanta
 problem_uncooked: "la comida del {date} ({dish}) figura como cocinada el {cook}, pero nadie la cocinó"
 problem_prep_late: "{dish} del {date} cuenta con una sesión de cocina antes de ese día, y no hay ninguna antes"
 problem_prep: "{dish} del {date} necesita algo hecho antes y no hay recordatorio para ello"
+problem_avoided: "{dish} lleva {food}, que alguien de casa no come, así que nunca entra en el menú"
 
 # the virtual pantry (pantry.py): the list page's section and changes from the chat
 pantry_title: "🧺 En la despensa"

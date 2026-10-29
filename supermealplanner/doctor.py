@@ -25,6 +25,8 @@ What it looks at, from today to the end of next week (the menu the AI sees):
 - prep: a dish that needs something done before its day (a dried pulse to soak the night before,
   an `ahead` step) and no reminder linked to that dish and day comes in time. Lunches cooked in a
   batch session are left out: the session's sheet and the batch reminder carry them.
+- avoided: a recipe on some meal that uses a food someone avoids. The planner never picks it, so
+  it never reaches the menu and nothing else ever looks at it again: swap the food or retire it.
 - going_off: food in the pantry (pantry.py) that goes off before any planned dish uses it up,
   the plan cooking as planned up to the end of next week.
 - unused: food ticked as bought that no dish uses (unused_food), as the AI already sees it; food
@@ -56,6 +58,7 @@ KINDS = (
     "uncooked",
     "prep_late",
     "prep",
+    "avoided",
     "stale_reminder",
     "going_off",
     "unused",
@@ -90,6 +93,7 @@ def problems(data: Data, db: DB, today: dt.date, offered: list[dict] | tuple = (
     out = _off_days(data, plans, today, end)
     out += _lunches(data, plans, today, dates)
     out += _prep(data, db, plans, dates, offered)
+    out += _avoided(data)
     out += [p for r in db.reminders() if (p := _stale(data, plans, r))]
     off = _going_off(data, db, plans, today, end)
     out += off
@@ -102,6 +106,29 @@ def problems(data: Data, db: DB, today: dt.date, offered: list[dict] | tuple = (
                 "unused:" + ",".join(left),
                 "Bought and on no dish: " + ", ".join(left),
                 {"food": ", ".join(left)},
+            )
+        )
+    return out
+
+
+def _avoided(data: Data) -> list[Problem]:
+    """Recipes left out of every plan for good by a food someone avoids. Who avoids it is not said:
+    the line goes to the group."""
+    avoided = data.household.avoided()
+    out = []
+    for r in sorted(data.recipes.values(), key=lambda r: r.id):
+        bad = sorted({i.id for i in r.ingredients if i.id in avoided})
+        if not r.meals or not bad:
+            continue
+        food = ", ".join(data.ingredients[i].name for i in bad)
+        out.append(
+            Problem(
+                "avoided",
+                f"avoided:{r.id}:{','.join(bad)}",
+                f"Recipe {r.id} uses {', '.join(bad)}, which someone avoids, so the planner never "
+                "picks it: swap that food in the recipe for one everyone eats, or retire the "
+                "recipe with `meals: []` when the food is what the dish is about.",
+                {"dish": r.name, "food": food},
             )
         )
     return out

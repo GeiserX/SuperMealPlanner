@@ -17,6 +17,11 @@ Two checks:
   the right time for each), (3) health (the health export's allergies, intolerances, diet rules,
   medicines with their food rules and fasting windows), and plain nonsense.
 
+The same checks run on the plan as it stands (check_plan): once for each new or changed menu of
+this week and the next, with the full text of every recipe on it. What they find is kept with the
+plan's key, so the AI sees it among the problems to fix in every turn until the plan changes, and
+the bot raises it once in the morning so the chef proposes the fixes in the chat.
+
 When either finds something, the problems go back to the provider once, in the same conversation,
 and its new answer replaces the first; nobody saw the first. One check and at most one revision per
 answer: what the revision cannot fix, it says in its answer, and a change that still leaves a
@@ -31,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import logging
 import re
@@ -52,7 +58,9 @@ log = logging.getLogger(__name__)
 
 CHECKS = ("wishes", "timeline", "health", "nonsense")
 PROBLEMS_MAX, PROBLEM_CHARS = 8, 400  # per check: a long list is noise, not a check
-RECIPES_MAX = 40_000  # characters of recipe text the judgment gets
+RECIPES_MAX = 150_000  # characters of recipe text the judgment gets; the two weeks fit in it
+PLAN_KEY = "verifier.plan"  # the plan check's findings, with the key of the plan they are about
+PLAN_SEEN = ("timeline", "nonsense")  # what a private chat sees of them: no one's notes or health
 SKIP = (
     "unused",
     "stale_reminder",
@@ -62,7 +70,7 @@ HEALTH_FIELDS = ("allergies", "intolerances", "diet", "meds", "fasting")
 VERIFY = """You check a meal-planning assistant's answer before the household sees it. The answer
 proposes a change to the menu, a recipe or the cooking days. You do not answer the household: you
 list what is wrong with the proposal, so the assistant fixes it.
-
+{scope}
 Make three checks, separately, each on its own, then a fourth:
 1. wishes: does the proposal, and the menu it leaves, match what the household asked for? The
    notes and chat notes of each person, the household's own instructions and the weekly rules
@@ -80,10 +88,21 @@ Make three checks, separately, each on its own, then a fourth:
    air-fryer alternative when the kitchen has one, ultra-processed products where real food would
    do, a device used only because it is there, a contradiction with the rest of the answer.
 
-Only real problems in this proposal, each in one or two sentences: what is wrong and the change
-that fixes it, with the dates and recipe ids. Never a problem about something the proposal does
-not touch and that was already so. Answer with JSON only, no other text:
-{"wishes": [], "timeline": [], "health": [], "nonsense": []}
+Judge a recipe from its text below, never from its name: its ingredients, steps and `ahead`
+steps are there. A recipe whose text is not below is not yours to judge.
+Each problem in one or two sentences: what is wrong and the change that fixes it, with the dates
+and recipe ids. {only} Answer with JSON only, no other text:
+{{"wishes": [], "timeline": [], "health": [], "nonsense": []}}
+"""
+ONLY_PROPOSAL = (
+    "Only real problems in this proposal: never one about something it does not touch and that "
+    "was already so."
+)
+PLAN_SCOPE = """
+Here there is no proposal: the menu of this week and the next is checked as it stands, the plan
+the app made and every change since. Every real problem in it counts. What you put in timeline
+and nonsense is read by every person, in their own chat too: never name there anyone's notes,
+health or the foods they avoid; those go in wishes or health.
 """
 
 REVISE = """[The app checked your answer before anyone saw it; nobody has seen it yet.] It found:
@@ -199,18 +218,27 @@ def _seen(data: Data, sim: Data, today: dt.date, change: dict | None = None) -> 
         rec = change.get("recipe")
         if isinstance(rec, dict) and rec.get("id"):
             touched.add(str(rec["id"]))
-    texts, size = [], 0
-    for rid in sorted(x for x in touched if x and x in sim.recipes):
+    return {"menu": lines, "recipes": recipe_texts(sim, touched)}
+
+
+def recipe_texts(data: Data, ids: set[str]) -> list[str]:
+    """The whole text of each recipe, up to RECIPES_MAX; the ones left out are named, so the check
+    knows they are not shown rather than judging them from their names."""
+    texts, size, left = [], 0, []
+    for rid in sorted(x for x in ids if x and x in data.recipes):
         body = yaml.safe_dump(
-            sim.recipes[rid].model_dump(exclude_none=True, exclude_defaults=True),
+            data.recipes[rid].model_dump(exclude_none=True, exclude_defaults=True),
             allow_unicode=True,
             sort_keys=False,
         )
         if size + len(body) > RECIPES_MAX:
-            break
+            left.append(rid)
+            continue
         texts.append(f"### {rid}\n{body}")
         size += len(body)
-    return {"menu": lines, "recipes": texts}
+    if left:
+        texts.append(f"(Not shown, too long to send: {', '.join(left)}.)")
+    return texts
 
 
 def doctor_menu(data: Data, t: Translator, today: dt.date) -> list[str]:
@@ -227,11 +255,88 @@ async def judge(
 ) -> dict[str, list[str]]:
     """The provider's three checks and the nonsense one, each a list of problems."""
     packet = brief(data, today, answer, problems, after, viewer)
+    system = VERIFY.format(scope="", only=ONLY_PROPOSAL)
     out = await asyncio.wait_for(
-        llm.complete(data, VERIFY, [{"role": "user", "content": packet}]),
+        llm.complete(data, system, [{"role": "user", "content": packet}]),
         timeout=data.settings.llm.timeout_s,
     )
     return parse(out)
+
+
+# ---------------------------------------------------------------- the plan as it stands
+
+PLAN_ANSWER = "(No proposal: the plan of this week and the next as it stands.)"
+
+
+def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
+    """The brief of the plan check and its key. The key leaves out the brief's clock line, so the
+    same plan with the same data and the same problems gives the same key all day."""
+    found = doctor.problems(data, db, today)
+    # a recipe nobody can have is about the library, not this plan, and names someone's food: the
+    # findings of this check reach private chats, so it stays out of the brief
+    problems = [p.text for p in found if p.kind not in (*SKIP, "avoided")]
+    t = Translator(data.locale)
+    monday = today - dt.timedelta(days=today.weekday())
+    plans = Plans(data)
+    dishes: set[str] = set()
+    for i in range(14):
+        day = plans.day(monday + dt.timedelta(days=i))
+        if day:
+            dishes |= {getattr(day, m) for m in MEALS}
+    after = {"menu": doctor_menu(data, t, today), "recipes": recipe_texts(data, dishes)}
+    text = brief(data, today, PLAN_ANSWER, problems, after, None)
+    body = text.split("\n", 1)[1]
+    return text, hashlib.sha256(body.encode()).hexdigest()
+
+
+async def check_plan(data: Data, db: DB, today: dt.date) -> dict | None:
+    """The checks on the plan as it stands, once per plan: {"key", "found", "at"}, kept in the
+    database. Runs the judgment only when the key is new; None when it could not run."""
+    text, key = await asyncio.to_thread(plan_brief, data, db, today)
+    kept = db.get_kv(PLAN_KEY) or {}
+    if kept.get("key") == key:
+        return kept
+    system = VERIFY.format(scope=PLAN_SCOPE, only="")
+    try:
+        out = await asyncio.wait_for(
+            llm.complete(data, system, [{"role": "user", "content": text}]),
+            timeout=data.settings.llm.timeout_s,
+        )
+    except Exception as e:  # noqa: BLE001  tried again at the next tick
+        log.warning("plan check failed: %s", type(e).__name__)
+        return None
+    if not answered(out):
+        log.warning("plan check: the provider gave no verdict")
+        return None  # nothing kept: tried again at the next tick
+    found = parse(out)
+    log.info("plan check: %s", {c: len(ps) for c, ps in found.items()})
+    kept = {"key": key, "found": found, "at": dt.datetime.now(dt.UTC).isoformat()}
+    db.set_kv(PLAN_KEY, kept)
+    return kept
+
+
+def plan_findings(data: Data, db: DB, today: dt.date, viewer=None) -> list[str]:
+    """What the plan check found about the plan as it is now, for the AI's facts: nothing when the
+    plan changed since (the next check is about the new one). In a private chat only the timeline
+    and the plain mistakes: the others may name someone else's notes or health."""
+    kept = db.get_kv(PLAN_KEY) or {}
+    if not kept.get("found") or kept.get("key") != plan_brief(data, db, today)[1]:
+        return []
+    return [
+        f"{c}: {p}"
+        for c, ps in kept["found"].items()
+        if viewer is None or c in PLAN_SEEN
+        for p in ps
+    ]
+
+
+def answered(text: str) -> bool:
+    """The provider gave a JSON object, even an empty one: a verdict, not a failure."""
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    try:
+        return isinstance(json.loads(m.group(0)), dict) if m else False
+    except ValueError:
+        return False
 
 
 def parse(text: str) -> dict[str, list[str]]:

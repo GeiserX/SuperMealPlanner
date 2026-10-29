@@ -55,7 +55,9 @@ it) and "ts" (when the last of them was written, ISO 8601 UTC). The app also set
 which a plugin may call from its thread at any time while it works on the answer: each call hands
 over the messages that arrived since the last call (an edit of a message of this turn arrives as a
 correction in the same shape). The dict it returns then names the ones its answer took into
-account, "covers": [ids]; every handed-over message it does not name is sent again with the next
+account, "covers": [ids]. When it leaves out one it was handed, the app does not send that answer:
+the next turn, at once, carries the turn's messages and the ones left out, with a last line saying
+the answer was never sent; a rewrite that again leaves some out is sent, and those make the next
 turn. A plugin that never calls incoming() covers nothing extra: those messages make the next turn.
 
 The answer may offer the person choices: "options": ["short label", ...] in the dict (at most five),

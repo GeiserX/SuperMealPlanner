@@ -378,7 +378,7 @@ def facts(
     out += menu_now(data, t, today)
     out += list_now(data, db, today)
     out += pantry_now(data, db, today)
-    out += problems_now(data, db, today)
+    out += problems_now(data, db, today, viewer)
     out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)
 
@@ -512,13 +512,17 @@ def pantry_now(data: Data, db: DB, today: dt.date) -> list[str]:
     return out
 
 
-def problems_now(data: Data, db: DB, today: dt.date) -> list[str]:
-    """What the consistency check (doctor.py) found, with what to change. Food bought and on no
-    dish has its own section above, so it is not repeated here. Stale reminders stay out: they
-    may be another chat's (a private one), and the app cancels them itself, saying so in their
-    own chat."""
-    skip = ("unused", "stale_reminder")
-    found = [p for p in doctor.problems(data, db, today) if p.kind not in skip]
+def problems_now(data: Data, db: DB, today: dt.date, viewer: str | None = None) -> list[str]:
+    """What the consistency check (doctor.py) and the last check of the plan as it stands
+    (verifier.check_plan) found, with what to change. Food bought and on no dish has its own
+    section above, so it is not repeated here. Stale reminders stay out: they may be another
+    chat's (a private one), and the app cancels them itself, saying so in their own chat."""
+    from .verifier import plan_findings
+
+    # a recipe one person cannot have names the food: in a private chat it may be someone else's
+    skip = ("unused", "stale_reminder") + (("avoided",) if viewer is not None else ())
+    found = [p.text for p in doctor.problems(data, db, today) if p.kind not in skip]
+    found += plan_findings(data, db, today, viewer)
     if not found:
         return []
     return [
@@ -527,7 +531,7 @@ def problems_now(data: Data, db: DB, today: dt.date) -> list[str]:
             "- Fix each with a change or reminders block in your answer when the person you answer "
             "can decide it, or say what you would change; never leave one unsaid."
         ),
-        *(f"- {p.text}" for p in found),
+        *(f"- {p}" for p in found),
     ]
 
 
