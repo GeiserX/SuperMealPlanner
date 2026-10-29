@@ -255,7 +255,9 @@ change_recipe_field_video: vídeo
 change_recipe_field_steps: pasos
 change_recipe_field_ingredients: ingredientes
 change_recipe_field_nutrition: valores nutricionales
-change_recipe_steps: "{n} pasos"
+change_steps_same: "los mismos pasos"
+change_more_lines: "… y {n} más"
+change_replaced: "Sustituido por un cambio más reciente"
 change_note_add: "Nota sobre {name}: {text}"
 change_note_remove: "Nota sobre {name} eliminada: {text}"
 recipe_replan_failed: "La receta está guardada, pero no he podido quitarla de los días ya planificados: la mantienen hasta que me pidáis cambiarlos."
