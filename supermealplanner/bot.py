@@ -1199,7 +1199,8 @@ class Bot:
         if text:
             await self.answer_text(client, chat_id, text, reply_to, offered, covered)
         if acted:
-            await self.gesture(client, chat_id, acts, anchor.mid, bool(text), reply_to)
+            said = text or change is not None or reply.proposals or listed  # each says something
+            await self.gesture(client, chat_id, acts, anchor.mid, bool(said), reply_to)
         if reply.conversation:
             last = max((r["id"] for r in rows), default=seen)
             if reply.kept:
@@ -1249,7 +1250,8 @@ class Bot:
     async def gesture(self, client, chat_id, acts, to, texted, reply_to=None) -> None:
         """What the answer's gestures block asks for (gestures.py), each on its own after the text,
         so a file or a reaction Telegram refuses never loses the answer. A reaction goes on message
-        `to`; when it cannot and the answer had no text, the emoji is said instead."""
+        `to`. When the answer said nothing and none of it reached the chat (no message to react to,
+        a refusal, no sticker set), the emoji is said instead, or that something went wrong."""
         shown = texted
         sends = [
             (
@@ -1272,9 +1274,7 @@ class Bot:
                 shown = True
             except TelegramError as e:
                 log.warning("%s failed: %s", method, e)
-        if not acts["react"]:
-            return
-        if to:
+        if acts["react"] and to:
             try:
                 reaction = [{"type": "emoji", "emoji": acts["react"]}]
                 await self.call(
@@ -1283,8 +1283,13 @@ class Bot:
                 return
             except TelegramError as e:
                 log.info("reaction failed: %s", e)
-        if not shown:
-            await self.send(client, chat_id, acts["react"], reply_to, who=AI)
+        if shown:
+            return
+        said = acts["react"] or acts["sticker"]
+        if said:
+            await self.send(client, chat_id, said, reply_to, who=AI)
+        else:
+            await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
 
     async def sticker(self, client, emoji: str | None) -> str | None:
         """The file_id of the settings' sticker set (bot.sticker_set) for `emoji`, read once."""

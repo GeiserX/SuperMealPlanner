@@ -110,6 +110,24 @@ def test_a_long_plan_summary_comes_out_short_with_its_link(data_dir, tmp_path):
     assert len(shown) < 200 and "Día 39" in folded
 
 
+def test_a_gesture_only_answer_that_reaches_nobody_still_answers(data_dir, tmp_path):
+    b = ChatBot(plugin_data(data_dir), DB(tmp_path / "b.db"))  # no sticker set: its emoji is said
+    reply(data_dir, text="```telegram\nsticker: 🎉\n```")
+    run(b.handle(None, msg("listo", chat=7, user=7)))
+    assert ChatBot.texts(b, 7) == ["🎉"]
+    real = b.call
+
+    async def call(client, method, _tries=0, **params):
+        if method == "sendDocument":
+            raise TelegramError(method, "Bad Request: file is empty", 400)
+        return await real(client, method, _tries, **params)
+
+    b.call = call
+    reply(data_dir, text="````document lista.md\n- pan\n````")
+    run(b.handle(None, msg("la lista", chat=7, user=7)))
+    assert ChatBot.texts(b, 7)[-1] == b.t("bot_error")
+
+
 def test_a_refused_file_never_loses_the_text(data_dir, tmp_path):
     b = ChatBot(plugin_data(data_dir), DB(tmp_path / "b.db"))
     real = b.call
