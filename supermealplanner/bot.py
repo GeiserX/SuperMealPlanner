@@ -13,14 +13,17 @@ its caption as the message's text. It is queued like any message, by its Telegra
 bytes are fetched when its turn starts: FILE_MAX each, TURN_FILES_MAX in all. One too big, or one
 whose download fails, gets a short note under it.
 
-One answer per burst: a chat's messages wait DEBOUNCE_S after the newest one (and up to VOICE_WAIT_S
-for a voice note still being transcribed) and go to the AI together; what arrives while it writes is
-handed to the running answer (llm.py, turn["incoming"]), and only what that answer did not take makes
-the next turn. An answer that covers one message replies to it; one that covers several is sent
-plainly. An edited message is handled by where it is: still waiting, its new text goes; in the
-running answer, a correction joins it; already answered, the correction starts a new answer; an edit
-that adds the mention is a new message. Changes, proposals and the provider's asks come with inline
-buttons; a typed yes or no still works, and only the person asked (or an admin) can tap.
+One answer per burst: a chat's messages wait DEBOUNCE_S after the newest one, and for each voice
+note of the chat still being transcribed (as long as transcription takes, VOICE_WAIT_S), and go to
+the AI together. What arrives while it writes is handed to the running answer (llm.py,
+turn["incoming"]). An answer that did not take one of those is never sent: the turn runs again at
+once with all of them, told its last answer did not go out (AGAIN, once in a row), so the chat gets
+one answer and no proposal it already outdated. Only what arrives after that makes the next turn. An
+answer that covers one message replies to it; one that covers several is sent plainly. An edited
+message is handled by where it is: still waiting, its new text goes; in the running answer, a
+correction joins it; already answered, the correction starts a new answer; an edit that adds the
+mention is a new message. Changes, proposals and the provider's asks come with inline buttons; a
+typed yes or no still works, and only the person asked (or an admin) can tap.
 
 When an answer tells someone to do something at a time, the AI lists those steps and the bot offers
 each as a reminder with buttons: here (the bot posts it in the chat at that time), in the calendar
@@ -143,10 +146,18 @@ RUNNING = "bot.running"  # proposals the plugin is carrying out now, across ever
 # chat, each message taken for an answer until a turn that took it ends. resume() replays both.
 INBOX = "bot.inbox"  # {"offset": next update id, "messages": [Telegram message, ...]}
 QUEUED = "bot.queued"  # {"<chat id>": [{"row", "mid", "uid", "who", "grant"}, ...]}
+# ask() returns this when its answer was not sent because it missed messages handed to it: the
+# chat's next turn, right away, answers them all
+AGAIN: list = []
 ACT_TIMEOUT = 3600  # the longest a plugin may take on a proposal (a code draft takes minutes)
 # a chat's turn starts this long after its newest message, so a burst goes together
 DEBOUNCE_S = 2.5
-VOICE_WAIT_S = 30  # a turn waits this long at most for a voice note of its chat still transcribing
+# A turn waits for a voice note of its chat still being transcribed: VOICE_WAIT_S plus VOICE_PER_S
+# for each second of audio, never longer than transcription.timeout_s. The servers Qwen runs on took
+# 2.3 to 2.5 s per second of audio plus about 10 s to start (2026-10-28: a 47 s note took 119 s), so
+# a fixed 30 s let a second note miss the turn it belonged to.
+VOICE_WAIT_S = 30
+VOICE_PER_S = 3
 # A provider that is out of capacity raises an error with `retry_after` (seconds): the chat's messages
 # wait that long, at least BUSY_MIN_S, and are answered then, with nobody writing again.
 BUSY_MIN_S = 60
@@ -257,10 +268,12 @@ class Bot:
         self.queues: dict[int, list[Item]] = {}
         self.qlock = threading.Lock()
         self.driving: set[int] = set()  # chats with a loop running their turns
-        self.voicing: dict[int, list[float]] = {}  # chat -> start of each note being transcribed
+        # chat -> until when each note being transcribed holds the chat's turn (clock())
+        self.voicing: dict[int, list[float]] = {}
         self.running: dict[int, Turn] = {}
         self.asks: dict[str, dict] = {}  # open asks of the provider, by key
         self.resting: dict[int, float] = {}  # chat -> clock() its answer waits for (busy provider)
+        self.again: set[int] = set()  # chats whose next turn rewrites an answer that was not sent
         self.told_busy: set[int] = set()  # chats told of the wait, until an answer goes out
         self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
         self.spoken: dict[str, Spoken] = {}  # what was said to the app, by turn id
@@ -736,10 +749,11 @@ class Bot:
             if not self.allowed(chat, user.get("id", 0)) or not cfg.voice:
                 return
             # a voice note always calls the bot, in the group too: it cannot mention or reply by itself.
-            # While it is transcribed, the chat's next turn waits for it (VOICE_WAIT_S at most).
-            start = self.clock()
+            # While it is transcribed, the chat's next turn waits for it (hold_for), so a burst of
+            # notes, or a note and a text, gets one answer.
+            until = self.clock() + self.hold_for(voice)
             notes = self.voicing.setdefault(chat["id"], [])
-            notes.append(start)
+            notes.append(until)
             try:
                 try:
                     text = await self.transcribe(client, voice)
@@ -759,7 +773,7 @@ class Bot:
                 self.take(chat["id"], user, who, msg, tagged, asked=True)
                 self.inbox(done=msg)  # queued now: QUEUED keeps it from here
             finally:
-                notes.remove(start)
+                notes.remove(until)
                 if not notes:
                     self.voicing.pop(chat["id"], None)
             await self.drive(client, chat["id"])
@@ -954,6 +968,8 @@ class Bot:
                             log.warning("could not send the error reply: %s", safe(e2))
                     finally:
                         HEARING.reset(listening)
+                    if covered is AGAIN:
+                        continue  # its messages are queued again, for the turn that answers them
                     self.answered(items, covered, ears)
                     # the turn ended (a cancelled one did not: a stop keeps its messages queued)
                     with self.qlock:
@@ -1046,9 +1062,17 @@ class Bot:
         for row in [r for r, sid in self.spoken_rows.items() if sid not in self.spoken]:
             self.spoken_rows.pop(row, None)
 
+    def hold_for(self, voice: dict) -> float:
+        """How long a voice note being transcribed holds its chat's turn (VOICE_WAIT_S)."""
+        seconds = voice.get("duration")
+        seconds = seconds if isinstance(seconds, int | float) and seconds > 0 else 0
+        cap = self.data.settings.transcription.timeout_s
+        return min(self.voice_wait + VOICE_PER_S * seconds, cap)
+
     async def settle(self, chat_id: int) -> None:
         """Wait until the chat's newest message is DEBOUNCE_S old and no voice note of it is still
-        being transcribed (for VOICE_WAIT_S at most from the note's start)."""
+        being transcribed (until its hold_for has passed at most). A note whose transcription fails
+        lets go at once."""
         while True:
             with self.qlock:
                 newest = max((i.ts for i in self.queues.get(chat_id) or []), default=None)
@@ -1058,7 +1082,7 @@ class Bot:
             wait = newest + self.debounce - now
             notes = self.voicing.get(chat_id)
             if notes:
-                wait = max(wait, min(notes) + self.voice_wait - now)
+                wait = max(wait, max(notes) - now)
             if wait <= 0:
                 return
             await asyncio.sleep(min(wait, 0.5))
@@ -1085,8 +1109,9 @@ class Bot:
         """One AI answer for the queued messages `items`. A provider that keeps the conversation
         gets only what it has not seen; the household's data goes with every message, fresh.
         Messages that arrive meanwhile are handed to it; the ones its answer does not take go back
-        to the queue for the next turn. Returns the messages the answer covered, None when there
-        was no answer."""
+        to the queue for the next turn, unless the answer missed one of them: then nothing of it is
+        sent and AGAIN is returned, so the next turn, at once, answers all of them (once in a row).
+        Returns the messages the answer covered, None when there was no answer."""
         data, db = self.data, self.state.db
         if data.settings.llm.provider == "none":
             await self.send(client, chat_id, self.t("bot_no_llm"), _reply_to(items))
@@ -1104,7 +1129,9 @@ class Bot:
             return None  # an earlier turn already took these messages
         turn_state = Turn(chat_id, items)
         self.running[chat_id] = turn_state
-        reply, deferred = None, False
+        reply, deferred, again = None, False, False
+        rewrite = chat_id in self.again  # this turn rewrites an answer that was not sent
+        self.again.discard(chat_id)
         try:
             try:
                 await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
@@ -1122,7 +1149,7 @@ class Bot:
                 "conversation": conv.get("id"),
                 "rules": self.rules(),
                 "context": facts,
-                "new": _messages(fresh),
+                "new": _messages(fresh) + ([_unsent(fresh)] if rewrite else []),
                 "history": _messages([r for r in rows if r not in fresh]),
                 "files": await asyncio.to_thread(_files, data.root),
                 "attachments": attachments,
@@ -1159,12 +1186,29 @@ class Bot:
                 missed = [
                     i for i in turn_state.pulled if reply is None or i.row not in reply.covers
                 ]
+                again = reply is not None and bool(missed) and not rewrite
                 if deferred:  # the whole turn waits for the provider, in its order
                     self.queues[chat_id] = [*items, *missed, *self.queues.get(chat_id, [])]
+                elif again:  # nothing of this answer goes out: the next turn takes all of it
+                    self.queues[chat_id] = [
+                        *items,
+                        *turn_state.pulled,
+                        *self.queues.get(chat_id, []),
+                    ]
+                    self.again.add(chat_id)
                 elif reply is not None and missed:  # the next turn sends them, at the head
                     self.queues[chat_id] = [*missed, *self.queues.get(chat_id, [])]
             self.running.pop(chat_id, None)
             await self.close_asks(client, turn_state)
+        if again:
+            # the same messages go again as new; a provider that keeps the conversation also has
+            # this answer, and the next turn tells it the chat never saw it
+            if reply.conversation:
+                db.set_kv(key, {"id": reply.conversation, "seen": seen, "done": sorted(done)})
+            else:
+                db.set_kv(key, None)
+            log.info("an answer missed messages that came while it was written: writing it again")
+            return AGAIN
         self.told_busy.discard(chat_id)  # answered: a later busy spell is told again
         covered = [*items, *(i for i in turn_state.pulled if i.row in reply.covers)]
         reply_to = _reply_to(covered)
@@ -1302,6 +1346,10 @@ class Bot:
             before = await self.problem_keys()
             await self.send(client, chat_id, await self.apply(item, asked=True), reply_to)
             if item.get("applied"):
+                # a change still waiting for a yes on what this one just set is outdated now
+                await self.unwait(
+                    client, chat_id, self.wait_for(chat_id, None, self.outdates(proposal))
+                )
                 await self.checkup(client, chat_id, before, reply_to)
             return bool(item.get("applied"))
         lines = changes.describe(proposal, self.data, t)
@@ -1325,8 +1373,13 @@ class Bot:
             "msg": sent,
             "msgs": msgs,
         }
-        # a newer change from the same person replaces their earlier one ("no, better at 15:00")
-        self.wait_for(chat_id, item, lambda i: "change" in i and i.get("asker") == asker)
+        # a newer change from the same person replaces their earlier one ("no, better at 15:00"),
+        # and so does one on the same things from anyone
+        outdated = self.outdates(proposal)
+        gone = self.wait_for(
+            chat_id, item, lambda i: ("change" in i and i.get("asker") == asker) or outdated(i)
+        )
+        await self.unwait(client, chat_id, gone)
         return False
 
     def pending(self, chat_id: int) -> list[dict]:
@@ -1344,10 +1397,36 @@ class Bot:
             db.set_kv(key, live or None)
         return live
 
-    def wait_for(self, chat_id: int, item: dict, replaces) -> None:
-        """Keep an item waiting next to the others; `replaces(other)` drops one it supersedes."""
-        items = [i for i in self.pending(chat_id) if not replaces(i)]
-        self.state.db.set_kv(WAITING.format(chat_id), [*items, item])
+    def wait_for(self, chat_id: int, item: dict | None, replaces) -> list[dict]:
+        """Keep an item waiting next to the others (None: no new one); `replaces(other)` drops one
+        it supersedes. Returns the ones dropped, whose buttons unwait() takes away."""
+        items = self.pending(chat_id)
+        gone = [i for i in items if replaces(i)]
+        kept = [*(i for i in items if i not in gone), *([item] if item is not None else [])]
+        if gone or item is not None:
+            self.state.db.set_kv(WAITING.format(chat_id), kept or None)
+        return gone
+
+    async def unwait(self, client, chat_id: int, gone: list[dict]) -> None:
+        """What a newer answer outdated no longer waits: its message says so instead of buttons,
+        so nobody taps a change that no longer fits."""
+        for i in gone:
+            await self.unbutton(client, chat_id, i.get("msg"), self.t("change_replaced"))
+
+    def outdates(self, proposal):
+        """`replaces` for wait_for: a waiting change that sets any of what `proposal` sets."""
+        new = changes.touches(proposal)
+
+        def replaces(item: dict) -> bool:
+            if "change" not in item:
+                return False
+            try:
+                old = changes.parse(item["change"], self.data, item.get("asker"))
+            except changes.ChangeError:
+                return False
+            return bool(new & changes.touches(old))
+
+        return replaces
 
     def drop(self, chat_id: int, item: dict) -> None:
         items = [i for i in self.pending(chat_id) if i != item]
@@ -1792,7 +1871,10 @@ class Bot:
                 out.append(by_hand)
             else:
                 saved = lines[: len(lines) - len(proposal.plan) - len(proposal.pantry)]
-                subject = "; ".join(x.removeprefix("• ") for x in saved)
+                # the subject names what changed; the body has the steps too
+                subject = "; ".join(
+                    x.removeprefix("• ").rstrip(":") for x in saved if x.startswith("• ")
+                )
                 how = "" if asked else " and confirmed there"
                 message = (
                     f"chat: {subject[:120]}\n\nAsked by {pending.get('name', '?')} in the chat"
@@ -1894,7 +1976,10 @@ class Bot:
         if where != chat_id:
             await self.send(client, chat_id, t("proposal_in_group", name=names), reply_to)
         item = {**pending, "key": key, "by": ids, "msg": sent, "msgs": msgs}
-        self.wait_for(where, item, lambda i: (i.get("proposal") or {}).get("id") == proposal["id"])
+        gone = self.wait_for(
+            where, item, lambda i: (i.get("proposal") or {}).get("id") == proposal["id"]
+        )
+        await self.unwait(client, where, gone)
 
     async def act(self, client, chat_id: int, reply_to: int, pending: dict) -> None:
         """Have the plugin carry out a proposal and post what came of it. Follow-ups are offered on
@@ -2113,6 +2198,7 @@ class Bot:
             with self.qlock:
                 self.queues.pop(chat_id, None)
                 self.queued(chat_id)
+            self.again.discard(chat_id)
         if conv.get("id"):
             try:
                 await llm.forget(self.data, conv["id"])
@@ -3048,6 +3134,17 @@ def _retry_after(e: BaseException) -> float | None:
     if isinstance(later, bool) or not isinstance(later, (int, float)) or later <= 0:
         return None
     return float(later)
+
+
+UNSENT = (
+    "(bot) Your last answer was never sent: the messages above came while you wrote it. Nobody saw "
+    "it, and nothing it proposed was shown. Answer all of them now, in one message."
+)
+
+
+def _unsent(fresh: list[dict]) -> dict:
+    """The line that tells a turn it rewrites an answer the chat never saw."""
+    return {"role": "user", "content": UNSENT, "ids": [], "ts": fresh[-1]["ts"] if fresh else None}
 
 
 def _reply_to(items: list[Item]) -> int | None:
