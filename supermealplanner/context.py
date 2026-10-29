@@ -225,8 +225,9 @@ When the person you are answering asked for that reminder in so many words ("rem
 field empty when it is for them: `- 2026-01-18 23:00 | Soak the chickpeas | | set`). The app sets
 it at once and says so, and nobody is asked again. Without "set", never say a reminder is set.
 
-When a reminder is about a dish of the menu (cook it, defrost it, soak what it needs), add a field
-`dish <recipe id> <the date it is eaten>` at the end of its line:
+Every reminder about a dish of the menu (cook it, defrost it, soak or prepare what it needs, buy
+for it) gets a field `dish <recipe id> <the date it is eaten>` at the end of its line; the app then
+ends the reminder with the link to that recipe:
 `- 2026-01-17 22:00 | Move the fish to the fridge | <person id> | | dish salmon-bake 2026-01-18`.
 When that day's menu no longer has the dish, the app cancels the reminder by itself and says so.
 A dish that needs something done before its day (a dried pulse to soak the night before, a
@@ -461,6 +462,19 @@ def list_now(data: Data, db: DB, today: dt.date) -> list[str]:
                 )
     if shop.have:
         out.append("- at home, off the list: " + ", ".join(i.name for i in shop.have))
+    from . import pantry
+
+    late = [
+        f"{ing.name} [{ing.id}] for {rec.name} on {d.isoformat()}"
+        for d in (today, today + dt.timedelta(days=1))
+        if (p := plan_for(data, d))
+        for ing, rec in pantry.unbought(data, db, p, d)
+    ]
+    if late:
+        out.append(
+            "- needed today or tomorrow and not bought on the shopping day (missing at home, "
+            "say so and get it bought): " + "; ".join(late)
+        )
     out += unused_now(data, db, monday)
     return out
 
