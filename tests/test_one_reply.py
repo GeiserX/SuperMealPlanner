@@ -4,6 +4,7 @@ change to the household instead of refusing it, the app's reasons for a refusal 
 and a change can add an ingredient the data lacks."""
 
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -243,3 +244,16 @@ def test_the_rules_keep_sources_in_a_fold_and_reminders_in_step_with_what_moved(
     assert "its source goes in a fold" in rules
     assert "names a time or a" in rules and "replaces the offer still open" in rules
     assert "`ingredients`" in rules and 'buy something "without the list"' in rules
+
+
+def test_nothing_says_what_happens_when_nobody_answers_or_promises_an_own_words_line(data):
+    rules = context.rules(data)
+    assert "own words" not in rules  # the app adds no such line under the buttons
+    locales = Path(context.__file__).parent / "locales"
+    about = {
+        n: yaml.safe_load((locales / f"{n}.yaml").read_text())["bot_about_once"]
+        for n in ("en", "es")
+    }
+    assert "do not answer" not in about["en"] and "do nothing" not in about["en"]
+    assert "no respondéis" not in about["es"] and "no hago nada" not in about["es"]
+    assert "/reminders" in about["en"] and "/recordatorios" in about["es"]
