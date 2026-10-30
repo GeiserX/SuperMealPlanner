@@ -198,7 +198,7 @@ also answer in their own words, so do not write that line. A tap reaches you as 
 message, with the label as its text. Nothing waits for a tap: they may ignore the buttons and keep
 talking. Offer buttons only for a real choice between a few concrete answers, never to confirm a
 change (the app asks for that itself), and at most one block per answer.
-The app adds the line for no tap («Si no respondes, no hago nada.») itself, so do not write it.
+Do not add a line saying what happens if nobody taps.
 """
 
 REMINDERS = """

@@ -5,7 +5,6 @@ Also: group lines not addressed to the bot reach the AI marked as such."""
 
 import asyncio
 import datetime as dt
-import json
 import time
 from zoneinfo import ZoneInfo
 
@@ -73,8 +72,16 @@ def block(*rows):
     return "```reminders\n" + "\n".join(f"- {' | '.join(r)}" for r in rows) + "\n```"
 
 
+def is_offer(params):
+    return (
+        params["text"]
+        .split("\n", 1)[0]
+        .endswith(("shall I remind you?", "Shall I set a reminder?"))
+    )
+
+
 def offer_of(b):
-    return next(p for p in sends(b, -100) if "If you do not answer, I do nothing." in p["text"])
+    return next(p for p in sends(b, -100) if is_offer(p))
 
 
 def mid_of(b, params):
@@ -99,7 +106,7 @@ def short(when):
 # ---------------------------------------------------------------- the offer
 
 
-def test_steps_at_a_time_are_offered_as_reminders_with_buttons_and_the_no_answer_line(
+def test_steps_at_a_time_are_offered_as_reminders_with_buttons_and_no_line_for_no_tap(
     data_dir, tmp_path
 ):
     b, db = setup(data_dir, tmp_path)
@@ -116,7 +123,8 @@ def test_steps_at_a_time_are_offered_as_reminders_with_buttons_and_the_no_answer
     assert offer["text"].startswith("Luis, Ana, shall I remind you?")
     assert "1. " in offer["text"] and "Cook Monday's lunch" in offer["text"]
     assert "18:00" in offer["text"] and "22:00" in offer["text"]
-    assert offer["text"].endswith("If you do not answer, I do nothing.")
+    assert offer["text"].endswith(": Move the fish to the fridge")  # nothing under the steps
+    assert "do nothing" not in offer["text"]
     # calendar off by default: only «here» per reminder; untapped, nothing is done anyway
     # each button says what it sets, so two reminders' buttons never read the same
     assert labels(offer) == [
@@ -419,8 +427,7 @@ def test_the_rules_say_who_is_answered_and_how_to_offer_reminders(data):
 
 
 def test_the_rules_say_a_tap_is_an_action_so_no_button_says_nada(data):
-    # the shared principles say it, in the household's language; the app's own rules only name the
-    # line for no tap, which the app writes itself
+    # the shared principles say it, in the household's language; nobody writes a line for no tap
     for locale, says in (
         (
             "es",
@@ -445,7 +452,7 @@ def test_the_rules_say_a_tap_is_an_action_so_no_button_says_nada(data):
         flat = " ".join(context.rules(data).split())
         for line in says:
             assert line in flat, line
-        assert "«Si no respondes, no hago nada.»" in flat
+        assert "Si no respondes" not in flat and "If you do not answer" not in flat
         assert "- Nada" not in flat
 
 
@@ -455,9 +462,9 @@ def test_the_menu_lists_reminders_in_both_languages():
     assert "reminders" in botmod.Bot.MENU
     assert Translator("es").raw("bot_commands")["reminders"] == "recordatorios"
     assert botmod.COMMANDS["recordatorios"] == "reminders"
-    assert json.dumps(Translator("es")("remind_offer", name="x", lines="y")).endswith(
-        'Si no respondes, no hago nada."'
-    )
+    for lang in ("es", "en"):  # the offer ends with its steps, no line for no tap
+        for key in ("remind_offer", "remind_offer_nobody"):
+            assert Translator(lang)(key, name="x", lines="y").endswith("\ny"), (lang, key)
 
 
 def test_untouched_answer_flow_still_runs_while_an_offer_waits(data_dir, tmp_path):
@@ -532,7 +539,7 @@ def test_a_reminder_the_person_asked_for_is_set_at_once_without_an_offer(data_di
     run(b.handle(None, msg("@chefbot remind Ana at 13:00 to order the shopping", message_id=1)))
     (r,) = db.reminders(-100)
     assert (r["person"], r["at"], r["text"], r["by"]) == ("ana", at, "Order the shopping", 7)
-    assert not [p for p in sends(b, -100) if "If you do not answer" in p["text"]]
+    assert not [p for p in sends(b, -100) if is_offer(p)]
     assert any(p["text"].startswith("⏰ Reminder set for") for p in sends(b, -100))
 
 
