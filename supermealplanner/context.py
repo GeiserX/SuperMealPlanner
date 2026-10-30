@@ -200,8 +200,7 @@ change block.
 ```
 
 At most five, each a few words (40 characters at most), in the household's language. Ask the
-question in your answer as usual; the app shows the buttons under it and adds a line saying they may
-also answer in their own words, so do not write that line. A tap reaches you as that person's next
+question in your answer as usual; the app shows the buttons under it. A tap reaches you as that person's next
 message, with the label as its text. Nothing waits for a tap: they may ignore the buttons and keep
 talking. Offer buttons only for a real choice between a few concrete answers, never to confirm a
 change (the app asks for that itself), and at most one block per answer.
