@@ -99,11 +99,12 @@ def test_the_tasks_page_shows_what_the_reminders_send_and_the_chat_set(data_dir,
     (data_dir / "settings.yaml").write_text(
         yaml.safe_dump(
             {
+                "base_url": "https://meals.example",
                 "reminders": [
                     {"id": "compra", "kind": "shopping", "at": ["20:00"], "days": ["monday"]},
                     {"id": "batch", "kind": "batch", "at": ["21:30"]},
                     {"id": "agua", "kind": "message", "text": "Agua", "at": ["12:00"]},
-                ]
+                ],
             }
         )
     )
@@ -122,6 +123,8 @@ def test_the_tasks_page_shows_what_the_reminders_send_and_the_chat_set(data_dir,
     assert page.count("21:30") >= 1
     assert data.recipes[evening.dishes[0].recipe].name in page
     assert "Agua" not in page  # a plain message is not a kitchen task
+    assert '<a href="https://meals.example/list?d=' in page  # the reminder's words, as a link
+    assert "](https://" not in page  # never the chat's link markup as text
 
 
 def test_today_shows_only_the_meals_with_portions_and_steps_and_no_batch_sheet_or_pills(
