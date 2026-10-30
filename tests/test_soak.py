@@ -134,45 +134,36 @@ def test_the_batch_reminder_says_what_to_take_out_of_the_freezer_the_evening_bef
     assert "🧊" not in (b.reminder_text(batch, eve) or "")
 
 
-def test_what_to_take_out_follows_the_day_a_lunch_is_cooked_not_the_day_it_is_eaten(
+def test_what_is_frozen_is_taken_out_the_evening_before_it_is_eaten_even_when_cooked_ahead(
     data_dir, tmp_path
 ):
+    """Frozen food (bread) is served with the meal: a lunch cooked ahead in a session still needs
+    it the evening before the day it is eaten, one day's share, never all of it before the session."""
     bot_data(data_dir)
     raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
     raw["reminders"].append({"id": "batch", "kind": "batch", "at": ["21:30"]})
     (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
     data = planned(data_dir)
     plan = plan_for(data, MONDAY)
-    ahead = next(d for d in plan.days if d.lunch_cook < d.date and d.lunch_cook > MONDAY)
+    ahead = next(
+        d
+        for d in plan.days
+        if MONDAY < d.lunch_cook < d.date and plan.day(d.lunch_cook).lunch != d.lunch
+    )
     ings = yaml.safe_load((data_dir / "ingredients.yaml").read_text())
-    for i in data.recipes[ahead.lunch].ingredients:
-        ings[i.id]["frozen"] = True
+    first = data.recipes[ahead.lunch].ingredients[0].id
+    ings[first]["frozen"] = True
     (data_dir / "ingredients.yaml").write_text(yaml.safe_dump(ings, allow_unicode=True))
     data = planned(data_dir)
     plan = plan_for(data, MONDAY)
     b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
     batch = next(r for r in data.settings.reminders if r.id == "batch")
-    name = data.recipes[ahead.lunch].name
-    tag = f"(Lunch: {name})"
-    # the evening before it is eaten: it was cooked already, its raw ingredients are gone
+    tag = f"(Lunch: {data.recipes[ahead.lunch].name})"
     said = b.reminder_text(batch, ahead.date - dt.timedelta(days=1)) or ""
-    assert tag not in said
-    # the evening before the session that cooks it: take them out then, for every lunch it makes
+    assert sum(x.endswith(tag) for x in said.splitlines()) == 1
+    assert plan.day(ahead.lunch_cook).lunch != ahead.lunch  # so the session's eve tells them apart
     said = b.reminder_text(batch, ahead.lunch_cook - dt.timedelta(days=1)) or ""
-    lines = [x for x in said.splitlines() if x.endswith(tag)]
-    assert lines and len(lines) == len({i.id for i in data.recipes[ahead.lunch].ingredients})
-    after = said.splitlines()[said.splitlines().index(lines[0]) + 1]
-    assert after.strip().endswith(f"/batch?d={ahead.lunch_cook}")  # the session's amounts
-    from supermealplanner.portions import amounts, factors
-
-    lunches = [d for d in plan.days if d.lunch == ahead.lunch and d.lunch_cook == ahead.lunch_cook]
-    first = data.recipes[ahead.lunch].ingredients[0].id
-    need = sum(
-        amounts(data, data.recipes[ahead.lunch], factors(data, b.state.db, d.date))[first]
-        for d in lunches
-    )
-    one = amounts(data, data.recipes[ahead.lunch], factors(data, b.state.db, ahead.date))[first]
-    assert len(lunches) > 1 and need > one  # the whole session's share, not one day's
+    assert not any(x.endswith(tag) for x in said.splitlines())  # not all of it before the session
 
 
 def test_reminders_due_at_the_same_time_go_as_one_message(data_dir, tmp_path):
