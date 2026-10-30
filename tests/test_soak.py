@@ -161,6 +161,8 @@ def test_what_to_take_out_follows_the_day_a_lunch_is_cooked_not_the_day_it_is_ea
     said = b.reminder_text(batch, ahead.lunch_cook - dt.timedelta(days=1)) or ""
     lines = [x for x in said.splitlines() if x.endswith(tag)]
     assert lines and len(lines) == len({i.id for i in data.recipes[ahead.lunch].ingredients})
+    after = said.splitlines()[said.splitlines().index(lines[0]) + 1]
+    assert after.strip().endswith(f"/batch?d={ahead.lunch_cook}")  # the session's amounts
     from supermealplanner.portions import amounts, factors
 
     lunches = [d for d in plan.days if d.lunch == ahead.lunch and d.lunch_cook == ahead.lunch_cook]
