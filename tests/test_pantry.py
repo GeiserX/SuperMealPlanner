@@ -247,7 +247,9 @@ def test_the_chat_corrects_the_pantry_with_a_change_and_says_so(data_dir, tmp_pa
     assert qty(b.data, db, today, "pollo") == 0
     assert qty(b.data, db, today, "lenteja") == 1000
     (said,) = [p["text"] for p in sends(b, -100)]  # the answer and one line under it
-    assert said.endswith("\n\n✓ Done: the pantry.\nhttps://meals.example/list")
+    assert said.endswith(
+        '\n\n✓ Done: the pantry.\n<a href="https://meals.example/list">Shopping list</a>'
+    )
     assert "Pollo" not in said  # what it touched, never the values
 
 

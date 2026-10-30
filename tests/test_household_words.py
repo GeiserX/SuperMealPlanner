@@ -42,7 +42,8 @@ def test_a_reminder_set_from_the_chat_about_a_dish_ends_with_its_recipe(data_dir
     db.add_reminder(-100, None, time.time() - 5, "Riega las plantas")
     asyncio.run(b.tick_once(None))
     texts = [t for _, t in b.sent]
-    assert f"⏰ Haz la cena\nhttps://meals.example/recipe/{day.dinner}?d={D(2)}" in texts
+    link = f"https://meals.example/recipe/{day.dinner}?d={D(2)}"  # the word, not the address
+    assert f"⏰ Haz la cena\n[Recipe]({link})" in texts
     assert "⏰ Riega las plantas" in texts  # about no dish: no link
 
 
