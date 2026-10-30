@@ -108,6 +108,25 @@ def to_html(md):
     return s.strip()
 
 
+def links_html(text):
+    """Plain `text` as Telegram HTML where only `[text](https://...)` becomes a link: everything else
+    is escaped and stays as written, so a reminder's names never turn bold or italic."""
+    out, last = [], 0
+    for m in _LINK.finditer(text):
+        out.append(html.escape(text[last : m.start()], quote=False))
+        out.append(
+            f'<a href="{html.escape(m.group(2), quote=True)}">'
+            f"{html.escape(m.group(1), quote=False)}</a>"
+        )
+        last = m.end()
+    out.append(html.escape(text[last:], quote=False))
+    return "".join(out)
+
+
+def has_link(text):
+    return bool(_LINK.search(text))
+
+
 def _open_fence(text):
     """The fence still open at the end of `text`, as the line that reopens it: "```fold" or "```python"
     when it opened as one, else a bare "```" (never a long opening line, so a cut always moves on);

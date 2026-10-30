@@ -9,7 +9,7 @@
 <section class="meal{{ ' today' if day == today }}">
   <h2><a href="/?d={{ day }}">{{ t.date(day) | capitalize }}</a></h2>
   {% if items %}
-  <ul class="tasks">{% for at, text in items %}<li><small>{{ at }}</small> {{ text | urlize(40, true) | replace('\n', '<br>') | safe }}</li>{% endfor %}</ul>
+  <ul class="tasks">{% for at, text in items %}<li><small>{{ at }}</small> {{ text | links | replace('\n', '<br>') | safe }}</li>{% endfor %}</ul>
   {% else %}<p class="sub">{{ t('tasks_none_day') }}</p>{% endif %}
 </section>
 {% endfor %}

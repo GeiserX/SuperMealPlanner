@@ -266,7 +266,7 @@ def test_the_daily_menu_reminder_names_every_meal_and_snack_of_the_day(data_dir,
     said = b.reminder_text(r, D(2))
     for meal, rec in rows:
         assert rec.name in said, (meal, rec.name)
-    assert said.splitlines()[-1].endswith(f"/?d={D(2).isoformat()}")
+    assert said.splitlines()[-1] == f"[See the day](https://meals.example/?d={D(2).isoformat()})"
     assert said.index(data.recipes[d.breakfast].name) < said.index(data.recipes[d.dinner].name)
     lunch = next(x for x in said.splitlines() if data.recipes[d.lunch].name in x)
     assert lunch.count("(") <= 1  # where lunch comes from reads as one note, never (a (b))
@@ -448,7 +448,9 @@ def test_an_asked_settings_change_is_committed_at_once_and_the_safety_rules_hold
     assert b.state.data.household.lunch_time == "14:30"
     assert plan_for(b.state.data, MONDAY).day(D(5)).dinner == was
     sha = git(data_dir, "rev-parse", "--short", "HEAD")
-    assert said.endswith("✓ Done: the menu, lunch time.\nhttps://meals.example/week")
+    assert said.endswith(
+        '✓ Done: the menu, lunch time.\n<a href="https://meals.example/week">Week\'s menu</a>'
+    )
     assert "14:30" not in said and sha not in said  # no values, no change id in the chat
     body = git(remote, "log", "-1", "--format=%B")
     assert "Asked by Luis in the chat." in body and "confirmed" not in body
@@ -587,7 +589,10 @@ def test_a_recipe_taken_out_of_a_meal_leaves_the_days_planned_from_tomorrow(
     )
     run(b.handle(None, msg("@chefbot nada de yogur en el desayuno")))
     said = ChatBot.texts(b, -100)[-1]
-    assert "✓ Done: recipe «Desayuno a».\nhttps://meals.example/recipe/desayuno-a" in said
+    assert (
+        '✓ Done: recipe «Desayuno a».\n<a href="https://meals.example/recipe/desayuno-a">Recipe</a>'
+        in said
+    )
     assert "breakfast → (none)" not in said
     assert "planned days from tomorrow on get another dish" in said
     new = b.state.data.recipes["desayuno-a"]

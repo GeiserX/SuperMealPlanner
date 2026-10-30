@@ -123,11 +123,12 @@ def test_the_batch_reminder_says_what_to_take_out_of_the_freezer_the_evening_bef
     lines = [x for x in said.splitlines() if x.startswith("• Merluza: ")]
     assert len(lines) == len(frozen_in(hit))  # one line per meal that uses it
     meal, rid = frozen_in(hit)[0]
-    assert f"({meal.capitalize()}: {data.recipes[rid].name})" in lines[0]
+    assert (
+        f"({meal.capitalize()}: [{data.recipes[rid].name}](https://" in lines[0]
+    )  # the dish to tap
     assert int(lines[0].split(": ")[1].split(" g")[0]) >= 150  # every eater's share
     assert f"/?d={hit.date}" in said
-    after = said.splitlines()[said.splitlines().index(lines[0]) + 1]
-    assert after.strip().endswith(f"/recipe/{rid}?d={hit.date}")  # the dish's recipe, one tap away
+    assert f"/recipe/{rid}?d={hit.date})" in lines[0]  # the dish's recipe, one tap away
     assert "🧊" not in (b.reminder_text(batch, miss.date - dt.timedelta(days=1)) or "")
     # tomorrow paused: nothing is eaten, nothing to take out
     change(data, {"pause": {"from": str(hit.date), "to": str(hit.date)}}, today=eve)
@@ -158,12 +159,12 @@ def test_what_is_frozen_is_taken_out_the_evening_before_it_is_eaten_even_when_co
     plan = plan_for(data, MONDAY)
     b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
     batch = next(r for r in data.settings.reminders if r.id == "batch")
-    tag = f"(Lunch: {data.recipes[ahead.lunch].name})"
+    tag = f"(Lunch: [{data.recipes[ahead.lunch].name}]("
     said = b.reminder_text(batch, ahead.date - dt.timedelta(days=1)) or ""
-    assert sum(x.endswith(tag) for x in said.splitlines()) == 1
+    assert sum(tag in x for x in said.splitlines()) == 1
     assert plan.day(ahead.lunch_cook).lunch != ahead.lunch  # so the session's eve tells them apart
     said = b.reminder_text(batch, ahead.lunch_cook - dt.timedelta(days=1)) or ""
-    assert not any(x.endswith(tag) for x in said.splitlines())  # not all of it before the session
+    assert not any(tag in x for x in said.splitlines())  # not all of it before the session
 
 
 def test_reminders_due_at_the_same_time_go_as_one_message(data_dir, tmp_path):
@@ -200,3 +201,15 @@ def test_reminders_due_at_the_same_time_go_as_one_message(data_dir, tmp_path):
         botmod.dt.datetime = real
     assert sent == ["First thing.\n\nSecond thing."]  # one message, and only once
     assert db.was_sent("a", MONDAY, "21:30") and db.was_sent("b", MONDAY, "21:30")
+
+
+def test_links_go_as_words_and_nothing_else_turns_into_markup():
+    """A reminder's links are words to tap; the rest of a plain message stays exactly as written."""
+    from supermealplanner import render
+
+    text = "⏰ @ana_92: pasa *la* merluza <ya>\n[Receta](https://x.example/recipe/a?d=1&b=2)"
+    assert render.has_link(text) and not render.has_link("https://x.example/recipe/a")
+    assert render.links_html(text) == (
+        "⏰ @ana_92: pasa *la* merluza &lt;ya&gt;\n"
+        '<a href="https://x.example/recipe/a?d=1&amp;b=2">Receta</a>'
+    )

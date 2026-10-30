@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import __version__, pantry
+from . import __version__, pantry, render
 from .api import router as api_router
 from .db import DB
 from .i18n import Translator
@@ -82,6 +82,9 @@ def create_app(root: str | Path | None = None) -> FastAPI:
     app.state.smp = state  # the running App, for tests that drive it from outside
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     tpl = Jinja2Templates(directory=HERE / "templates")
+    tpl.env.filters["links"] = (
+        render.links_html
+    )  # a task's [words](page) as a link, the rest escaped
 
     def ctx(request: Request, **kw):
         data = state.data

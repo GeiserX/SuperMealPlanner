@@ -401,6 +401,22 @@ class Bot:
                     if e.code != 400:
                         raise
                     log.info("Telegram refused the formatting, sending plain text: %s", e)
+            if render.has_link(chunk):  # the app's pages as words, not long addresses
+                try:
+                    sent = await self.call(
+                        client,
+                        "sendMessage",
+                        text=render.links_html(chunk),
+                        parse_mode="HTML",
+                        **params,
+                    )
+                    if ids is not None and isinstance(sent, dict) and sent.get("message_id"):
+                        ids.append(sent["message_id"])
+                    continue
+                except TelegramError as e:
+                    if e.code != 400:
+                        raise
+                    log.info("Telegram refused the links, sending plain text: %s", e)
             sent = await self.call(client, "sendMessage", text=chunk, **params)
             if ids is not None and isinstance(sent, dict) and sent.get("message_id"):
                 ids.append(sent["message_id"])
@@ -496,6 +512,14 @@ class Bot:
     def url(self, path: str) -> str:
         base = self.data.settings.base_url.rstrip("/")
         return f"{base}{path}" if base else path
+
+    def link(self, label: str, path: str) -> str:
+        """A page of the app as words to tap: `[label](address)`, sent as a link. Without a
+        public address there is nothing to tap: the words alone."""
+        url = self.url(path)
+        if not url.startswith(("http://", "https://")):
+            return label
+        return f"[{label.replace('[', '(').replace(']', ')')}]({url})"
 
     # ------------------------------------------------------------- loops
     async def run(self) -> None:
@@ -2118,11 +2142,11 @@ class Bot:
             return ""
         rids = [*([str(proposal.recipe.get("id"))] if proposal.recipe else []), *proposal.recipes]
         if rids:
-            return self.url(f"/recipe/{rids[0]}")
+            return self.link(self.t("link_recipe"), f"/recipe/{rids[0]}")
         if proposal.plan:
-            return self.url("/week")
+            return self.link(self.t("link_week"), "/week")
         if proposal.pantry or proposal.ingredients:
-            return self.url("/list")
+            return self.link(self.t("link_list"), "/list")
         return ""
 
     def refused(self, pending: dict, error, saving: bool = False) -> str:
@@ -2390,7 +2414,7 @@ class Bot:
         if cfg.bot.private_chats:
             lines += ["", t("bot_about_private")]
         if cfg.base_url:
-            lines += ["", cfg.base_url]
+            lines += ["", self.link(t("link_app"), "/")]
         return "\n".join(lines)
 
     async def cmd_help(self, who, arg, user, chat=None) -> str:
@@ -2475,7 +2499,7 @@ class Bot:
                 )
                 + f" ({pd.name})"
             )
-        lines.append(self.url(f"/?d={day.isoformat()}"))
+        lines.append(self.link(t("link_day"), f"/?d={day.isoformat()}"))
         return "\n".join(lines)
 
     async def cmd_week(self, who, arg, user, chat=None) -> str:
@@ -2498,7 +2522,7 @@ class Bot:
                     if meal not in ("side", "nibble")
                 )
                 lines.append(f"{t.raw('days_short')[i]}: {dishes}")
-        lines.append(self.url(f"/week?d={monday.isoformat()}"))
+        lines.append(self.link(t("link_week"), f"/week?d={monday.isoformat()}"))
         return "\n".join(lines)
 
     async def cmd_list(self, who, arg, user, chat=None) -> str:
@@ -2516,7 +2540,7 @@ class Bot:
                 lines.append(f"- {line.text}")
             if store.total:
                 lines.append(t("shopping_total", total=t.money(store.total)))
-        lines.append(self.url(f"/list?d={monday.isoformat()}"))
+        lines.append(self.link(t("link_list"), f"/list?d={monday.isoformat()}"))
         return "\n".join(lines)
 
     async def cmd_batch(self, who, arg, user, chat=None) -> str:
@@ -2541,7 +2565,7 @@ class Bot:
         if not blocks:
             return t("batch_none")
         lines = [t("batch_title", date=t.date(monday, False)), *("\n" + b for b in blocks)]
-        lines.append(self.url(f"/batch?d={monday.isoformat()}"))
+        lines.append(self.link(t("link_sheet"), f"/batch?d={monday.isoformat()}"))
         return "\n".join(lines)
 
     def _need_person(self, who, user):
@@ -2682,7 +2706,9 @@ class Bot:
             rest = {day + dt.timedelta(days=i) for i in range(7 - day.weekday())}
             if rest <= paused_days(data):  # the rest of the week is paused: nothing to buy for
                 return None
-            return t("reminder_shopping", url=self.url(f"/list?d={day.isoformat()}"))
+            return t(
+                "reminder_shopping", url=self.link(t("link_list"), f"/list?d={day.isoformat()}")
+            )
         if r.kind == "batch":
             said = [
                 x
@@ -2704,8 +2730,9 @@ class Bot:
             ):
                 return t(
                     "reminder_defrost",
-                    dish=data.recipes[tomorrow.lunch].name,
-                    url=self.url(f"/recipe/{tomorrow.lunch}?d={tomorrow.date.isoformat()}"),
+                    dish=self.recipe_url(
+                        tomorrow.lunch, tomorrow.date, data.recipes[tomorrow.lunch].name
+                    ),
                 )
             return None
         if r.kind == "meal":
@@ -2728,9 +2755,8 @@ class Bot:
             text = t(
                 "reminder_meal",
                 meal=t("meal_" + r.meal),
-                dish=rec.name,
+                dish=self.recipe_url(rid, day, rec.name),
                 where=where,
-                url=self.url(f"/recipe/{rid}?d={day.isoformat()}"),
             )
             return text + (f"\n▶ {rec.video}" if rec.video else "")
         if r.kind == "pills_lunch":
@@ -2758,7 +2784,7 @@ class Bot:
             if s.date == day and not s.morning:
                 dishes = self.batch_text(data, plan, day, s)
                 if dishes:  # every dish deleted: nothing to remind about yet
-                    url = self.url(f"/batch?d={day.isoformat()}")
+                    url = self.link(t("link_sheet"), f"/batch?d={day.isoformat()}")
                     said.append(t("reminder_batch", dishes=dishes, url=url))
                     break
         tomorrow = day + dt.timedelta(days=1)
@@ -2767,7 +2793,7 @@ class Bot:
             if s.date == tomorrow and s.morning and not self._session_reminded(s, day):
                 dishes = self.batch_text(data, later, tomorrow, s)
                 if dishes:
-                    url = self.url(f"/batch?d={tomorrow.isoformat()}")
+                    url = self.link(t("link_sheet"), f"/batch?d={tomorrow.isoformat()}")
                     said.append(t("reminder_batch_morning", dishes=dishes, url=url))
                     break
         return "\n\n".join(said) or None
@@ -2802,15 +2828,18 @@ class Bot:
             if b.containers
         }
         items = "\n".join(
-            t("reminder_soak_item", name=x.ingredient.name, amount=x.amount, dish=x.recipe.name)
-            + (
-                f"\n  {self.recipe_url(x.recipe.id, eaten[x.recipe.id])}"
+            t(
+                "reminder_soak_item",
+                name=x.ingredient.name,
+                amount=x.amount,
+                dish=self.recipe_url(x.recipe.id, eaten[x.recipe.id], x.recipe.name)
                 if x.recipe.id in eaten
-                else ""
+                else x.recipe.name,
             )
             for x in soaks
         )
-        return t("reminder_soak", items=items, url=self.url(f"/batch?d={tomorrow.isoformat()}"))
+        url = self.link(t("link_sheet"), f"/batch?d={tomorrow.isoformat()}")
+        return t("reminder_soak", items=items, url=url)
 
     def thaw_text(self, day: dt.date) -> str | None:
         """The evening before a day whose meals use something kept frozen (bread): take it out
@@ -2829,12 +2858,15 @@ class Bot:
                 name=x.ingredient.name,
                 amount=x.amount,
                 meal=t("meal_" + x.meal),
-                dish=x.recipe.name,
+                dish=self.recipe_url(x.recipe.id, tomorrow, x.recipe.name),
             )
-            + f"\n  {self.recipe_url(x.recipe.id, tomorrow)}"
             for x in thaws
         )
-        return t("reminder_thaw", items=items, url=self.url(f"/?d={tomorrow.isoformat()}"))
+        return t(
+            "reminder_thaw",
+            items=items,
+            url=self.link(t("link_day"), f"/?d={tomorrow.isoformat()}"),
+        )
 
     def batch_text(self, data, plan, day: dt.date, session) -> str:
         """The session's dishes, one block each: servings, cooking time, lunches, split by person."""
@@ -2851,11 +2883,11 @@ class Bot:
             if b.recipe.id in ids
         )
 
-    def recipe_url(self, recipe: str, eaten) -> str:
-        """The recipe's page for the day the dish is eaten: every reminder about a dish ends with
-        it, so the cook has the recipe one tap away."""
+    def recipe_url(self, recipe: str, eaten, label: str | None = None) -> str:
+        """The recipe's page for the day the dish is eaten, as words to tap (the dish's name, or
+        "Recipe"): every reminder about a dish carries it, so the cook has the recipe one tap away."""
         day = eaten.isoformat() if isinstance(eaten, dt.date) else str(eaten)
-        return self.url(f"/recipe/{recipe}?d={day}")
+        return self.link(label or self.t("link_recipe"), f"/recipe/{recipe}?d={day}")
 
     def menu_text(self, plan, day: dt.date) -> str | None:
         """The whole day's menu in a few lines, with where lunch comes from and the day's page."""
@@ -2890,10 +2922,10 @@ class Bot:
                 t(
                     "reminder_day_missing",
                     items=", ".join(f"{ing.name} ({rec.name})" for ing, rec in missing),
-                    url=self.url(f"/list?d={day.isoformat()}"),
+                    url=self.link(t("link_list"), f"/list?d={day.isoformat()}"),
                 )
             )
-        lines.append(self.url(f"/?d={day.isoformat()}"))
+        lines.append(self.link(t("link_day"), f"/?d={day.isoformat()}"))
         return "\n".join(lines)
 
     async def tick_reminders(self, client) -> None:
@@ -2932,9 +2964,9 @@ class Bot:
                 t(
                     "plan_ready_week",
                     date=t.date(monday, False),
-                    week=self.url(f"/week?d={d}"),
-                    list=self.url(f"/list?d={d}"),
-                    batch=self.url(f"/batch?d={d}"),
+                    week=self.link(t("link_week"), f"/week?d={d}"),
+                    list=self.link(t("link_list"), f"/list?d={d}"),
+                    batch=self.link(t("link_sheet"), f"/batch?d={d}"),
                 )
             )
             monday += dt.timedelta(days=7)
