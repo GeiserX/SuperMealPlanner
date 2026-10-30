@@ -2901,6 +2901,7 @@ class Bot:
         if chat is None:
             return
         now = dt.datetime.now(ZoneInfo(self.data.household.timezone))
+        at_once: dict[str, list] = {}
         for r, at in self.due(now):
             if self.state.db.was_sent(r.id, now.date(), at):
                 continue
@@ -2909,10 +2910,13 @@ class Bot:
                 self.state.db.mark_sent(r.id, now.date(), at)
                 self.spawn(self.drive(client, chat))
                 continue
-            text = self.reminder_text(r, now.date())
-            if text:
-                await self.send(client, chat, text)
-            self.state.db.mark_sent(r.id, now.date(), at)  # only after Telegram took it
+            at_once.setdefault(at, []).append(r)
+        for at, rs in at_once.items():  # reminders due at one time go as one message
+            said = [x for x in (self.reminder_text(r, now.date()) for r in rs) if x]
+            if said:
+                await self.send(client, chat, "\n\n".join(said))
+            for r in rs:  # only after Telegram took it
+                self.state.db.mark_sent(r.id, now.date(), at)
 
     def announcement(self, start: dt.date) -> str | None:
         """The new menu in a few lines: the links to each week's menu, list and batch sheet."""
