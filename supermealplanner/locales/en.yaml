@@ -322,7 +322,7 @@ reminders_cancelled: "Cancelled {n}"
 reminder_cancelled: "Cancelled."
 reminder_cancelled_log: "⏰ Reminder cancelled: {when}: {text}"
 ask_preapproved: "Approved with the 📅 (in the calendar) button:\n{summary}"
-bot_about_once: "⏰ Reminders\nWhen I tell you to do something at a time, I offer a reminder with buttons, and one tap sets it. /reminders shows the ones set and cancels them."
+bot_about_once: "⏰ Reminders\nWhen I tell you to do something at a time, I offer a reminder with buttons, and you choose with a tap. /reminders shows the ones set and cancels them."
 bot_cmd_reminders: "The reminders to come, to cancel one"
 reminder_not_yours: "Only the household or whoever set it can cancel a reminder."
 

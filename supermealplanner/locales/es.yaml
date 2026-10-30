@@ -321,7 +321,7 @@ reminders_cancelled: "Cancelado {n}"
 reminder_cancelled: "Cancelado."
 reminder_cancelled_log: "⏰ Recordatorio cancelado: {when}: {text}"
 ask_preapproved: "Aprobado al pulsar 📅 (en el calendario):\n{summary}"
-bot_about_once: "⏰ Recordatorios\nCuando os digo que hagáis algo a una hora, os ofrezco un recordatorio con botones, y con un toque queda puesto. /recordatorios enseña los que hay y deja cancelarlos."
+bot_about_once: "⏰ Recordatorios\nCuando os digo que hagáis algo a una hora, os ofrezco un recordatorio con botones y elegís con un toque. /recordatorios enseña los que hay y deja cancelarlos."
 bot_cmd_reminders: "Los recordatorios pendientes, para cancelarlos"
 reminder_not_yours: "Solo la casa o quien lo puso puede cancelar un recordatorio."
 
