@@ -100,6 +100,11 @@ def reply(data_dir, **cfg):
 TO_BOT = {"reply_to_message": {"from": {"id": 99}}}  # a reply to one of the bot's messages
 
 
+def refusals(db, chat=-100):
+    """Why the app refused a change, as the AI reads it in the chat's record."""
+    return [r["text"] for r in db.recent_chat(chat, 50) if "the change was refused" in r["text"]]
+
+
 def acts(data_dir):
     path = data_dir / "plugins" / "acts.jsonl"
     return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
@@ -706,7 +711,7 @@ def test_the_bot_applies_a_change_only_after_the_askers_yes(data_dir, repo, tmp_
     assert b.state.data.household.lunch_time == "14:00"
     run(b.handle(None, msg("yes!", **TO_BOT)))
     assert b.state.data.household.lunch_time == "14:30"  # saved and reloaded
-    assert ChatBot.texts(b, -100)[-1].startswith("Done")
+    assert ChatBot.texts(b, -100)[-1] == "✓ Done: lunch time."  # what it touched, no values
     assert git(repo, "log", "-1", "--format=%s").startswith("chat: Lunch time")
 
 
@@ -780,7 +785,8 @@ def test_the_bot_lets_a_person_add_only_to_their_own_avoided_foods(data_dir, tmp
     b = ChatBot(data, db)
     reply(data_dir, text=block({"set": {"household.people.luis.avoid_ingredients": ["salmon"]}}))
     run(b.handle(None, msg("@chefbot Luis ya no evita espinacas", user=8)))  # Ana, for Luis
-    assert "only the person themselves" in ChatBot.texts(b)[-1]
+    assert ChatBot.texts(b)[-1] == b.t("change_invalid")  # the app's reason is for the AI only
+    assert "only the person themselves" in refusals(db)[-1]
     assert db.get_kv("bot.waiting.-100") is None
     reply(
         data_dir,
@@ -799,7 +805,9 @@ def test_forbidden_changes_and_strangers_are_refused(data_dir, tmp_path):
     b = ChatBot(data, db)
     reply(data_dir, text=block({"set": {"household.people.luis.kcal.start": 1200}}))
     run(b.handle(None, msg("@chefbot bájame las calorías")))
-    assert "cannot be changed from the chat" in ChatBot.texts(b)[-1]
+    assert ChatBot.texts(b)[-1] == b.t("change_invalid")
+    assert "cannot be changed from the chat" in refusals(db)[-1]
+    assert "cannot be changed" not in " ".join(ChatBot.texts(b))
     assert db.get_kv("bot.waiting.-100") is None
     reply(data_dir, text=block({"set": {"household.lunch_time": "15:00"}}))
     run(b.handle(None, msg("@chefbot comemos a las 15", user=555)))  # in the group, not household

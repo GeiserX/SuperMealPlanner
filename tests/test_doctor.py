@@ -238,13 +238,12 @@ def test_a_dish_swapped_out_cancels_its_reminder_and_one_line_says_so(data_dir, 
     run(b.handle(None, msg("@chefbot another fish on Thursday", message_id=1)))
     assert db.reminder(fish)["state"] == "cancelled"
     assert db.reminder(breakfast)["state"] == db.reminder(plain)["state"] == "pending"
-    said = [p["text"] for p in sends(b, -100) if "the menu no longer has its dish" in p["text"]]
-    assert said == [
-        (
-            f"🗑 Reminder cancelled, the menu no longer has its dish: {b._when(at)}: "
-            "Move the fish to the fridge"
-        )
-    ]
+    (said,) = [p["text"] for p in sends(b, -100)]  # one message: the answer says it all
+    assert said.endswith(
+        f"\n\n🗑 Reminder cancelled, the menu no longer has its dish: {b._when(at)}: "
+        "Move the fish to the fridge"
+    )
+    assert said.count("the menu no longer has its dish") == 1
 
 
 def test_a_stale_reminder_never_reaches_the_facts_of_any_chat(data_dir, tmp_path):
@@ -292,7 +291,8 @@ def test_a_change_that_splits_a_dish_says_so_in_one_line_under_the_answer(data_d
     set_ = {"date": str(D(3)), "meal": "lunch", "recipe": thu.lunch, "cook": str(D(2))}
     cfg(data_dir, text=change({"asked": True, "plan": [{"set": set_}]}))
     run(b.handle(None, msg("@chefbot cook Thursday's lunch on Wednesday", message_id=1)))
-    (line,) = [p["text"] for p in sends(b, -100) if p["text"].startswith("⚠️")]
+    (said,) = [p["text"] for p in sends(b, -100)]  # under the answer, in its message
+    line = said.rsplit("\n\n", 1)[-1]
     assert line.startswith("⚠️ This change left something to fix: ")
     assert "is cooked twice; one cook on" in line and "\n" not in line
 

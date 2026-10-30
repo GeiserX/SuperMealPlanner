@@ -15,6 +15,8 @@ The AI ends an answer with one fenced block:
       - remove: {person: ana, text: Works 9 to 14 on Tuesdays}
     plan:           # the menu itself, see menu.py
       - set: {date: 2026-01-14, meal: dinner, recipe: tuna-salad}
+    ingredients:    # new ones only, so a recipe can use them and they land on the shopping list
+      basmati: {name: Basmati rice, section: pantry, store: corner-shop, unit: g}
     ```
 
 Only the paths in ALLOWED can change; pills, calorie and protein targets and goals never can. Avoided
@@ -88,6 +90,19 @@ RECIPE_FIELDS = (
     "ingredients",
     "nutrition",
 )
+# what a new ingredient may carry; one that exists changes only by hand
+INGREDIENT_FIELDS = (
+    "name",
+    "section",
+    "store",
+    "unit",
+    "kitchen",
+    "flags",
+    "clean_label",
+    "soak",
+    "frozen",
+    "keeps_days",
+)
 NOTES_MAX = 20  # chat notes per person
 NOTE_MAX = 300  # characters in one
 INSTRUCTIONS_MAX = 4000  # characters of the assistant's own instructions a chat change may set
@@ -119,6 +134,7 @@ class Proposal:
     notes: list[tuple[str, str, str]] = field(default_factory=list)  # (add|remove, person, text)
     plan: list[menu.Op] = field(default_factory=list)  # menu changes, written under state/
     pantry: dict[str, float] = field(default_factory=dict)  # ingredient -> amount at home now
+    ingredients: dict[str, dict] = field(default_factory=dict)  # new ingredient id -> its fields
     asked: bool = False  # the person asked for exactly this: no yes/no round
     raw: dict = field(default_factory=dict)  # JSON-safe, kept while the bot waits for a yes
 
@@ -157,7 +173,7 @@ OWN = {"avoid", "swaps", "training_days"}
 def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
     """Check a proposed change against the allow-list, for the household member who asked. Raises
     ChangeError with the reason."""
-    known = {"set", "recipe", "recipes", "notes", "plan", "pantry", "asked"}
+    known = {"set", "recipe", "recipes", "notes", "plan", "pantry", "ingredients", "asked"}
     if set(raw) - known:
         raise ChangeError(
             f"unknown keys {sorted(set(raw) - known)}; use {', '.join(sorted(known))}"
@@ -260,9 +276,16 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
             out.plan = menu.parse(raw["plan"], data, (out.recipe or {}).get("id"))
         except menu.MenuError as e:
             raise ChangeError(str(e)) from None
-    out.pantry = _pantry(raw.get("pantry"), data)
+    out.ingredients = _ingredients(raw.get("ingredients"), data)
+    out.pantry = _pantry(raw.get("pantry"), data, out.ingredients)
     if not (
-        out.edits or out.recipe is not None or out.recipes or out.notes or out.plan or out.pantry
+        out.edits
+        or out.recipe is not None
+        or out.recipes
+        or out.notes
+        or out.plan
+        or out.pantry
+        or out.ingredients
     ):
         raise ChangeError("the change is empty")
     return out
@@ -271,18 +294,52 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
 PANTRY_MAX = 100_000  # g, ml or units of one ingredient: more is a typo
 
 
-def _pantry(raw, data: Data) -> dict[str, float]:
+def _ingredients(raw, data: Data) -> dict[str, dict]:
+    """`ingredients: {<new id>: {name, section, store, unit, ...}}`: ingredients the data lacks, so
+    a recipe can use them and the shopping list buys them. The section and the store must be ones
+    the data already has; an ingredient that exists changes only by hand."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        raise ChangeError("ingredients must map a new ingredient id to its fields")
+    sections = set(data.settings.sections) | {i.section for i in data.ingredients.values()}
+    stores = set(data.settings.stores) | {i.store for i in data.ingredients.values()}
+    out = {}
+    for iid, fields in raw.items():
+        iid = str(iid)
+        if not RECIPE_ID.fullmatch(iid):
+            raise ChangeError(f"{iid}: an ingredient id is lowercase letters, digits and dashes")
+        if iid in data.ingredients:
+            raise ChangeError(f"an ingredient {iid} already exists; only new ones can be added")
+        if not isinstance(fields, dict) or not str(fields.get("name") or "").strip():
+            raise ChangeError(f"ingredients.{iid} needs at least a name, a section and a store")
+        bad = set(fields) - set(INGREDIENT_FIELDS)
+        if bad:
+            raise ChangeError(
+                f"ingredients.{iid}: {', '.join(sorted(map(str, bad)))} is not an ingredient "
+                f"field; use {', '.join(INGREDIENT_FIELDS)}"
+            )
+        if fields.get("section") not in sections:
+            raise ChangeError(f"ingredients.{iid}.section is one of {', '.join(sorted(sections))}")
+        if fields.get("store") not in stores:
+            raise ChangeError(f"ingredients.{iid}.store is one of {', '.join(sorted(stores))}")
+        out[iid] = fields
+    return out
+
+
+def _pantry(raw, data: Data, new: dict | None = None) -> dict[str, float]:
     """`pantry: {<ingredient id>: <amount at home now, in its unit>}`; 0 means it ran out."""
     if raw is None:
         return {}
     if not isinstance(raw, dict) or not raw:
         raise ChangeError("pantry must map an ingredient id to the amount at home now")
+    new = new or {}
     out = {}
     for iid, qty in raw.items():
-        if iid not in data.ingredients:
+        if iid not in data.ingredients and iid not in new:
             raise ChangeError(f"no ingredient {iid}")
         if isinstance(qty, bool) or not isinstance(qty, int | float) or not 0 <= qty <= PANTRY_MAX:
-            unit = data.ingredients[iid].unit
+            unit = data.ingredients[iid].unit if iid in data.ingredients else new[iid].get("unit")
             raise ChangeError(f"pantry.{iid} is an amount in {unit}, 0 to {PANTRY_MAX}")
         out[str(iid)] = float(qty)
     return out
@@ -453,6 +510,8 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
     for op, pid, text in p.notes:
         name = data.household.person(pid).name
         lines.append("• " + t(f"change_note_{op}", name=name, text=text))
+    for fields in p.ingredients.values():
+        lines.append("• " + t("change_ingredient", name=fields["name"]))
     new = {p.recipe["id"]: p.recipe.get("name")} if p.recipe else None
     lines += menu.describe(p.plan, data, t, new)
     from .portions import fmt_qty
@@ -465,6 +524,38 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
             line = t("change_pantry_out", name=ing.name)
         lines.append(f"• {line}")
     return lines
+
+
+def summary(p: Proposal, data: Data, t) -> str:
+    """What a made change touched, in one plain line, never the values it set: the field by field
+    lines are for the commit and for a change that waits for a yes. `data` is the data after the
+    change, so a renamed recipe shows its new name."""
+    parts = []
+    if p.recipe is not None:
+        rid = str(p.recipe.get("id"))
+        name = data.recipes[rid].name if rid in data.recipes else p.recipe.get("name", rid)
+        parts.append(t("change_part_recipe_new", name=name))
+    for rid in p.recipes:
+        name = data.recipes[rid].name if rid in data.recipes else rid
+        parts.append(t("change_part_recipe", name=name))
+    if any(op.kind in ("set", "swap") for op in p.plan):
+        parts.append(t("change_part_menu"))
+    # a pause, a shift or a new draw is one sentence with its days, which the chat needs
+    for line in menu.describe([op for op in p.plan if op.kind not in ("set", "swap")], data, t):
+        line = line.removeprefix("• ")
+        parts.append(line[:1].lower() + line[1:])
+    for e in p.edits:
+        name = data.household.person(e.arg).name if e.label in OWN else e.arg
+        what = t(f"change_{e.label}", name=name)
+        parts.append(what[:1].lower() + what[1:])
+    people = dict.fromkeys(data.household.person(pid).name for _op, pid, _text in p.notes)
+    if people:
+        parts.append(t("change_part_notes", names=", ".join(people)))
+    for fields in p.ingredients.values():
+        parts.append(t("change_part_ingredient", name=fields["name"]))
+    if p.pantry:
+        parts.append(t("change_part_pantry"))
+    return t("change_done", what=", ".join(dict.fromkeys(parts)))
 
 
 def _swaps(value, data: Data, t) -> str:
@@ -541,6 +632,7 @@ def touches(p: Proposal) -> set[tuple]:
         else:
             out.add(("plan", op.kind, *sorted(f"{k}={v}" for k, v in op.args.items())))
     out |= {("pantry", iid) for iid in p.pantry}
+    out |= {("ingredient", iid) for iid in p.ingredients}
     return out
 
 
@@ -569,6 +661,8 @@ def manual(p: Proposal) -> list[str]:
         lines.append(
             f"household.yaml: people.{pid}.chat_notes {op} {json.dumps(text, ensure_ascii=False)}"
         )
+    for iid, fields in p.ingredients.items():
+        lines.append(f"ingredients.yaml: {iid} = {json.dumps(fields, ensure_ascii=False)}")
     return lines
 
 
@@ -680,6 +774,14 @@ def render(root: Path, p: Proposal) -> dict[str, str]:
         buf = io.StringIO()
         y.dump(doc, buf)
         out[name] = buf.getvalue()
+    if p.ingredients:
+        path = root / "ingredients.yaml"
+        y, doc = _yaml(path.read_text(encoding="utf-8") if path.exists() else "")
+        for iid, fields in p.ingredients.items():
+            _assign(doc, iid, fields)
+        buf = io.StringIO()
+        y.dump(doc, buf)
+        out["ingredients.yaml"] = buf.getvalue()
     if p.recipe is not None:
         out[f"recipes/{p.recipe['id']}.yaml"] = yaml.safe_dump(
             p.recipe, allow_unicode=True, sort_keys=False

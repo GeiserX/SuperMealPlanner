@@ -215,10 +215,8 @@ change_confirm: "{name}, ¿hago este cambio?\n{lines}\nToca Sí o No. Si quieres
 change_yes_words: ["sí", "si", "vale", "ok", "okay", "claro", "dale", "adelante", "venga", "yes"]
 change_no_words: ["no", "nop", "cancela", "cancelar"]
 change_cancelled: Vale, no cambio nada.
-change_applied: "Hecho, ya está guardado (cambio {sha}). Se puede deshacer desde el repositorio de datos."
-change_saved: "Guardado como cambio {sha}; se puede deshacer desde el repositorio de datos."
-change_failed: "No he podido guardar el cambio, no se ha tocado nada: {error}"
-change_invalid: "Ese cambio no lo puedo hacer: {error}"
+change_failed: "No he podido guardar el cambio; no se ha tocado nada."
+change_invalid: "Ese cambio no lo he podido hacer; no se ha tocado nada."
 change_manual: "Aquí no puedo editar los ajustes yo (no tengo permiso de escritura en el repositorio de datos). Una persona puede hacer este cambio a mano:"
 change_members_only: Solo las personas de casa pueden cambiar los ajustes.
 change_none: (nada)
@@ -274,8 +272,14 @@ change_plan_resume: "Menú otra vez en marcha del {first} al {last}"
 change_plan_regenerate: "Menú nuevo a partir del {day}; los días anteriores se quedan como están"
 change_plan_shift: "El menú a partir del {day} se retrasa y vuelve a empezar el {back}; los días de en medio quedan en pausa"
 change_plan_undo: Se deshace el último cambio del menú
-change_done: "Hecho:\n{lines}"
-menu_applied: "El menú ya está actualizado. Para volver atrás, pedidme que deshaga el último cambio del menú."
+change_done: "✓ Hecho: {what}."
+change_part_recipe: "receta «{name}»"
+change_part_recipe_new: "receta nueva «{name}»"
+change_part_menu: el menú
+change_part_notes: "notas sobre {names}"
+change_part_ingredient: "«{name}» en la lista de la compra"
+change_part_pantry: la despensa
+change_ingredient: "Ingrediente nuevo: {name}"
 proposal_confirm: "{name}, ¿lo hago?\n{summary}\nToca Sí o No. Si quieres otra cosa, responde a este mensaje."
 proposal_no_admins: "Esto solo lo puede aprobar un administrador, y no hay ninguno configurado (bot.admins)."
 proposal_members_only: Solo las personas de casa pueden pedir esto.
@@ -364,7 +368,7 @@ voice_heard_group: "🎙️ {name} (por voz): {text}"
 review_who: "revisión semanal"
 review_turn: "[Revisión semanal, automática: no lo ha escrito nadie] Revisa la semana del {week} ({d}) antes de la compra de la semana, día a día: que el menú cumple todo lo que hemos pedido en el chat y en las instrucciones (lo que le gusta y no le gusta a cada uno, la salud de cada uno, los invitados, los días sin cocinar), que no se desperdicia nada de lo comprado o de lo que hay en casa (lo comprado que no usa ningún plato entra en el menú antes de que se estropee), que cada sesión de cocinar por adelantado se puede hacer (remojo, descongelar, tiempo) y que la lista está bien, y los problemas que ha encontrado la app (en tus datos). Arregla con cambios del menú lo que no cumpla, sin volver a preguntar lo ya decidido, y escribe un solo mensaje corto al grupo: qué has cambiado y por qué, y qué tiene que hacer cada uno esta semana. Si todo cuadra, dilo en una línea."
 plan_check_who: "revisión del plan"
-plan_check_turn: "[Revisión del plan, automática: no lo ha escrito nadie] La revisión del plan tal como está ha encontrado problemas en esta semana y la siguiente (en tus datos, en «Problems the app found»). Arréglalos con cambios del menú, sin volver a preguntar lo ya decidido, y escribe un solo mensaje corto: qué has cambiado y por qué, y qué tiene que hacer cada uno. Lo que no puedas arreglar tú solo va en el mensaje como pregunta."
+plan_check_turn: "[Revisión del plan, automática: no lo ha escrito nadie] La revisión del plan tal como está ha encontrado problemas en esta semana y la siguiente (en tus datos, en «Problems the app found»). Propón los arreglos con cambios del menú, sin volver a preguntar lo ya decidido: la casa los confirma con un toque, así que no digas que ya están hechos. Escribe un solo mensaje corto: qué propones y por qué, y qué tiene que hacer cada uno. Lo que no puedas arreglar tú solo va en el mensaje como pregunta."
 
 # the consistency check (doctor.py): what the app found, after a change and in the morning
 doctor_reminder_cancelled: "🗑 Recordatorio cancelado, el menú ya no tiene ese plato: {when}: {text}"
@@ -384,7 +388,6 @@ pantry_empty: "Nada todavía: lo que marcas en la lista entra aquí."
 pantry_note: "La calcula la app: marcar algo añade lo comprado, cada cocinado se lleva sus ingredientes y lo fresco caduca. Dile al asistente cuándo se ha acabado algo o cuánto queda."
 pantry_off_list: "basta para esta semana: fuera de la lista"
 pantry_until: "bueno hasta el {date}"
-pantry_applied: "🧺 Despensa actualizada."
 change_pantry: "En la despensa: {name}, {amount}"
 change_pantry_out: "En la despensa: se ha acabado {name}"
 problem_going_off: "{food} de la despensa aguanta hasta el {date} y ningún plato lo usa antes"

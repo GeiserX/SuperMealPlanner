@@ -246,9 +246,9 @@ def test_the_chat_corrects_the_pantry_with_a_change_and_says_so(data_dir, tmp_pa
     today = dt.datetime.now(ZONE).date()  # the chat's word is taken as of now
     assert qty(b.data, db, today, "pollo") == 0
     assert qty(b.data, db, today, "lenteja") == 1000
-    said = sends(b, -100)[-1]["text"]
-    assert "In the pantry: Pollo ran out" in said and "In the pantry: Lenteja, 1000 g" in said
-    assert "Pantry updated." in said
+    (said,) = [p["text"] for p in sends(b, -100)]  # the answer and one line under it
+    assert said.endswith("\n\n✓ Done: the pantry.\nhttps://meals.example/list")
+    assert "Pollo" not in said  # what it touched, never the values
 
 
 def test_a_pantry_change_with_an_unknown_food_or_a_bad_amount_is_refused(data):

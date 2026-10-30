@@ -73,10 +73,10 @@ def block(*rows):
 
 
 def is_offer(params):
-    return (
-        params["text"]
-        .split("\n", 1)[0]
-        .endswith(("shall I remind you?", "Shall I set a reminder?"))
+    """A message that carries a reminder offer: on its own, or under the answer."""
+    return any(
+        line.endswith(("shall I remind you?", "Shall I set a reminder?"))
+        for line in params["text"].split("\n")
     )
 
 
@@ -118,12 +118,14 @@ def test_steps_at_a_time_are_offered_as_reminders_with_buttons_and_no_line_for_n
         + block((sunday, "Cook Monday's lunch"), (saturday, "Move the fish to the fridge", "ana")),
     )
     run(b.handle(None, msg("@chefbot what do I cook on Monday?", message_id=1)))
-    answer, offer = sends(b, -100)[-2:]
-    assert answer["text"] == "Cook it on Sunday afternoon."  # the block never reaches the chat
-    assert offer["text"].startswith("Luis, Ana, shall I remind you?")
-    assert "1. " in offer["text"] and "Cook Monday's lunch" in offer["text"]
-    assert "18:00" in offer["text"] and "22:00" in offer["text"]
-    assert offer["text"].endswith(": Move the fish to the fridge")  # nothing under the steps
+    (offer,) = sends(b, -100)  # one message: the answer, and the offer under it
+    head, rest = offer["text"].split("\n\n", 1)
+    assert head == "Cook it on Sunday afternoon."  # the block never reaches the chat
+    assert rest.startswith("Luis, Ana, shall I remind you?")
+    # the steps in full sit in a fold: the buttons already name each one
+    assert "<blockquote expandable>1. " in rest and "Cook Monday's lunch" in rest
+    assert "18:00" in rest and "22:00" in rest
+    assert rest.endswith(": Move the fish to the fridge</blockquote>")  # nothing under the steps
     assert "do nothing" not in offer["text"]
     # calendar off by default: only «here» per reminder; untapped, nothing is done anyway
     # each button says what it sets, so two reminders' buttons never read the same
@@ -540,7 +542,8 @@ def test_a_reminder_the_person_asked_for_is_set_at_once_without_an_offer(data_di
     (r,) = db.reminders(-100)
     assert (r["person"], r["at"], r["text"], r["by"]) == ("ana", at, "Order the shopping", 7)
     assert not [p for p in sends(b, -100) if is_offer(p)]
-    assert any(p["text"].startswith("⏰ Reminder set for") for p in sends(b, -100))
+    (said,) = sends(b, -100)  # the answer says it was set, in the same message
+    assert said["text"].startswith("Done.\n\n⏰ Reminder set for")
 
 
 def test_a_reminder_a_change_made_wrong_is_cancelled_and_the_ai_sees_the_chats_reminders(
