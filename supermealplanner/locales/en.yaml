@@ -298,8 +298,8 @@ ask_failed: "It failed: {error}"
 ask_edited: "You edited your message, so I did not make this change. Nothing changed."
 
 # one-off reminders the AI offers, /reminders
-remind_offer: "{name}, shall I remind you?\n{lines}\n\nIf you do not answer, I do nothing."
-remind_offer_nobody: "Shall I set a reminder?\n{lines}\n\nIf you do not answer, I do nothing."
+remind_offer: "{name}, shall I remind you?\n{lines}"
+remind_offer_nobody: "Shall I set a reminder?\n{lines}"
 remind_here: "🔔 {when} · {what}"
 remind_legend: "🔔 a reminder here · 📅 in the calendar"
 remind_calendar: "📅 {when} · {what}"

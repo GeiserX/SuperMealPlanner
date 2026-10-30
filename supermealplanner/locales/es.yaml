@@ -297,8 +297,8 @@ ask_failed: "Falló: {error}"
 ask_edited: "Has editado tu mensaje, así que no he hecho este cambio. No he cambiado nada."
 
 # recordatorios que ofrece la IA, /recordatorios
-remind_offer: "{name}, ¿quieres que te lo recuerde?\n{lines}\n\nSi no respondes, no hago nada."
-remind_offer_nobody: "¿Quieres que lo recuerde?\n{lines}\n\nSi no respondes, no hago nada."
+remind_offer: "{name}, ¿quieres que te lo recuerde?\n{lines}"
+remind_offer_nobody: "¿Quieres que lo recuerde?\n{lines}"
 remind_here: "🔔 {when} · {what}"
 remind_legend: "🔔 recordatorio aquí · 📅 en el calendario"
 remind_calendar: "📅 {when} · {what}"
