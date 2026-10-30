@@ -22,7 +22,6 @@ meal_dinner: Cena
 no_plan_day: "No hay plan para este día todavía. Se genera solo cada hora; también con: supermealplanner plan --start <lunes> --write"
 no_plan_week: No hay plan para esta semana.
 calendar_busy: "Agenda: {events}"
-batch_today: "Hoy toca cocinar por adelantado por la tarde."
 see_sheet: Ver hoja
 defrost_tonight: "Esta noche: pasa {dish} del congelador a la nevera."
 lunch_fresh: Recién hecho

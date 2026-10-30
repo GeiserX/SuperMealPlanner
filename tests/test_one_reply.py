@@ -257,3 +257,14 @@ def test_nothing_says_what_happens_when_nobody_answers_or_promises_an_own_words_
     assert "do not answer" not in about["en"] and "do nothing" not in about["en"]
     assert "no respondéis" not in about["es"] and "no hago nada" not in about["es"]
     assert "/reminders" in about["en"] and "/recordatorios" in about["es"]
+
+
+def test_no_text_says_the_cooking_is_this_afternoon():
+    """A session may be cooked in the evening: no text pins today's cooking to the afternoon."""
+    locales = Path(context.__file__).parent / "locales"
+    en = yaml.safe_load((locales / "en.yaml").read_text())
+    es = yaml.safe_load((locales / "es.yaml").read_text())
+    assert not [k for k, v in en.items() if isinstance(v, str) and "this afternoon" in v]
+    assert not [
+        k for k, v in es.items() if isinstance(v, str) and "Hoy" in v and "por la tarde" in v
+    ]
