@@ -2823,9 +2823,6 @@ class Bot:
         thaws = thaw_for(self.data, self.state.db, plan, tomorrow) if plan else []
         if not thaws:
             return None
-        # a lunch the session cooks for several days: the sheet has the whole session's amounts
-        session = any(x.date == tomorrow for x in plan.sessions)
-        sheet = self.url(f"/batch?d={tomorrow.isoformat()}")
         items = "\n".join(
             t(
                 "reminder_thaw_item",
@@ -2834,7 +2831,7 @@ class Bot:
                 meal=t("meal_" + x.meal),
                 dish=x.recipe.name,
             )
-            + f"\n  {sheet if x.meal == 'lunch' and session else self.recipe_url(x.recipe.id, tomorrow)}"
+            + f"\n  {self.recipe_url(x.recipe.id, tomorrow)}"
             for x in thaws
         )
         return t("reminder_thaw", items=items, url=self.url(f"/?d={tomorrow.isoformat()}"))

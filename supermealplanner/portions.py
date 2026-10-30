@@ -502,40 +502,24 @@ class Thaw:
 
 def thaw_for(data: Data, db: DB, plan: Plan, day: dt.date) -> list[Thaw]:
     """What to take out of the freezer the evening before `day`: the ingredients marked `frozen`
-    in what is cooked that day, in the quantity everyone eating it needs (Sunday lunch's guests
-    too). A lunch cooked ahead counts on the day it is cooked, for every lunch it makes, never on
-    the day it is eaten."""
+    in each of that day's meals, in the quantity everyone eating it needs (Sunday lunch's guests
+    too)."""
     d = plan.day(day)
     if d is None:
         return []
-    cooked = [(meal, d) for meal in MEALS if meal != "lunch"]
-    lunches = [x for x in plan.days if x.lunch and x.lunch_cook == day]
-    out, need = [], {}
-    for meal, x in [("lunch", x) for x in lunches] + cooked:
-        r = data.recipes.get(getattr(x, meal) or "")
+    out = []
+    for meal in MEALS:
+        r = data.recipes.get(getattr(d, meal) or "")
         if r is None:
             continue
-        eaters = factors(data, db, x.date)
-        if meal == "lunch" and x.date.weekday() == 6 and data.household.guests.get("sunday_lunch"):
+        eaters = factors(data, db, day)
+        if meal == "lunch" and day.weekday() == 6 and data.household.guests.get("sunday_lunch"):
             eaters["guests"] = data.household.guests["sunday_lunch"]
         for iid, qty in amounts(data, r, eaters).items():
-            if data.ingredients[iid].frozen:
-                key = (meal, r.id, iid)
-                if key not in need:
-                    out.append(key)
-                need[key] = need.get(key, 0) + qty
-    order = {m: i for i, m in enumerate(MEALS)}
-    out.sort(key=lambda k: order[k[0]])
-    return [
-        Thaw(
-            data.recipes[rid],
-            meal,
-            data.ingredients[iid],
-            need[(meal, rid, iid)],
-            fmt_qty(data.ingredients[iid], need[(meal, rid, iid)], data.locale),
-        )
-        for meal, rid, iid in out
-    ]
+            ing = data.ingredients[iid]
+            if ing.frozen:
+                out.append(Thaw(r, meal, ing, qty, fmt_qty(ing, qty, data.locale)))
+    return out
 
 
 def batch_dish_text(t, b: BatchDish, names: dict[str, str]) -> str:
