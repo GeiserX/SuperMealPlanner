@@ -254,6 +254,18 @@ pantry:
   olive-oil: 0    # the oil ran out
 ```
 
+An ingredient the data lacks is added with `ingredients`, new ids only: a name, a section and a store the data already uses, and any other field of [ingredients.yaml](#ingredientsyaml). A recipe in the same change may use it, and the shopping list buys it. It is one git commit like the recipes.
+
+```yaml
+asked: true
+ingredients:
+  basmati-rice: {name: Basmati rice, section: pantry, store: supermarket, unit: g}
+recipes:
+  chicken-curry: {ingredients: [{id: chicken-thigh, qty: 130}, {id: basmati-rice, qty: 35}]}
+```
+
+Whatever a turn does, the chat gets one message: the answer, then one line naming what the change touched (the recipe by its new name, the menu, the pantry) with the page that shows it, the reminders it cancelled or set, and the reminder offer with its buttons. The field by field values go into the commit, never into the chat. An offer replaces the chat's earlier one. When the app refuses a change, the chat reads one plain line and the reason goes to the AI only.
+
 ### Environment
 
 | variable | what it does |

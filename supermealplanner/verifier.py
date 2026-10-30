@@ -130,15 +130,17 @@ async def review(
     as it was when there is nothing to check or anything fails."""
     try:
         _, change = changes.extract(reply.text)
-        if not in_scope(change):
-            return reply
         offered = reply.reminders or llm.extract_reminders(reply.text)[1]
+        chat = (turn.get("chat") or {}).get("id")
+        behind = left_behind(db, chat, offered) if chat is not None else []
+        if not in_scope(change):
+            return await revise(data, turn, reply, behind) if behind else reply
         found = await asyncio.to_thread(structural, data, db, today, change, asker, offered)
         if found is None:
             return reply  # the app refuses the block anyway and says why
         problems, after = found
         judged = await judge(data, today, reply.text, problems, after, viewer)
-        items = [*problems, *(f"{c}: {p}" for c, ps in judged.items() for p in ps)]
+        items = [*behind, *problems, *(f"{c}: {p}" for c, ps in judged.items() for p in ps)]
         log.info(
             "verifier: %d structural, %s judged",
             len(problems),
@@ -150,6 +152,45 @@ async def review(
     except Exception as e:  # noqa: BLE001  never in the way of the answer
         log.warning("verifier failed: %s", type(e).__name__)
         return reply
+
+
+SIBLINGS_S = 60  # reminders set within this long of each other came from one answer
+
+
+def left_behind(db: DB, chat: int, offered: list[dict]) -> list[str]:
+    """Reminders this answer leaves as they were while it cancels others set in the same answer
+    (one plan, one session): when a time moved, the ones whose text describes it were often
+    forgotten. Said to the AI once, which keeps them or cancels and rewrites them."""
+    ids = {int(r["cancel"]) for r in offered if str(r.get("cancel", "")).isdigit()}
+    if not ids:
+        return []
+    listed = {r.get("text") for r in offered if "cancel" not in r}
+    when = []
+    for rid in ids:
+        r = db.reminder(rid)
+        if r and r["chat"] == chat and r.get("created"):
+            when.append(dt.datetime.fromisoformat(r["created"]).timestamp())
+    left = [
+        r
+        for r in db.reminders(chat)
+        if r["id"] not in ids
+        and r["text"] not in listed
+        and r.get("created")
+        and any(
+            abs(dt.datetime.fromisoformat(r["created"]).timestamp() - w) <= SIBLINGS_S for w in when
+        )
+    ]
+    if not left:
+        return []
+    keep = ", ".join(str(r["id"]) for r in left)
+    gone = ", ".join(str(i) for i in sorted(ids))
+    said = (
+        f"Reminders {keep} were set together with the ones this answer cancels ({gone}) and stay "
+        "as they are. If the text or the time of one of them describes what moved (a session's "
+        "day or hour, a dish), cancel it and list it again with the right words; if it still "
+        "holds, leave it and say nothing about it."
+    )
+    return [said]
 
 
 def structural(

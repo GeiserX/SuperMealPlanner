@@ -115,7 +115,7 @@ def test_a_change_asked_for_by_voice_is_made_at_once(chef, data_dir):
     reply(data_dir, text=block({"asked": True, "plan": [pause]}))
     got = answer(client, me, say(client, me, "this week we eat what we have"))
     assert got["state"] == "done"
-    assert got["text"].startswith("Te lo cambio. Done:") and "Menu paused" in got["text"]
+    assert got["text"].startswith("Te lo cambio.") and "Done: menu paused" in got["text"]
     assert paused_days(b.state.data) == {D(i) for i in range(1, 7)}
     assert b.pending(LUIS) == []
 
@@ -131,7 +131,7 @@ def test_a_spoken_yes_settles_what_waits_for_that_person(chef, data_dir):
     assert "Tap Yes or No" in sent(b)[-1]["text"]  # the chat still has its buttons
     assert len(b.pending(LUIS)) == 1 and paused_days(b.state.data) == set()
     got = answer(client, me, say(client, me, "Yes."))
-    assert got == {"id": got["id"], "state": "done", "text": b.t("menu_applied")}
+    assert got["state"] == "done" and got["text"].startswith("Done: menu paused from")
     assert paused_days(b.state.data) == {D(i) for i in range(1, 7)}
     assert len(turns(data_dir)) == 1  # the yes never went to the AI, as a typed one does not
     assert sent(b)[-2]["text"] == "🎙️ Yes."
@@ -320,7 +320,7 @@ def test_a_spoken_yes_in_the_group_settles_what_waits_for_that_person(chef, data
     assert asked["text"].endswith("Yes or no?")
     assert len(b.pending(-100)) == 1 and paused_days(b.state.data) == set()
     got = answer(client, me, say(client, me, "Yes."))
-    assert got["text"] == b.t("menu_applied")
+    assert got["text"].startswith("Done: menu paused from")
     assert paused_days(b.state.data) == {D(i) for i in range(1, 7)}
     assert sent(b) == []  # all of it in the group
     assert [x["text"] for x in sent(b, -100)][-2] == "🎙️ Luis (by voice): Yes."

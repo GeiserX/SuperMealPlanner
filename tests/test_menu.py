@@ -23,7 +23,7 @@ from supermealplanner.planner import (
 from supermealplanner.portions import batch_sheet, needs
 
 from .conftest import MONDAY, recipe
-from .test_conversations import TO_BOT, ChatBot, block, plugin_data, reply
+from .test_conversations import TO_BOT, ChatBot, block, plugin_data, refusals, reply
 from .test_settings_stores_bot import FakeBot, bot_data, msg, run
 
 
@@ -397,9 +397,9 @@ def test_a_change_the_person_asked_for_is_made_at_once(data_dir, tmp_path, monke
     reply(data_dir, text=block({"asked": True, "plan": [pause]}))
     run(b.handle(None, msg("@chefbot esta semana comemos lo que hay")))
     said = ChatBot.texts(b, -100)
-    assert len(said) == 2 and b.pending(-100) == []  # no yes/no round
-    assert said[1].startswith("Done:") and "Menu paused from Tuesday 13 Oct" in said[1]
-    assert "undo" in said[1] and "yes" not in said[1]
+    assert len(said) == 1 and b.pending(-100) == []  # no yes/no round, one message
+    said = said[0].split("\n\n")
+    assert said[1].startswith("✓ Done: menu paused from Tuesday 13 Oct") and "yes" not in said[1]
     assert paused_days(b.state.data) == {D(i) for i in range(1, 7)}
     reply(data_dir, text=block({"asked": True, "plan": [{"undo": True}]}))
     run(b.handle(None, msg("@chefbot deshaz eso")))
@@ -418,7 +418,7 @@ def test_a_change_nobody_asked_for_still_waits_for_a_yes(data_dir, tmp_path, mon
         assert paused_days(b.state.data) == set()
     run(b.handle(None, msg("yes", **TO_BOT)))
     assert paused_days(b.state.data) == {D(i) for i in range(1, 7)}
-    assert ChatBot.texts(b, -100)[-1] == b.t("menu_applied")
+    assert ChatBot.texts(b, -100)[-1].startswith("✓ Done: menu paused from Tuesday 13 Oct")
 
 
 def test_an_asked_settings_change_is_committed_at_once_and_the_safety_rules_hold(
@@ -448,7 +448,8 @@ def test_an_asked_settings_change_is_committed_at_once_and_the_safety_rules_hold
     assert b.state.data.household.lunch_time == "14:30"
     assert plan_for(b.state.data, MONDAY).day(D(5)).dinner == was
     sha = git(data_dir, "rev-parse", "--short", "HEAD")
-    assert said.startswith("Done:") and "Lunch time: 14:00 → 14:30" in said and sha in said
+    assert said.endswith("✓ Done: the menu, lunch time.\nhttps://meals.example/week")
+    assert "14:30" not in said and sha not in said  # no values, no change id in the chat
     body = git(remote, "log", "-1", "--format=%B")
     assert "Asked by Luis in the chat." in body and "confirmed" not in body
     assert "swap" not in body  # the menu is not in the data repo: the commit names settings only
@@ -464,7 +465,7 @@ def test_an_asked_settings_change_is_committed_at_once_and_the_safety_rules_hold
     ):
         reply(data_dir, text=block({"asked": True, "set": forbidden}))
         run(b.handle(None, msg("@chefbot hazlo")))
-        assert ChatBot.texts(b, -100)[-1].startswith("I can't make that change")
+        assert ChatBot.texts(b, -100)[-1].endswith(b.t("change_invalid"))
     assert git(data_dir, "rev-parse", "--short", "HEAD") == sha
 
 
@@ -475,12 +476,12 @@ def test_a_refused_menu_change_says_why_and_strangers_change_nothing(data_dir, t
     reply(data_dir, text=block({"asked": True, "plan": [bad]}))
     run(b.handle(None, msg("@chefbot fritura el miércoles")))
     said = ChatBot.texts(b, -100)[-1]
-    assert said.startswith("I can't make that change") and "at dinner" in said
-    assert "Done" not in said
+    assert said.endswith(b.t("change_invalid")) and "Done" not in said
+    assert "at dinner" in refusals(b.state.db)[-1]  # the app's reason reaches the AI only
     pause = {"pause": {"from": str(D(1)), "to": str(D(6))}}
     reply(data_dir, text=block({"asked": True, "plan": [pause]}))
     run(b.handle(None, msg("@chefbot pausa", user=555)))
-    assert ChatBot.texts(b, -100)[-1] == b.t("change_members_only")
+    assert ChatBot.texts(b, -100)[-1].endswith(b.t("change_members_only"))
     assert paused_days(b.state.data) == set()
 
 
@@ -586,7 +587,8 @@ def test_a_recipe_taken_out_of_a_meal_leaves_the_days_planned_from_tomorrow(
     )
     run(b.handle(None, msg("@chefbot nada de yogur en el desayuno")))
     said = ChatBot.texts(b, -100)[-1]
-    assert said.startswith("Done:") and "Recipe Desayuno a, meals: breakfast → (none)" in said
+    assert "✓ Done: recipe «Desayuno a».\nhttps://meals.example/recipe/desayuno-a" in said
+    assert "breakfast → (none)" not in said
     assert "planned days from tomorrow on get another dish" in said
     new = b.state.data.recipes["desayuno-a"]
     assert new.meals == [] and new.tags == ["dairy"] and new.kind == "fixed"
@@ -606,7 +608,7 @@ def test_a_recipe_taken_out_of_a_meal_leaves_the_days_planned_from_tomorrow(
     reply(data_dir, text=block({"asked": True, "recipes": {"merienda-a": {"meals": []}}}))
     run(b.handle(None, msg("@chefbot fuera esa merienda")))
     said = ChatBot.texts(b, -100)[-1]
-    assert said.startswith("Done:") and b.t("recipe_replan_failed") in said
+    assert "✓ Done: recipe «Merienda a»." in said and b.t("recipe_replan_failed") in said
 
 
 def test_only_some_fields_of_an_existing_recipe_change_and_the_data_must_still_check(
@@ -664,7 +666,7 @@ def test_the_chat_keeps_its_own_notes_and_never_touches_the_ones_written_by_hand
         data_dir, text=block({"asked": True, "notes": [{"add": {"person": "ana", "text": note}}]})
     )
     run(b.handle(None, msg("@chefbot los martes Ana trabaja de 9 a 14")))
-    assert f"Note about Ana: {note}" in ChatBot.texts(b, -100)[-1]
+    assert ChatBot.texts(b, -100)[-1].endswith("✓ Done: notes on Ana.")
     ana = b.state.data.household.person("ana")
     assert ana.chat_notes == [note] and ana.notes == ["Follow-up with the clinic in spring"]
     group = context.facts(b.state.data, b.state.db, MONDAY, None, True)
@@ -786,7 +788,7 @@ def test_a_shift_asked_in_the_chat_is_done_and_said(data_dir, tmp_path):
     )
     run(b.handle(None, msg("@chefbot empezamos el menú la semana que viene")))
     said = ChatBot.texts(b, -100)[-1]
-    assert said.startswith("Done:") and "starts again on Monday 19 Oct" in said
+    assert "✓ Done: " in said and "starts again on Monday 19 Oct" in said
     assert "El menú a partir del" in Translator("es")("change_plan_shift", day="x", back="y")
     for bad in (
         {"from": str(D(0)), "weeks": 0},

@@ -1257,11 +1257,6 @@ class Bot:
         if not text and change is None and not reply.proposals and not listed and not acted:
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return None
-        if text:
-            await self.answer_text(client, chat_id, text, reply_to, offered, covered)
-        if acted:
-            said = text or change is not None or reply.proposals or listed  # each says something
-            await self.gesture(client, chat_id, acts, anchor.mid, bool(said), reply_to)
         if reply.conversation:
             last = max((r["id"] for r in rows), default=seen)
             if reply.kept:
@@ -1272,15 +1267,63 @@ class Bot:
                 db.set_kv(key, {"id": reply.conversation, "seen": seen, "done": sorted(done)})
         else:
             db.set_kv(key, None)
+        # One message per turn: what the change, the cancelled reminders and the check say joins
+        # the answer, and so does the reminder offer when the answer has no buttons of its own. A
+        # change that waits for a yes and a proposal still get their own message, with buttons.
+        tail: list[str] = []
         made = True  # a reminder made wrong by a change goes only once the change is made
-        if change is not None:
+        own = anchor.who is None and anchor.uid is None  # the bot's own turn: nobody asked
+        now = not own and (
+            isinstance(change, str) or (isinstance(change, dict) and change.get("asked") is True)
+        )
+        if change is not None and now:
+            made = await self.propose(
+                client, chat_id, anchor.mid, anchor.who, anchor.uid, change, tail
+            )
+        items: list[dict] = []
+        if listed:
+            if not made or (change is not None and not now):
+                listed = [r for r in listed if "cancel" not in r]
+            items = await self.settle_reminders(client, chat_id, listed, covered, reply_to, tail)
+        joined = "\n\n".join(x for x in [render.brief(text) if text else "", *tail] if x)
+        if joined:
+            offer = None
+            if items and not offered:
+                offer = self.remind_offer(items)
+                joined = f"{joined}\n\n{offer[0]}"
+            sent = await self.answer_text(
+                client,
+                chat_id,
+                joined,
+                reply_to,
+                offered or (offer[1] if offer else None),
+                covered,
+                spoken="\n\n".join(x for x in [text, *tail] if x)
+                + (f"\n\n{self.t('voice_reminders')}" if offer else ""),
+                options=not offer,
+            )
+            if offer:
+                await self.keep_offer(client, chat_id, offer[2], sent, items, covered, alone=False)
+                items = []
+        if acted:
+            said = joined or change is not None or reply.proposals or listed  # each says something
+            await self.gesture(client, chat_id, acts, anchor.mid, bool(said), reply_to)
+        if change is not None and not now:
             made = await self.propose(client, chat_id, anchor.mid, anchor.who, anchor.uid, change)
         for proposal in reply.proposals:
             await self.offer(client, chat_id, anchor.mid, anchor.who, anchor.uid, proposal)
-        if listed:
-            if not made:
-                listed = [r for r in listed if "cancel" not in r]
-            await self.offer_reminders(client, chat_id, listed, covered, reply_to)
+        if items:
+            text_, rows, key = self.remind_offer(items)
+            sent = await self.send(
+                client,
+                chat_id,
+                text_,
+                reply_to,
+                markdown=True,
+                buttons=rows,
+                spoken=self.t("voice_reminders"),
+            )
+            await self.keep_offer(client, chat_id, key, sent, items, covered, alone=True)
         return covered
 
     async def rest(self, client, chat_id: int, items: list[Item], seconds: float) -> None:
@@ -1368,24 +1411,35 @@ class Bot:
                 return None
         return gestures.sticker_for(self.stickers.get("set"), emoji)
 
-    async def answer_text(self, client, chat_id, text, reply_to, offered, covered) -> None:
-        """The answer, with the choices it offers as buttons under it. A long one shows its first
-        lines and folds the rest; a voice listener still hears all of it."""
-        shown = render.brief(text)
-        if not offered:
-            await self.send(client, chat_id, shown, reply_to, markdown=True, who=AI, spoken=text)
-            return
+    async def answer_text(
+        self, client, chat_id, text, reply_to, offered, covered, spoken=None, options=True
+    ) -> int | None:
+        """The answer (already folded where long, render.brief), with the choices it offers as
+        buttons under it, or with `options` False the rows of a reminder offer it carries. A voice
+        listener hears `spoken`, all of it. Returns the message's id."""
+        heard = text if spoken is None else spoken
+        if not offered or not options:
+            return await self.send(
+                client,
+                chat_id,
+                text,
+                reply_to,
+                markdown=True,
+                who=AI,
+                buttons=offered or None,
+                spoken=heard,
+            )
         key = secrets.token_hex(4)
         rows = [[(label, f"o:{key}:{n}")] for n, label in enumerate(offered)]
         sent = await self.send(
             client,
             chat_id,
-            shown,
+            text,
             reply_to,
             markdown=True,
             who=AI,
             buttons=rows,
-            spoken=f"{text}\n\n{self.t('voice_options', choices=_either(self.t, offered))}",
+            spoken=f"{heard}\n\n{self.t('voice_options', choices=_either(self.t, offered))}",
         )
         users = list(dict.fromkeys(i.uid for i in covered if i.uid))
         kept = [
@@ -1395,6 +1449,7 @@ class Bot:
         ]
         item = {"key": key, "msg": sent, "labels": offered, "for": users, "ts": time.time()}
         self.state.db.set_kv(OPTIONS.format(chat_id), [*kept, item][-OPTIONS_KEEP:])
+        return sent
 
     def _incoming(self, turn_state: Turn):
         """turn["incoming"]: the chat's messages queued since the last call, for the provider's
@@ -1426,39 +1481,62 @@ class Bot:
         return incoming
 
     # ------------------------------------------------------------- settings changes
-    async def propose(self, client, chat_id, reply_to, asker, user_id, change) -> bool:
+    async def propose(
+        self, client, chat_id, reply_to, asker, user_id, change, tail: list[str] | None = None
+    ) -> bool:
         """Make a change the person asked for at once; show one the AI came up with on its own and
-        wait for a yes from the person it answered. True when the change is made now."""
+        wait for a yes from the person it answered. In the bot's own turn (the morning plan check:
+        no person and no user) the change waits for a yes from anyone in the household. tail: where
+        what a made change says goes, so it joins the answer's message instead of following it.
+        True when the change is made now."""
         t = self.t
+        own = asker is None and user_id is None and chat_id < 0
+        pending = {"change": change, "asker": asker, "chat": chat_id}
+
+        async def say(text: str) -> None:
+            if tail is None:
+                await self.send(client, chat_id, text, reply_to)
+            else:
+                tail.append(text)
+
         if isinstance(change, str):
-            await self.send(client, chat_id, t("change_invalid", error=change), reply_to)
+            await say(self.refused(pending, change))
             return False
-        if asker is None or user_id is None:
-            await self.send(client, chat_id, t("change_members_only"), reply_to)
+        if asker is None and not own:
+            await say(t("change_members_only"))
             return False
         try:
             proposal = changes.parse(change, self.data, asker)
         except changes.ChangeError as e:
-            await self.send(client, chat_id, t("change_invalid", error=e), reply_to)
+            await say(self.refused(pending, e))
             return False
-        name = self.data.household.person(asker).name
-        if proposal.asked:
-            item = {"change": change, "asker": asker, "name": name}
+        name = self.data.household.person(asker).name if asker else t("plan_check_who")
+        if proposal.asked and not own:
+            item = {**pending, "name": name}
             before = await self.problem_keys()
-            await self.send(client, chat_id, await self.apply(item, asked=True), reply_to)
+            await say(await self.apply(item, asked=True))
             if item.get("applied"):
                 # a change still waiting for a yes on what this one just set is outdated now
                 await self.unwait(
                     client, chat_id, self.wait_for(chat_id, None, self.outdates(proposal))
                 )
-                await self.checkup(client, chat_id, before, reply_to)
+                await self.checkup(client, chat_id, before, reply_to, tail)
             return bool(item.get("applied"))
+        if own:
+            people = self.data.settings.bot.people
+            members = [p.id for p in self.data.household.people if p.id in people]
+            by = [people[p] for p in members]
+            if not by:
+                return False
+            whom = ", ".join(self.mention(p) for p in members)
+        else:
+            by, whom = [user_id], self.mention(asker)
         lines = changes.describe(proposal, self.data, t)
         msgs: list[int] = []
         sent = await self.send(
             client,
             chat_id,
-            t("change_confirm", name=self.mention(asker), lines="\n".join(lines)),
+            t("change_confirm", name=whom, lines="\n".join(lines)),
             reply_to,
             ids=msgs,
             buttons=self.yes_no(key := secrets.token_hex(4)),
@@ -1467,7 +1545,8 @@ class Bot:
         item = {
             "key": key,
             "change": change,
-            "by": [user_id],
+            "chat": chat_id,
+            "by": by,
             "asker": asker,
             "name": name,
             "ts": time.time(),
@@ -1951,19 +2030,26 @@ class Bot:
         return " ".join(text.split())
 
     async def apply(self, pending: dict, asked: bool = False) -> str:
-        """Make a change and say what came of it. Settings and recipes are one git commit in the
-        data repo; menu changes are written under state/. asked: nobody saw the change yet, so the
-        answer lists it."""
+        """Make a change and say what came of it, in one line naming what it touched and the page
+        that shows it (changes.summary), never the values. Settings and recipes are one git commit
+        in the data repo; menu changes are written under state/. asked: nobody saw the change yet;
+        the field by field lines go into the commit either way."""
         t = self.t
         try:
             # the data may have moved on since the proposal
             proposal = changes.parse(pending["change"], self.data, pending.get("asker"))
         except changes.ChangeError as e:
-            return t("change_invalid", error=e)
+            return self.refused(pending, e)
         lines = changes.describe(proposal, self.data, t)
         out, sha = [], None
         retired = changes.retired(proposal, self.data)
-        if proposal.edits or proposal.recipe is not None or proposal.recipes or proposal.notes:
+        if (
+            proposal.edits
+            or proposal.recipe is not None
+            or proposal.recipes
+            or proposal.notes
+            or proposal.ingredients
+        ):
             token = os.environ.get("SMP_GIT_WRITE_TOKEN", "")
             if not token:
                 by_hand = t("change_manual") + "\n\n" + "\n".join(changes.manual(proposal))
@@ -1989,11 +2075,11 @@ class Bot:
                         await asyncio.to_thread(self.state.reload)
                 except changes.ChangeError as e:
                     log.warning("settings change failed: %s", e)
-                    return t("change_failed", error=e)
+                    return self.refused(pending, e, saving=True)
                 except Exception as e:  # noqa: BLE001
                     log.warning("settings change failed: %s", safe(e))
-                    return t("change_failed", error=type(e).__name__)
-                out.append(t("change_saved" if asked else "change_applied", sha=sha))
+                    return self.refused(pending, type(e).__name__, saving=True)
+                log.info("change saved as %s", sha)
         if retired and sha:
             # the recipe left a meal: the days already planned from tomorrow on lose it too
             try:
@@ -2013,18 +2099,41 @@ class Bot:
                         menu.apply, self.data, proposal.plan, self.state.today()
                     )
             except menu.MenuError as e:
-                return "\n".join([*out, t("change_invalid", error=e)])
+                return "\n".join([*out, self.refused(pending, e)])
             except Exception as e:  # noqa: BLE001
                 log.warning("menu change failed: %s", safe(e))
-                return "\n".join([*out, t("change_failed", error=type(e).__name__)])
-            out.append(t("menu_applied"))
+                return "\n".join([*out, self.refused(pending, type(e).__name__, saving=True)])
         if proposal.pantry:  # the database, like the menu: no token needed
             await asyncio.to_thread(pantry.correct, self.data, self.state.db, proposal.pantry)
-            out.append(t("pantry_applied"))
-        if asked:
-            out.insert(0, t("change_done", lines="\n".join(lines)))
+        if sha or proposal.plan or proposal.pantry:
+            done = changes.summary(proposal, self.data, t)
+            link = self.change_link(proposal)
+            out.insert(0, f"{done}\n{link}" if link else done)
         pending["applied"] = True  # every way it failed returned above
         return "\n".join(out)
+
+    def change_link(self, proposal: changes.Proposal) -> str:
+        """The page that shows what a made change touched: the recipe, the week or the list."""
+        if not self.data.settings.base_url:
+            return ""
+        rids = [*([str(proposal.recipe.get("id"))] if proposal.recipe else []), *proposal.recipes]
+        if rids:
+            return self.url(f"/recipe/{rids[0]}")
+        if proposal.plan:
+            return self.url("/week")
+        if proposal.pantry or proposal.ingredients:
+            return self.url("/list")
+        return ""
+
+    def refused(self, pending: dict, error, saving: bool = False) -> str:
+        """What the chat reads when a change could not be made: a plain line in the household's
+        language. The reason (often the app's own words, in English) goes only to the AI, through
+        the chat's record, so it can fix the change in the next answer."""
+        chat = pending.get("chat")
+        if chat is not None:
+            self.state.db.add_chat(chat, "assistant", None, f"[the change was refused: {error}]")
+        log.info("change refused: %s", error)
+        return self.t("change_failed" if saving else "change_invalid")
 
     # ------------------------------------------------------------- proposals
     async def offer(self, client, chat_id, reply_to, asker, user_id, proposal: dict) -> None:
@@ -2917,22 +3026,57 @@ class Bot:
         """The reminders set in this chat still to come, with their ids, so the AI can cancel the
         ones a change made wrong instead of asking the household to delete them."""
         rows = self.state.db.reminders(chat_id)[:20]
-        if not rows:
-            return ""
-        out = ["\n## Reminders set in this chat, still to come (id: when, for whom: text)"]
+        out = []
+        if rows:
+            out.append("\n## Reminders set in this chat, still to come (id: when, for whom: text)")
         for r in rows:
             pid = self._person(r["person"])
             who = f", {self.data.household.person(pid).name}" if pid else ""
             local = dt.datetime.fromtimestamp(r["at"], self._zone())
             dish = f" (about {r['recipe']} on {r['date']})" if r.get("recipe") else ""
             out.append(f"- {r['id']}: {local:%Y-%m-%d %H:%M}{who}: {r['text']}{dish}")
+        live = [
+            r
+            for o in self._offers()
+            if o.get("chat") == chat_id and time.time() - o.get("ts", 0) <= REMIND_TTL
+            for r in o.get("items") or []
+            if not r.get("done")
+        ]
+        if live:
+            out.append(
+                "\n## Reminders offered in this chat, nobody tapped them yet (a new reminders "
+                "block replaces this offer: list again the ones that still hold, leave out the "
+                "ones the chat has since made wrong)"
+            )
+        for r in live:
+            local = dt.datetime.fromtimestamp(r["at"], self._zone())
+            out.append(f"- {local:%Y-%m-%d %H:%M}: {r['text']}")
         return "\n".join(out)
 
     async def offer_reminders(self, client, chat_id, listed, covered, reply_to) -> None:
-        """One message with the reminders an answer listed and buttons for each. Nothing happens
-        until a tap; untapped, the offer expires (REMIND_TTL) as nothing. Reminders the person
-        asked for ("set") are set at once, and cancelled ones (only this chat's) go, with one
-        message saying both."""
+        """The reminders an answer listed, in one message with buttons for each (settle_reminders,
+        then the offer). Nothing happens until a tap; untapped, the offer expires (REMIND_TTL) as
+        nothing."""
+        items = await self.settle_reminders(client, chat_id, listed, covered, reply_to)
+        if items:
+            text, rows, key = self.remind_offer(items)
+            sent = await self.send(
+                client,
+                chat_id,
+                text,
+                reply_to,
+                markdown=True,
+                buttons=rows,
+                spoken=self.t("voice_reminders"),
+            )
+            await self.keep_offer(client, chat_id, key, sent, items, covered, alone=True)
+
+    async def settle_reminders(
+        self, client, chat_id, listed, covered, reply_to, tail: list[str] | None = None
+    ) -> list[dict]:
+        """Cancel the ones the answer cancels (only this chat's) and set the ones the person asked
+        for ("set") at once, saying both in one message, or in `tail` (the answer's message).
+        Returns the reminders still to offer."""
         t, db = self.t, self.state.db
         done: list[str] = []
         before = await self.problem_keys()
@@ -2952,13 +3096,18 @@ class Bot:
                 chat_id, r["person"], r["at"], r["text"], uid, r.get("recipe"), r.get("date")
             )
             done.append(t("remind_set_log", when=self._when(r["at"]), text=r["text"]))
-        if done:  # recorded in the chat by send, so the AI hears it
+        if done and tail is not None:
+            tail.extend(done)
+            await self.checkup(client, chat_id, before, reply_to, tail)
+        elif done:  # recorded in the chat by send, so the AI hears it
             await self.send(client, chat_id, "\n".join(done), reply_to)
             await self.checkup(client, chat_id, before, reply_to)
-        items = [r for r in items if not (uid and r.get("set"))]
-        if not items:
-            return
-        t, people = self.t, self.data.settings.bot.people
+        return [r for r in items if not (uid and r.get("set"))]
+
+    def remind_offer(self, items: list[dict]) -> tuple[str, list, str]:
+        """The offer's text (Markdown: with several reminders their full texts go in a fold, the
+        buttons already name each one), its buttons and its key."""
+        t = self.t
         many = len(items) > 1
         lines = [
             (f"{n + 1}. " if many else "") + f"{self._when(r['at'])}: {r['text']}"
@@ -2966,32 +3115,47 @@ class Bot:
         ]
         if self.data.settings.bot.reminder_calendar:  # what the two buttons' signs mean
             lines.append(t("remind_legend"))
+        body = "```fold\n" + "\n".join(lines) + "\n```" if many else "\n".join(lines)
         persons = list(dict.fromkeys(r["person"] for r in items if r["person"]))
         names = ", ".join(self.mention(p) for p in persons)
         key = secrets.token_hex(4)
-        sent = await self.send(
-            client,
-            chat_id,
-            t(
-                "remind_offer" if names else "remind_offer_nobody",
-                name=names,
-                lines="\n".join(lines),
-            ),
-            reply_to,
-            buttons=self._remind_rows(key, items),
-            spoken=self.t("voice_reminders"),
-        )
+        text = t("remind_offer" if names else "remind_offer_nobody", name=names, lines=body)
+        return text, self._remind_rows(key, items), key
+
+    async def keep_offer(self, client, chat_id, key, sent, items, covered, alone) -> None:
+        """Store an offer that went out in message `sent`. It is the chat's only live one: an
+        older offer's buttons go (its message too when it was a message of its own), so two offers
+        never say different things at once; the new answer lists again what still holds."""
+        people = self.data.settings.bot.people
+        persons = list(dict.fromkeys(r["person"] for r in items if r["person"]))
         users = [i.uid for i in covered if i.uid] + [people[p] for p in persons if p in people]
         offer = {
             "key": key,
             "chat": chat_id,
             "msg": sent,
+            "alone": alone,
             "for": list(dict.fromkeys(users)),
             "items": items,
             "ts": time.time(),
         }
         live = [o for o in self._offers() if time.time() - o.get("ts", 0) <= REMIND_TTL]
-        self.state.db.set_kv(REMIND, [*live, offer])
+        old = [o for o in live if o.get("chat") == chat_id]
+        self.state.db.set_kv(REMIND, [*(o for o in live if o not in old), offer])
+        for o in old:
+            await self.retire_offer(client, o)
+
+    async def retire_offer(self, client, offer: dict) -> None:
+        """A replaced offer leaves the chat: a message of its own is deleted, an answer that
+        carried it keeps its text and loses the buttons."""
+        if offer.get("alone", True) and offer.get("msg"):
+            try:
+                await self.call(
+                    client, "deleteMessage", chat_id=offer["chat"], message_id=offer["msg"]
+                )
+                return
+            except TelegramError as e:  # too old to delete, or gone: at least no buttons
+                log.info("could not delete a replaced offer: %s", e)
+        await self.unbutton(client, offer["chat"], offer.get("msg"))
 
     async def rekey(self, client, chat_id: int, message_id, rows) -> None:
         if not message_id:
@@ -3137,13 +3301,19 @@ class Bot:
         return t("problem_" + p.kind, **args)
 
     async def checkup(
-        self, client, chat_id: int | None = None, before: set[str] | None = None, reply_to=None
+        self,
+        client,
+        chat_id: int | None = None,
+        before: set[str] | None = None,
+        reply_to=None,
+        tail: list[str] | None = None,
     ) -> list[doctor.Problem]:
         """Run the consistency check after a write (before: the problems it found just before it)
         or in the morning (before None). A linked reminder the menu no longer backs is cancelled
         here, with one line in its chat. In chat_id: one line naming the problems the write left
         that were not there before, or in the morning all of them. Food bought and on no dish is
-        left to the AI, which sees it every turn: it can stay true for days once it is frozen."""
+        left to the AI, which sees it every turn: it can stay true for days once it is frozen.
+        tail: where chat_id's lines go instead of a message of their own (the answer's message)."""
         db, t = self.state.db, self.t
         found = await self.problems()
         if found is None:
@@ -3166,6 +3336,8 @@ class Bot:
             items = "; ".join(self.problem_line(p) for p in new)
             key = "doctor_morning" if before is None else "doctor_new"
             said.setdefault(chat_id, []).append(t(key, items=items))
+        if tail is not None and chat_id in said:
+            tail.extend(said.pop(chat_id))
         for chat, lines in said.items():
             try:
                 await self.send(
