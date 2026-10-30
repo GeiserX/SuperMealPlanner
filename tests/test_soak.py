@@ -1,6 +1,7 @@
 """The eve of a batch session: the dried pulses to leave in water that night, in the batch
 reminder (also when that day is paused), on the Tasks page and through the API."""
 
+import asyncio
 import datetime as dt
 
 import yaml
@@ -131,3 +132,80 @@ def test_the_batch_reminder_says_what_to_take_out_of_the_freezer_the_evening_bef
     # tomorrow paused: nothing is eaten, nothing to take out
     change(data, {"pause": {"from": str(hit.date), "to": str(hit.date)}}, today=eve)
     assert "🧊" not in (b.reminder_text(batch, eve) or "")
+
+
+def test_what_to_take_out_follows_the_day_a_lunch_is_cooked_not_the_day_it_is_eaten(
+    data_dir, tmp_path
+):
+    bot_data(data_dir)
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["reminders"].append({"id": "batch", "kind": "batch", "at": ["21:30"]})
+    (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    data = planned(data_dir)
+    plan = plan_for(data, MONDAY)
+    ahead = next(d for d in plan.days if d.lunch_cook < d.date and d.lunch_cook > MONDAY)
+    ings = yaml.safe_load((data_dir / "ingredients.yaml").read_text())
+    for i in data.recipes[ahead.lunch].ingredients:
+        ings[i.id]["frozen"] = True
+    (data_dir / "ingredients.yaml").write_text(yaml.safe_dump(ings, allow_unicode=True))
+    data = planned(data_dir)
+    plan = plan_for(data, MONDAY)
+    b = FakeBot(data, DB(tmp_path / "b.db"), MONDAY)
+    batch = next(r for r in data.settings.reminders if r.id == "batch")
+    name = data.recipes[ahead.lunch].name
+    tag = f"(Lunch: {name})"
+    # the evening before it is eaten: it was cooked already, its raw ingredients are gone
+    said = b.reminder_text(batch, ahead.date - dt.timedelta(days=1)) or ""
+    assert tag not in said
+    # the evening before the session that cooks it: take them out then, for every lunch it makes
+    said = b.reminder_text(batch, ahead.lunch_cook - dt.timedelta(days=1)) or ""
+    lines = [x for x in said.splitlines() if x.endswith(tag)]
+    assert lines and len(lines) == len({i.id for i in data.recipes[ahead.lunch].ingredients})
+    after = said.splitlines()[said.splitlines().index(lines[0]) + 1]
+    assert after.strip().endswith(f"/batch?d={ahead.lunch_cook}")  # the session's amounts
+    from supermealplanner.portions import amounts, factors
+
+    lunches = [d for d in plan.days if d.lunch == ahead.lunch and d.lunch_cook == ahead.lunch_cook]
+    first = data.recipes[ahead.lunch].ingredients[0].id
+    need = sum(
+        amounts(data, data.recipes[ahead.lunch], factors(data, b.state.db, d.date))[first]
+        for d in lunches
+    )
+    one = amounts(data, data.recipes[ahead.lunch], factors(data, b.state.db, ahead.date))[first]
+    assert len(lunches) > 1 and need > one  # the whole session's share, not one day's
+
+
+def test_reminders_due_at_the_same_time_go_as_one_message(data_dir, tmp_path):
+    import supermealplanner.bot as botmod
+
+    bot_data(data_dir)
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    raw["reminders"] = [
+        {"id": "a", "kind": "message", "text": "First thing.", "at": ["21:30"]},
+        {"id": "b", "kind": "message", "text": "Second thing.", "at": ["21:30"]},
+        {"id": "c", "kind": "message", "text": "Later thing.", "at": ["22:00"]},
+    ]
+    (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    data = planned(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = FakeBot(data, db, MONDAY)
+    sent = []
+
+    async def send(client, chat_id, text, reply_to=None, record=True):
+        sent.append(text)
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime.combine(MONDAY, dt.time(21, 31), tz)
+
+    real = botmod.dt.datetime
+    botmod.dt.datetime = Clock
+    try:
+        b.send = send
+        asyncio.run(b.tick_reminders(None))
+        asyncio.run(b.tick_reminders(None))
+    finally:
+        botmod.dt.datetime = real
+    assert sent == ["First thing.\n\nSecond thing."]  # one message, and only once
+    assert db.was_sent("a", MONDAY, "21:30") and db.was_sent("b", MONDAY, "21:30")
