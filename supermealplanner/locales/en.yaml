@@ -22,7 +22,6 @@ meal_dinner: Dinner
 no_plan_day: "No plan for this day yet. The app makes one on its own every hour, or run: supermealplanner plan --start <monday> --write"
 no_plan_week: No plan for this week.
 calendar_busy: "Calendar: {events}"
-batch_today: "Batch cooking this afternoon."
 see_sheet: See the sheet
 defrost_tonight: "Tonight: move {dish} from the freezer to the fridge."
 lunch_fresh: Freshly made
