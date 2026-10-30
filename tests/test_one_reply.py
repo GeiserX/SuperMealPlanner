@@ -251,7 +251,7 @@ def test_nothing_says_what_happens_when_nobody_answers_or_promises_an_own_words_
     assert "own words" not in rules  # the app adds no such line under the buttons
     locales = Path(context.__file__).parent / "locales"
     about = {
-        n: yaml.safe_load((locales / f"{n}.yaml").read_text())["bot_about_once"]
+        n: yaml.safe_load((locales / f"{n}.yaml").read_text(encoding="utf-8"))["bot_about_once"]
         for n in ("en", "es")
     }
     assert "do not answer" not in about["en"] and "do nothing" not in about["en"]
@@ -262,8 +262,8 @@ def test_nothing_says_what_happens_when_nobody_answers_or_promises_an_own_words_
 def test_no_text_says_the_cooking_is_this_afternoon():
     """A session may be cooked in the evening: no text pins today's cooking to the afternoon."""
     locales = Path(context.__file__).parent / "locales"
-    en = yaml.safe_load((locales / "en.yaml").read_text())
-    es = yaml.safe_load((locales / "es.yaml").read_text())
+    en = yaml.safe_load((locales / "en.yaml").read_text(encoding="utf-8"))
+    es = yaml.safe_load((locales / "es.yaml").read_text(encoding="utf-8"))
     assert not [k for k, v in en.items() if isinstance(v, str) and "this afternoon" in v]
     assert not [
         k for k, v in es.items() if isinstance(v, str) and "Hoy" in v and "por la tarde" in v
