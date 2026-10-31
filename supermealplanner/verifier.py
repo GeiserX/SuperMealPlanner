@@ -15,7 +15,8 @@ Two checks:
   notes, the household's own instructions, the weekly rules), (2) the timeline (what is cooked when,
   which session prepares what, what has to be soaked, defrosted or cooked ahead, and a reminder at
   the right time for each), (3) health (the health export's allergies, intolerances, diet rules,
-  medicines with their food rules and fasting windows), and plain nonsense.
+  medicines with their food rules and fasting windows), and plain nonsense, and (4) clarity: whether
+  someone cooking from the steps, with nobody to ask, understands them on one reading.
 
 The same checks run on the plan as it stands (check_plan): once for each new or changed menu of
 this week and the next, with the full text of every recipe on it. What they find is kept with the
@@ -56,11 +57,15 @@ from .planner import MEALS, Plans
 
 log = logging.getLogger(__name__)
 
-CHECKS = ("wishes", "timeline", "health", "nonsense")
+CHECKS = ("wishes", "timeline", "health", "nonsense", "clarity")
 PROBLEMS_MAX, PROBLEM_CHARS = 8, 800  # per check: a long list is noise, not a check
 RECIPES_MAX = 150_000  # characters of recipe text the judgment gets; the two weeks fit in it
 PLAN_KEY = "verifier.plan"  # the plan check's findings, with the key of the plan they are about
-PLAN_SEEN = ("timeline", "nonsense")  # what a private chat sees of them: no one's notes or health
+PLAN_SEEN = (
+    "timeline",
+    "nonsense",
+    "clarity",
+)  # what a private chat sees of them: no one's notes or health
 SKIP = (
     "unused",
     "stale_reminder",
@@ -71,7 +76,7 @@ VERIFY = """You check a meal-planning assistant's answer before the household se
 proposes a change to the menu, a recipe or the cooking days. You do not answer the household: you
 list what is wrong with the proposal, so the assistant fixes it.
 {scope}
-Make three checks, separately, each on its own, then a fourth:
+Make three checks, separately, each on its own, then a fourth and a fifth:
 1. wishes: does the proposal, and the menu it leaves, match what the household asked for? The
    notes and chat notes of each person, the household's own instructions and the weekly rules
    below. When people want different things, the person who cooks wins, unless health says no.
@@ -87,12 +92,20 @@ Make three checks, separately, each on its own, then a fourth:
    temperatures, a step that needs equipment the kitchen does not have, an oven step without the
    air-fryer alternative when the kitchen has one, ultra-processed products where real food would
    do, a device used only because it is there, a contradiction with the rest of the answer.
+5. clarity: read each recipe's steps as someone cooking it for the first time, with the recipe in
+   hand and nobody to ask. Each step must be doable on one reading. A problem is: an ingredient
+   that goes in only in part, or is split or served apart, with no word on how much goes in this
+   step and what happens to the rest; an amount per serving where the cook sees the total for the
+   table, so the two can be taken for each other; a size, time or point of doneness nobody can
+   tell; a step that uses something no earlier step made; steps in the wrong order. Quote the
+   words, say how they can be misread, and give the step rewritten. Plain and short is not a
+   problem: only what a cook could get wrong.
 
 Judge a recipe from its text below, never from its name: its ingredients, steps and `ahead`
 steps are there. A recipe whose text is not below is not yours to judge.
 Each problem in one or two sentences: what is wrong and the change that fixes it, with the dates
 and recipe ids. {only} Answer with JSON only, no other text:
-{{"wishes": [], "timeline": [], "health": [], "nonsense": []}}
+{{"wishes": [], "timeline": [], "health": [], "nonsense": [], "clarity": []}}
 """
 ONLY_PROPOSAL = (
     "Only real problems in this proposal: never one about something it does not touch and that "
@@ -100,10 +113,11 @@ ONLY_PROPOSAL = (
 )
 PLAN_SCOPE = """
 Here there is no proposal: the menu of this week and the next is checked as it stands, the plan
-the app made and every change since. Every real problem in it counts. What you put in timeline
-and nonsense is read by every person, in their own chat too: never name there anyone's notes,
+the app made and every change since. Every real problem in it counts. What you put in timeline,
+nonsense and clarity is read by every person, in their own chat too: never name there anyone's notes,
 health or the foods they avoid; those go in wishes or health.
 """
+PLAN_SYSTEM = VERIFY.format(scope=PLAN_SCOPE, only="")
 
 REVISE = """[The app checked your answer before anyone saw it; nobody has seen it yet.] It found:
 {problems}
@@ -311,7 +325,8 @@ PLAN_ANSWER = "(No proposal: the plan of this week and the next as it stands.)"
 
 def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
     """The brief of the plan check and its key. The key leaves out the brief's clock line, so the
-    same plan with the same data and the same problems gives the same key all day."""
+    same plan with the same data and the same problems gives the same key all day. It holds what
+    the check asks, so a plan already judged is judged again when the checks change."""
     found = doctor.problems(data, db, today)
     # a recipe nobody can have is about the library, not this plan, and names someone's food: the
     # findings of this check reach private chats, so it stays out of the brief
@@ -332,7 +347,7 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
     }
     text = brief(data, today, PLAN_ANSWER, problems, after, None)
     body = text.split("\n", 1)[1]
-    return text, hashlib.sha256(body.encode()).hexdigest()
+    return text, hashlib.sha256((PLAN_SYSTEM + body).encode()).hexdigest()
 
 
 def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
@@ -432,10 +447,9 @@ async def check_plan(data: Data, db: DB, today: dt.date) -> dict | None:
     kept = db.get_kv(PLAN_KEY) or {}
     if kept.get("key") == key:
         return kept
-    system = VERIFY.format(scope=PLAN_SCOPE, only="")
     try:
         out = await asyncio.wait_for(
-            llm.complete(data, system, [{"role": "user", "content": text}]),
+            llm.complete(data, PLAN_SYSTEM, [{"role": "user", "content": text}]),
             timeout=data.settings.llm.timeout_s,
         )
     except Exception as e:  # noqa: BLE001  tried again at the next tick

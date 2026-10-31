@@ -328,7 +328,7 @@ def test_the_plan_check_reads_every_recipe_of_the_two_weeks_and_judges_all_of_it
         assert f"### {rid}\n" in text  # the whole text, never only the name
     assert "Not shown" not in text
     assert key == verifier.plan_brief(b.data, db, MONDAY)[1]  # the clock line is not in the key
-    system = verifier.VERIFY.format(scope=verifier.PLAN_SCOPE, only="")
+    system = verifier.PLAN_SYSTEM
     assert "Every real problem in it counts" in system and "never from its name" in system
     assert verifier.ONLY_PROPOSAL not in system
 
@@ -518,6 +518,35 @@ def test_a_private_checkup_chat_gets_the_plan_turn_as_its_person_or_not_at_all(d
         verifier.llm.complete = real
     system = verifier.VERIFY.format(scope=verifier.PLAN_SCOPE, only="")
     assert "never name there anyone's notes" in system
+
+
+def test_a_step_a_cook_could_misread_is_kept_and_every_chat_sees_it(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    finding = "ensalada-garbanzos step 3: says 15 g per serving but the cook sees the total"
+    calls, fake = judged({"clarity": [finding]})
+    verifier.llm.complete, real = fake, verifier.llm.complete
+    try:
+        run(verifier.check_plan(b.data, db, MONDAY))
+        assert "5. clarity:" in calls[0]["system"] and '"clarity": []' in calls[0]["system"]
+        assert verifier.plan_findings(b.data, db, MONDAY) == [f"clarity: {finding}"]
+        assert verifier.plan_findings(b.data, db, MONDAY, "luis") == [f"clarity: {finding}"]
+    finally:
+        verifier.llm.complete = real
+
+
+def test_a_plan_already_judged_is_judged_again_when_the_checks_change(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = vsetup(data_dir, tmp_path)
+    calls, fake = judged({})
+    monkeypatch.setattr(verifier.llm, "complete", fake)
+    run(verifier.check_plan(b.data, db, MONDAY))
+    run(verifier.check_plan(b.data, db, MONDAY))
+    assert len(calls) == 1
+    monkeypatch.setattr(verifier, "PLAN_SYSTEM", verifier.PLAN_SYSTEM + "\nA new check.")
+    run(verifier.check_plan(b.data, db, MONDAY))
+    assert len(calls) == 2
+    assert calls[1]["system"].endswith("A new check.")
 
 
 def test_a_verdict_that_is_not_json_is_not_kept_as_a_check(data_dir, tmp_path):
