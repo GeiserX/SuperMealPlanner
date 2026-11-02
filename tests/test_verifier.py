@@ -1,6 +1,6 @@
-"""Prep a dish needs before its day (doctor.py), and the verifier that checks an answer changing the
-menu, a recipe or the batch days before it goes out (verifier.py): on a copy of the data, then one
-judgment call to the provider, then at most one revision in the same conversation."""
+"""Prep a dish needs before its day (doctor.py), and the reviewer that checks every answer changing
+anything before it goes out (verifier.py): on a copy of the data, then a review job through the
+provider over the whole rest of the week, then up to two revisions, each reviewed again."""
 
 import asyncio
 import datetime as dt
@@ -153,6 +153,10 @@ def converse(turn, settings):
 def complete(system, messages, settings):
     with (HERE / "checks.jsonl").open("a") as f:
         f.write(json.dumps({"system": system, "brief": messages[0]["content"]}) + "\\n")
+    n = len((HERE / "checks.jsonl").read_text().splitlines())
+    verdicts = _cfg().get("verdicts")
+    if verdicts:  # one per review, the last one again after them
+        return verdicts[min(n, len(verdicts)) - 1]
     return _cfg().get("verdict", "{}")
 """
 
@@ -190,7 +194,7 @@ def test_the_28_10_case_is_caught_before_it_is_made_and_the_files_stay_as_they_w
     assert "nothing cooks it before the meal" in problems[1]
     assert plan_file.read_text() == before  # only the copy changed
     assert any("ensalada-garbanzos" in x for x in after["menu"])
-    assert after["recipes"][0].startswith("### ensalada-garbanzos")
+    assert any(x.startswith("### ensalada-garbanzos") for x in after["recipes"])
 
 
 def test_a_change_the_app_refuses_is_named_as_such(data_dir, tmp_path):
@@ -200,7 +204,7 @@ def test_a_change_the_app_refuses_is_named_as_such(data_dir, tmp_path):
     assert problems and problems[0].startswith("The app refuses this menu change")
 
 
-def test_the_answer_goes_back_once_with_the_problems_and_the_revision_replaces_it(
+def test_the_answer_goes_back_with_the_problems_and_a_clean_revision_ends_the_review(
     data_dir, tmp_path
 ):
     b, _db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
@@ -210,16 +214,17 @@ def test_the_answer_goes_back_once_with_the_problems_and_the_revision_replaces_i
         data_dir,
         text="Cena del viernes: ensalada.\n" + bad_dinner(),
         revised="Cena del viernes: merluza.\n" + fixed,
-        verdict=json.dumps(verdict),
+        verdicts=[json.dumps(verdict), "{}"],
     )
     run(b.handle(None, msg("@chefbot cambia la cena del viernes", message_id=1)))
     turns = lines(data_dir, "turns.jsonl")
-    assert len(turns) == 2  # the answer and one revision, nothing more
+    assert len(turns) == 2  # the answer and one revision: its review was clean
     note = turns[1]["new"][0]
     assert turns[1]["conversation"] == "c1"
     assert "the session that day comes after the meal" in note
     assert "health: Ana cannot have chickpeas" in note
-    (check,) = lines(data_dir, "checks.jsonl")
+    check, again = lines(data_dir, "checks.jsonl")
+    assert "Cena del viernes: merluza" in again["brief"]  # the revision was reviewed too
     assert "1. wishes" in check["system"] and "3. health" in check["system"]
     assert "Cena del viernes: ensalada" in check["brief"]
     texts = [p["text"] for p in sends(b, -100)]
@@ -271,7 +276,7 @@ def test_health_records_reach_the_check_only_for_whom_the_chat_may_see(data_dir,
     assert "little salt" in brief and "garbanzo" not in brief
 
 
-def test_a_broken_provider_hands_the_first_answer_on(data_dir, tmp_path):
+def test_a_broken_provider_hands_the_answer_on_saying_it_was_not_reviewed(data_dir, tmp_path):
     b, db = vsetup(data_dir, tmp_path)
     reply = llm.Reply("ok\n" + bad_dinner(), "c1")
 
@@ -283,7 +288,7 @@ def test_a_broken_provider_hands_the_first_answer_on(data_dir, tmp_path):
         out = run(verifier.review(b.data, db, MONDAY, {"new": [], "history": []}, reply))
     finally:
         verifier.llm.complete = real
-    assert out is reply
+    assert out == (reply, False)
 
 
 def test_a_pulse_cooked_the_night_before_is_soaked_the_night_before_that(data_dir, tmp_path):
@@ -337,7 +342,7 @@ def test_the_plan_check_reads_every_recipe_of_the_two_weeks_and_judges_all_of_it
     assert key == verifier.plan_brief(b.data, db, MONDAY)[1]  # the clock line is not in the key
     system = verifier.PLAN_SYSTEM
     assert "Every real problem in it counts" in system and "never from its name" in system
-    assert verifier.ONLY_PROPOSAL not in system
+    assert verifier.WHOLE_WEEK not in system
 
 
 def test_the_plan_check_sees_when_each_session_cooks_and_the_reminders_already_set(
@@ -617,3 +622,173 @@ def test_the_plan_check_runs_in_the_background_at_most_every_ten_minutes(data_di
 
     run(ticks())
     assert started == [1000.0, 1601.0]
+
+
+# ---------------------------------------------------------------- the reviewer on every change
+
+
+def merluza_wednesday():
+    return change({"set": {"date": "2026-10-14", "meal": "dinner", "recipe": "merluza-cena-1"}})
+
+
+def test_an_answer_that_only_offers_reminders_is_reviewed(data_dir, tmp_path):
+    from .test_reminders import ahead, block
+
+    b, _db = vsetup(data_dir, tmp_path)
+    when, _ = ahead()
+    cfg(data_dir, text="Te aviso.\n" + block((when, "Sacar la merluza")))
+    run(b.handle(None, msg("@chefbot avísame", message_id=1)))
+    (check,) = lines(data_dir, "checks.jsonl")
+    assert "Sacar la merluza" in check["brief"]
+
+
+def test_the_reviewer_goes_round_until_clean_at_most_twice(data_dir, tmp_path):
+    b, _db = vsetup(data_dir, tmp_path)
+    bad = json.dumps({"timeline": ["Thaw the hake the night before, on 2026-10-13."]})
+    cfg(
+        data_dir,
+        text="Hecho.\n" + merluza_wednesday(),
+        revised="Hecho, con aviso.\n" + merluza_wednesday(),
+        verdicts=[bad, bad, "{}"],
+    )
+    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
+    assert len(lines(data_dir, "turns.jsonl")) == 3  # the answer and two revisions
+    assert len(lines(data_dir, "checks.jsonl")) == 3  # each reviewed
+    texts = [p["text"] for p in sends(b, -100)]
+    assert any("con aviso" in t for t in texts)
+    assert not any(b.t("review_failed") in t for t in texts)
+    # still not clean after two revisions: no third one
+    (data_dir / "plugins" / "turns.jsonl").unlink()
+    (data_dir / "plugins" / "checks.jsonl").unlink()
+    cfg(data_dir, text="Otra.\n" + merluza_wednesday(), verdicts=[bad])
+    run(b.handle(None, msg("@chefbot otra vez", message_id=2)))
+    assert len(lines(data_dir, "turns.jsonl")) == 3
+    assert len(lines(data_dir, "checks.jsonl")) == 3
+
+
+def test_a_review_that_times_out_says_so_and_the_plan_check_goes_at_the_next_tick(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = vsetup(data_dir, tmp_path)
+
+    async def slow(*a, **k):
+        await asyncio.sleep(5)
+        return "{}"
+
+    monkeypatch.setattr(verifier.llm, "complete", slow)
+    monkeypatch.setattr(verifier, "review_timeout", lambda data: 0.05, raising=False)
+    cfg(data_dir, text="Hecho.\n" + merluza_wednesday())
+    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
+    texts = [p["text"] for p in sends(b, -100)]
+    assert any(t.startswith("Hecho.") and b.t("review_failed") in t for t in texts)
+    assert db.get_kv(verifier.PLAN_RETRY) is True
+    started = []
+
+    async def check():
+        started.append(1)
+
+    b.check_plan = check
+    b.planned_at = b.clock()  # checked a moment ago: the flag skips the wait
+
+    async def tick():
+        b.tick_plan()
+        await asyncio.gather(*b.tasks)
+        b.tick_plan()  # once: the next tick waits again
+        await asyncio.gather(*b.tasks)
+
+    run(tick())
+    assert started == [1] and db.get_kv(verifier.PLAN_RETRY) is None
+
+
+def test_the_review_reads_the_whole_week_not_only_what_the_change_touches(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    chat = b.data.settings.bot.chat_id
+    rid = db.add_reminder(chat, "ana", at(D(1), 20), "Sacar la merluza")
+    db.mark_task(f"r:{rid}", "done", "ana")
+    cfg(data_dir, text="Hecho.\n" + merluza_wednesday())
+    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
+    (check,) = lines(data_dir, "checks.jsonl")
+    brief = check["brief"]
+    untouched = plan_for(b.data, MONDAY).day(MONDAY).lunch
+    assert untouched != "merluza-cena-1" and f"### {untouched}\n" in brief
+    assert '"state": "done"' in brief and "Sacar la merluza" in brief
+    assert "## Pantry" in brief
+    assert "Check the whole rest of this week and the next" in check["system"]
+
+
+def test_the_chat_shows_the_bot_typing_until_the_review_ends(data_dir, tmp_path, monkeypatch):
+    from supermealplanner import bot as botmod
+
+    b, _db = vsetup(data_dir, tmp_path)
+    monkeypatch.setattr(botmod, "TYPING_S", 0.02, raising=False)
+
+    async def slow(*a, **k):
+        await asyncio.sleep(0.3)
+        return "{}"
+
+    monkeypatch.setattr(verifier.llm, "complete", slow)
+    cfg(data_dir, text="Hecho.\n" + merluza_wednesday())
+    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
+    methods = [m for m, _ in b.calls]
+    answer = next(i for i, (m, p) in enumerate(b.calls) if m == "sendMessage")
+    assert methods[:answer].count("sendChatAction") >= 2
+    assert "sendChatAction" not in methods[answer:]  # it stops with the answer
+
+
+def test_the_weekly_review_and_a_step_not_done_are_reviewed_with_no_change(data_dir, tmp_path):
+    b, _db = vsetup(data_dir, tmp_path)
+    cfg(data_dir, text="Todo encaja.")
+
+    async def go(start):
+        start()
+        await b.drive(None, -100)
+        await asyncio.gather(*b.tasks)
+
+    run(go(lambda: b.review(-100, MONDAY)))
+    assert len(lines(data_dir, "checks.jsonl")) == 1
+    run(go(lambda: b.reorganise(None, -100, None, b.t("task_unanswered_turn", tasks="x"))))
+    assert len(lines(data_dir, "checks.jsonl")) == 2
+    # a plain question is still not reviewed
+    run(b.handle(None, msg("@chefbot qué comemos", message_id=3)))
+    assert len(lines(data_dir, "checks.jsonl")) == 2
+
+
+def test_a_new_plan_is_told_once_checked_and_what_was_found_is_raised_at_once(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as botmod
+    from supermealplanner.scheduler import ANNOUNCE
+
+    b, db = vsetup(data_dir, tmp_path)
+    taken = []
+    b.take = lambda chat, user, who, msg, text, asked, **k: taken.append((chat, text, k))
+
+    async def drive(client, chat):
+        pass
+
+    b.drive = drive
+    start = plan_for(b.data, MONDAY).start.isoformat()
+    db.set_kv(ANNOUNCE, start)
+    run(b.tick_announce(None))
+    assert sends(b, -100) == [] and db.get_kv(ANNOUNCE) == start  # waits for the check
+    assert db.get_kv(verifier.PLAN_RETRY) is True  # which goes at this tick
+    _calls, fake = judged({"timeline": ["Nothing cooks the chickpeas for Wednesday."]})
+    monkeypatch.setattr(verifier.llm, "complete", fake)
+    run(verifier.check_plan(b.data, db, MONDAY))
+
+    async def announce():
+        await b.tick_announce(None)
+        await asyncio.gather(*b.tasks)
+
+    run(announce())
+    (said,) = sends(b, -100)
+    assert b.t("review_failed") not in said["text"] and db.get_kv(ANNOUNCE) is None
+    # raised now, not the next morning (no checkup_at is set), as a turn that is reviewed
+    assert taken == [(-100, b.t("plan_check_turn"), {"review": True})]
+    # a check that never ends lets the announcement go, saying so
+    db.set_kv(verifier.PLAN_KEY, None)
+    db.set_kv(ANNOUNCE, start)
+    b.announce_since[start] = b.clock() - botmod.ANNOUNCE_WAIT_S - 1
+    run(b.tick_announce(None))
+    assert b.t("review_failed") in sends(b, -100)[-1]["text"]
+    assert db.get_kv(ANNOUNCE) is None

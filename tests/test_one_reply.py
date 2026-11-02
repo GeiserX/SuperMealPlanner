@@ -232,7 +232,8 @@ def test_reminders_set_with_the_ones_an_answer_cancels_are_put_back_to_the_ai(da
     run(b.handle(None, msg("@chefbot I am out on Saturday mornings", user=8)))
     path = data_dir / "plugins" / "turns.jsonl"
     turns = [json.loads(x) for x in path.read_text().splitlines()]
-    assert len(turns) == 2  # the answer went back once
+    # the answer went back, and again while its revision (the same text) still left them behind
+    assert len(turns) == 1 + verifier.REVIEW_ROUNDS
     note = turns[1]["new"][0]["content"]
     assert f"Reminders {kept} were set together with the ones this answer cancels ({gone})" in note
     assert str(later) not in note.split("(")[0]
