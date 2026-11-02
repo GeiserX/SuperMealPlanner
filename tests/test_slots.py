@@ -386,3 +386,69 @@ def test_the_rewrite_reads_what_the_chat_said_after_the_reminders_were_set(data_
     facts = b.slot_facts([db.reminder(rid)], [])
     assert "ana: Nothing gets frozen" in facts
     assert "Freeze everything" not in facts
+
+
+# ---------------------------------------------------------------- what the rewrite may not do
+
+
+def test_a_rewrite_with_ids_or_dropped_that_are_not_lists_is_not_used():
+    """The model can answer a number or true where a list of ids goes: the rewrite is unusable,
+    never an error that stops the other slots, and true is never reminder 1."""
+    step = {"text": "Freeze it"}
+    assert botmod._slot_answer(json.dumps({"steps": [step | {"ids": 1}]}), {1}) is None
+    assert botmod._slot_answer(json.dumps({"steps": [step | {"ids": [True]}]}), {1}) is None
+    got = {"steps": [step | {"ids": [1]}], "dropped": 2}
+    assert botmod._slot_answer(json.dumps(got), {1, 2}) is None
+    ok = {"steps": [step | {"ids": [1]}], "dropped": [2]}
+    assert botmod._slot_answer(json.dumps(ok), {1, 2}) == {
+        "steps": [{"text": "Freeze it", "ids": [1]}],
+        "dropped": [2],
+    }
+
+
+def test_a_slot_that_cannot_be_checked_goes_out_as_it_was_and_the_next_one_is_still_rewritten(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = setup(data_dir, tmp_path)
+    day = soon()
+    db.add_reminder(-100, "ana", at(day, "21:30"), "Freeze the beef", 7)
+    db.add_reminder(-100, "ana", at(day, "21:40"), "Soak the chickpeas", 7)
+    c = db.add_reminder(-200, "ana", at(day, "21:50"), "Keep 1 green pepper", 7)
+    d = db.add_reminder(-200, "ana", at(day, "21:55"), "Keep 1 green pepper", 7)
+    tried = []
+
+    def doubts(rs):
+        tried.append({r["id"] for r in rs})
+        if c not in tried[-1]:
+            raise ValueError("broken plan")
+        return []
+
+    monkeypatch.setattr(b, "slot_doubts", doubts)
+    calls = []
+    fake_complete(monkeypatch, {"steps": [{"text": "Keep 1 green pepper", "ids": [c, d]}]}, calls)
+    clock(monkeypatch, at(day, "21:26"))
+    run(b.prepare_slots())
+    assert len(calls) == 1  # the other chat's slot was still reached
+    assert list(db.get_kv(botmod.SLOTS)) == [botmod._slot_key(db.reminders(-200))]
+    run(b.prepare_slots())
+    assert len(tried) == 2  # the broken slot is not tried again at every tick
+
+
+def test_the_rewrite_keeps_doses_word_for_word_and_never_cuts_food(data_dir, tmp_path, monkeypatch):
+    b, db = setup(data_dir, tmp_path)
+    day = soon()
+    db.add_reminder(-100, "ana", at(day, "21:30"), "Freeze the beef", 7)
+    db.add_reminder(-100, "ana", at(day, "21:40"), "Soak the chickpeas", 7)
+    systems = []
+
+    async def complete(data, system, messages, timeout=None):
+        systems.append(system)
+        return "not json"
+
+    monkeypatch.setattr(botmod.llm, "complete", complete)
+    clock(monkeypatch, at(day, "21:26"))
+    run(b.prepare_slots())
+    (system,) = systems
+    assert "dose is kept word for word" in system and "never dropped" in system
+    assert "never suggest eating less after a binge" in system
+    assert "this is for food only" in system

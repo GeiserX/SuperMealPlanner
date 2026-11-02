@@ -243,7 +243,10 @@ from the state below, as it is now:
   state below wins, then what the chat said after the reminders were set, then the newest
   reminder (the highest id);
 - where one food serves several things, say the amounts apart (for example: keep 2 green peppers,
-  1 for X and 1 for Y, and cut the rest into strips);
+  1 for X and 1 for Y, and cut the rest into strips); this is for food only;
+- a step about a medication, a supplement or a dose is kept word for word with its amount, and is
+  never dropped; never change, start or stop a dose;
+- never cut, skip or shrink a meal or a portion, and never suggest eating less after a binge;
 - leave out what the state or the chat contradicts: a dish no longer on that day's menu, food the
   pantry says ran out, a thaw or a defrost of food the chat says nobody froze;
 - a step that counts on another (a soak, a thaw, a cooking session) nobody marked done is said
@@ -3738,7 +3741,12 @@ class Bot:
             key = _slot_key(rs)
             if not rs or key in (db.get_kv(SLOTS) or {}) or key in self.slot_tried:
                 continue
-            doubts = await asyncio.to_thread(self.slot_doubts, rs)
+            try:
+                doubts = await asyncio.to_thread(self.slot_doubts, rs)
+            except Exception as e:  # noqa: BLE001  this slot goes out as it was set; the rest go on
+                log.warning("could not check a slot of reminders: %s", safe(e))
+                self.slot_tried.add(key)
+                continue
             if len(rs) < 2 and not doubts:
                 continue
             left = at - time.time() - SLOT_MARGIN_S
@@ -4361,6 +4369,16 @@ def _slot_key(rs: list[dict]) -> str:
     return ",".join(str(r["id"]) for r in sorted(rs, key=lambda r: r["id"]))
 
 
+def _slot_ids(raw, ids: set[int]) -> list[int] | None:
+    """The slot's reminder ids in one list of the rewrite's answer: none given is no ids, anything
+    but a list is None (unusable), and true or false is never an id."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return None
+    return [i for i in raw if isinstance(i, int) and not isinstance(i, bool) and i in ids]
+
+
 def _slot_answer(raw: str, ids: set[int]) -> dict | None:
     """The rewrite's JSON, when it is one: steps with text, each naming reminders of the slot,
     and every reminder in a step or dropped (never both)."""
@@ -4375,12 +4393,14 @@ def _slot_answer(raw: str, ids: set[int]) -> dict | None:
     for x in got["steps"]:
         if not isinstance(x, dict) or not str(x.get("text") or "").strip():
             return None
-        mine = [i for i in x.get("ids") or [] if isinstance(i, int) and i in ids]
+        mine = _slot_ids(x.get("ids"), ids)
         if not mine:
             return None
         steps.append({"text": str(x["text"]).strip(), "ids": mine})
         said |= set(mine)
-    dropped = [i for i in got.get("dropped") or [] if isinstance(i, int) and i in ids]
+    dropped = _slot_ids(got.get("dropped"), ids)
+    if dropped is None:
+        return None
     if not steps or said & set(dropped) or said | set(dropped) != ids:
         return None
     return {"steps": steps, "dropped": dropped}
