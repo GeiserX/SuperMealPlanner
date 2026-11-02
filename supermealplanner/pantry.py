@@ -13,7 +13,8 @@ Only what came in is stored (db.py, table pantry):
 Everything else follows from the plan and the data, the same way every time:
 - each day the plan cooks takes its dishes' ingredients out (planner.Plans and
   portions.servings_on: the lunches cooked that day and the other meals eaten that day, at each
-  person's servings), the oldest entry first. A dish is taken out at the end of its cook day;
+  person's servings), first what goes off first and frozen food last. A dish is taken out at the
+  end of its cook day;
 - an ingredient with `keeps_days` (ingredients.yaml) goes off that many days after it came in. One
   without keeps until it is used up. A part said with a use-by or frozen follows that instead.
 
