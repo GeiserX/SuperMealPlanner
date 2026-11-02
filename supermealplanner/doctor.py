@@ -16,7 +16,8 @@ What it looks at, from today to the end of next week (the menu the AI sees):
 - too_old: a lunch eaten today or later cooked longer before its day than the recipe keeps in the
   fridge, when it does not freeze.
 - uncooked: a lunch eaten today or later whose cook date is already past and no session of that
-  date cooked it for that day. The Cook page never showed it on that date, so nobody cooked it.
+  date cooked it for that day (the Cook page never showed it on that date, so nobody cooked it), or
+  someone marked that session not done.
 - stale_reminder: a chat reminder linked to a dish (its recipe and the day it is eaten) when that
   day's menu no longer has the dish. The app cancels these itself.
 - prep_late: a dish whose recipe counts on a cooking session before its day (`ahead` steps with
@@ -49,6 +50,14 @@ by their step kind (a reminder that says no step counts as none):
   the plan cooking as planned up to the end of next week.
 - unused: food ticked as bought that no dish uses (unused_food), as the AI already sees it; food
   the going_off check names is left out of it, so nothing is said twice.
+
+A step is done only when someone marked it done (tasks.py, its buttons or a change block). A
+session, soak, thaw or move of the ASK_DAYS before today that was marked not done counts as never
+made, so the chains and uncooked see what is missing; one nobody marked counts as not made either,
+and what it leaves missing is said as one problem of its own (a session that cooks a lunch still to
+come, however long ago; tasks.tracked, so nothing from before the buttons existed):
+- unconfirmed: a past step nobody marked, that a dish still to come counts on. Ask whether it was
+  done; if not, the rest of the week is reorganised.
 """
 
 from __future__ import annotations
@@ -81,6 +90,7 @@ KINDS = (
     "no_soak",
     "soak_long",
     "thaw_long",
+    "unconfirmed",
     "avoided",
     "stale_reminder",
     "going_off",
@@ -118,9 +128,40 @@ def problems(data: Data, db: DB, today: dt.date, offered: list[dict] | tuple = (
     end = monday + dt.timedelta(days=13)  # the end of next week
     dates = [today + dt.timedelta(days=i) for i in range((end - today).days + 1)]
     out = _off_days(data, plans, today, end)
-    out += _lunches(data, plans, today, dates)
+    said = db.task_states()  # db.mark_task forgets the old ones, so this stays small
+    unsure: dict[str, tuple[dt.date, str, list[str]]] = {}  # task key -> (day, kind, dishes)
+    out += _lunches(data, db, plans, today, dates, said, unsure)
     out += _prep(data, db, plans, dates, offered)
-    out += _chains(data, db, plans, today, dates, offered)
+    # a step of the last days nobody marked done counts as not made; when only that breaks a
+    # chain, the problem is that nobody said, not the chain
+    window = [
+        x
+        for x in tasks.tracked(data, db, today - dt.timedelta(days=tasks.ASK_DAYS), today)
+        if x.kind in tasks.STEPS and x.day < today
+    ]
+    undone = {x.key for x in window if said.get(x.key) == tasks.NOT_DONE}
+    unknown = {x.key: x for x in window if x.key not in said}
+    strict = _chains(data, db, plans, today, dates, offered, undone | set(unknown))
+    loose = (
+        {p.key for p in _chains(data, db, plans, today, dates, offered, undone)}
+        if unknown
+        else {p.key for p in strict}
+    )
+    for p in strict:
+        rid, _, date = p.key.partition(":")[2].partition(":")
+        on = [
+            x
+            for x in unknown.values()
+            if (x.recipe, x.eat and x.eat.isoformat()) == (rid, date)
+            or any(r == rid and e.isoformat() == date for r, e in x.dishes)
+        ]
+        if p.key in loose or not on:
+            out.append(p)
+            continue
+        name = data.recipes[rid].name if rid in data.recipes else rid
+        for x in on:
+            unsure.setdefault(x.key, (x.day, x.kind, []))[2].append(f"{name} [{rid}] for {date}")
+    out += _unsure(data, unsure)
     out += _avoided(data)
     out += [p for r in db.reminders() if (p := _stale(data, plans, r))]
     off = _going_off(data, db, plans, today, end)
@@ -212,6 +253,26 @@ def _off_days(data: Data, plans: Plans, today: dt.date, end: dt.date) -> list[Pr
     return out
 
 
+def _unsure(data: Data, unsure: dict) -> list[Problem]:
+    out = []
+    for key, (day, kind, dishes) in sorted(unsure.items()):
+        dishes = list(dict.fromkeys(dishes))
+        out.append(
+            Problem(
+                "unconfirmed",
+                f"unconfirmed:{key}",
+                f"Nobody said whether the task {key} ({kind}, {_day(day)}) was done, and "
+                f"{'; '.join(dishes)} count on it. Until someone marks it done it counts as not "
+                "done. Fix: ask the household whether it was done (the morning message asks with "
+                "buttons); if it was not, reorganise the rest of the week: `set` those dishes "
+                "again with a new cook, or move their steps, and nothing made by it (a dish, a "
+                "soaked pulse, thawed food) is said to be ready.",
+                {"date": day, "dish": ", ".join(d.split(" [")[0] for d in dishes)},
+            )
+        )
+    return out
+
+
 def _span(first: dt.date, last: dt.date) -> list[dt.date]:
     return [first + dt.timedelta(days=i) for i in range((last - first).days + 1)]
 
@@ -221,7 +282,18 @@ def _keeps(data: Data, rid: str, cook: dt.date, eat: dt.date) -> bool:
     return (eat - cook).days <= r.fridge_days or r.freezes
 
 
-def _lunches(data: Data, plans: Plans, today: dt.date, dates: list[dt.date]) -> list[Problem]:
+def _lunches(
+    data: Data,
+    db: DB,
+    plans: Plans,
+    today: dt.date,
+    dates: list[dt.date],
+    said: dict,
+    unsure: dict,
+) -> list[Problem]:
+    """said: the tasks' answers (db.task_states); unsure: where a session nobody marked goes. A
+    session counts as unsure however long ago it was, while a lunch still to come counts on it:
+    the containers' messages say "if" of it and carry its buttons until someone answers."""
     out = []
     for d in dates:
         day = plans.day(d)
@@ -263,18 +335,30 @@ def _lunches(data: Data, plans: Plans, today: dt.date, dates: list[dt.date]) -> 
                     {"dish": r.name, "date": d, "cook": cook},
                 )
             )
-        elif cook < today and not _cooked(plans, day):
-            out.append(
-                Problem(
-                    "uncooked",
-                    f"uncooked:{d.isoformat()}",
-                    f"Lunch on {_day(d)}, {r.name} [{r.id}], says it was cooked on "
-                    f"{cook.isoformat()}, but no batch session that day cooked it, so nobody did. "
-                    f"Fix: `set` it again with `cook:` a day from {today.isoformat()} on, or "
-                    "without cook (cooked that morning).",
-                    {"dish": r.name, "date": d, "cook": cook},
+        elif cook < today:
+            key = _session_key(plans, day)
+            state = said.get(key) if key else None
+            if key and state is None and not tasks.untracked(db, cook):  # nobody said
+                unsure.setdefault(key, (cook, "cook", []))[2].append(
+                    f"{r.name} [{r.id}] for {d.isoformat()}"
                 )
-            )
+            elif key is None or state == tasks.NOT_DONE:
+                why = (
+                    "but its session was marked not done"
+                    if key
+                    else "but no batch session that day cooked it"
+                )
+                out.append(
+                    Problem(
+                        "uncooked",
+                        f"uncooked:{d.isoformat()}",
+                        f"Lunch on {_day(d)}, {r.name} [{r.id}], says it was cooked on "
+                        f"{cook.isoformat()}, {why}, so nobody did. Fix: `set` it again with "
+                        f"`cook:` a day from {today.isoformat()} on, or without cook (cooked that "
+                        "morning), and reorganise what else that session cooked.",
+                        {"dish": r.name, "date": d, "cook": cook},
+                    )
+                )
     return out
 
 
@@ -394,11 +478,18 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
 
 
 def _chains(
-    data: Data, db: DB, plans: Plans, today: dt.date, dates: list[dt.date], offered
+    data: Data,
+    db: DB,
+    plans: Plans,
+    today: dt.date,
+    dates: list[dt.date],
+    offered,
+    drop: set[str] = frozenset(),
 ) -> list[Problem]:
     """The steps that hang on each other, from the task list (tasks.py): a dried pulse soaked and
     then cooked before its meal, thawed food cooked soon after the thaw, a lunch cooked by the
-    session it counts on. Each link that is missing or too far apart is one problem."""
+    session it counts on. Each link that is missing or too far apart is one problem. drop: the
+    keys of the tasks that count as not made (past, and not marked done)."""
     zone = ZoneInfo(data.household.timezone)
 
     def at(d: dt.date, hm: str = "00:00") -> dt.datetime:
@@ -417,8 +508,10 @@ def _chains(
 
     start = at(today)
     first = today - dt.timedelta(days=3)  # a soak or thaw a few days back still counts
-    auto = [x for x in tasks.tasks_for(data, db, first, dates[-1]) if x.source == "auto"]
+    found = tasks.tasks_for(data, db, first, dates[-1])
+    auto = [x for x in found if x.source == "auto" and x.key not in drop]
     gone = {f"r:{int(r['cancel'])}" for r in offered if str(r.get("cancel", "")).isdigit()}
+    gone |= drop
     chat = [x for x in tasks.chat_tasks(data, db) if x.key not in gone]
     chat += tasks.offered_tasks(data, [r for r in offered if "cancel" not in r])
     steps: dict[tuple[str, dt.date], list[tasks.Task]] = {}
@@ -635,6 +728,11 @@ def _thaws(data, plans, today, found, sessions, steps, at, when, hm, hours) -> l
             )
         )
     return out
+
+
+def _session_key(plans: Plans, day: Day) -> str | None:
+    """The task key of the session on the lunch's cook date that cooks it for that day."""
+    return next(iter(tasks.session_keys(plans, day)), None)
 
 
 def _cooked(plans: Plans, day: Day) -> bool:

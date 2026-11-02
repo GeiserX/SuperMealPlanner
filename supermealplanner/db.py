@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS pantry (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ingredient TEXT NOT NULL, qty REAL NOT NULL,
   at TEXT NOT NULL, source TEXT NOT NULL, week TEXT
 );
+-- What someone said of a task (tasks.py), with its buttons or in words: done or not_done, by whom,
+-- when. A task with no row is unknown: nothing counts it as done. A later answer replaces it.
+CREATE TABLE IF NOT EXISTS task_state (
+  key TEXT PRIMARY KEY, state TEXT NOT NULL, who TEXT, at TEXT
+);
 -- A phone that has been paired. `token_hash` is sha256 of the bearer the app keeps in its keychain:
 -- the token itself is shown once, at pairing, and is never stored here or logged.
 CREATE TABLE IF NOT EXISTS device (
@@ -74,6 +79,7 @@ TICKED = "shop.ticked"  # {monday: [ingredient ids]} ticked that week, in tick o
 TICKED_AT = "shop.ticked_at"  # {monday: {ingredient id: when it was ticked}}, beside TICKED
 TICKED_WEEKS = 8
 PANTRY_DAYS = 120  # pantry entries older than this are forgotten
+TASK_KEEP_DAYS = 60  # task answers older than this are forgotten
 
 
 class DB:
@@ -390,6 +396,44 @@ class DB:
                 "UPDATE reminder SET state=? WHERE id=? AND state='pending'", (state, rid)
             )
             return cur.rowcount == 1
+
+    # tasks: what someone said of one (tasks.py works out the tasks themselves)
+    def mark_task(self, key: str, state: str, who: str | None) -> str | None:
+        """Store a task's answer, done or not_done, or unknown to take it back; a later answer
+        replaces the earlier one. Returns what it was before (None: nobody had said). Answers
+        older than TASK_KEEP_DAYS go: no check looks that far back."""
+        if state not in ("done", "not_done", "unknown"):
+            raise ValueError(f"{state!r} is not a task state")
+        now = dt.datetime.now(dt.UTC)
+        with self.conn() as c:
+            row = c.execute("SELECT state FROM task_state WHERE key=?", (key,)).fetchone()
+            if state == "unknown":
+                c.execute("DELETE FROM task_state WHERE key=?", (key,))
+            else:
+                c.execute(
+                    "INSERT INTO task_state(key, state, who, at) VALUES (?,?,?,?) ON CONFLICT(key) "
+                    "DO UPDATE SET state=excluded.state, who=excluded.who, at=excluded.at",
+                    (key, state, who, now.isoformat(timespec="seconds")),
+                )
+            old = (now - dt.timedelta(days=TASK_KEEP_DAYS)).isoformat(timespec="seconds")
+            c.execute("DELETE FROM task_state WHERE at < ?", (old,))
+            return row["state"] if row else None
+
+    def task_states(self, keys=None) -> dict[str, str]:
+        """key -> done or not_done, for these keys (every answered task without them)."""
+        with self.conn() as c:
+            if keys is None:
+                rows = c.execute("SELECT key, state FROM task_state").fetchall()
+            else:
+                keys = list(keys)
+                rows = []
+                for n in range(0, len(keys), 500):
+                    part = keys[n : n + 500]
+                    marks = ",".join("?" * len(part))
+                    rows += c.execute(
+                        f"SELECT key, state FROM task_state WHERE key IN ({marks})", part
+                    ).fetchall()
+        return {r["key"]: r["state"] for r in rows}
 
     # dish ratings: one vote per person and recipe, +1 or -1; 0 takes the vote back
     def rate(self, recipe: str, person: str, vote: int, day: dt.date) -> None:

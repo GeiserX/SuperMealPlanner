@@ -254,6 +254,14 @@ pantry:
   olive-oil: 0    # the oil ran out
 ```
 
+What someone says in words of a step (a cooking session, a soak, a thaw) is stored with `tasks`, the same as its Done and Not done buttons ([how it works](how-it-works.md)): the task's key, as the AI's facts list it, and `done`, `not_done`, or `unknown` to take an answer back. It is written to the database; a key the task list does not have is refused.
+
+```yaml
+asked: true
+tasks:
+  cook:2026-01-10:pm: done   # Saturday evening's session was cooked
+```
+
 An ingredient the data lacks is added with `ingredients`, new ids only: a name, a section and a store the data already uses, and any other field of [ingredients.yaml](#ingredientsyaml). A recipe in the same change may use it, and the shopping list buys it. It is one git commit like the recipes.
 
 ```yaml

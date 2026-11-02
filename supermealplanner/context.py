@@ -13,7 +13,7 @@ import datetime as dt
 from functools import cache
 from pathlib import Path
 
-from . import doctor
+from . import doctor, tasks
 from .db import DB
 from .i18n import Translator
 from .model import Data
@@ -160,6 +160,8 @@ pantry:
   <ingredient id>: 1000   # what is at home now, in the ingredient's unit; 0: it ran out
 ingredients:
   <new ingredient id>: {name: ..., section: <section id>, store: <store id>, unit: g}   # new ones only
+tasks:
+  <task key from the facts>: done   # or not_done, or unknown to take an answer back
 notes:
   - add: {person: <person id>, text: Works 9 to 14 on Tuesdays}
   - remove: {person: <person id>, text: <the exact text of a chat note>}
@@ -247,6 +249,13 @@ that cooks the dish, a reminder of kind cook, or the meal itself when the recipe
 than assembled and has no `ahead` steps), and a soak at most 24 h before that cook (48 h with
 soak-fridge). Thawed food is cooked within 48 h of its thaw. When a change moves a cook, move its
 soak and thaw with it. A reminder without its step kind counts as no step.
+Every task the app reminds of (a session, a soak, a thaw, a container to move, the shopping, a
+reminder from the chat) comes with two buttons, done and not done, and the facts list each task
+under «Tasks» with its state. Never treat a step as done, nor what it makes as ready (a dish
+cooked, a pulse soaked, food thawed or moved), unless its state is done: unknown means nobody said,
+so ask, or say "if it was done". When a step was not done, reorganise the rest of the week around
+it. When someone tells you in words whether a step was done ("yes, Saturday's session was done"),
+record it with `tasks` and the key from the facts, `asked: true`; unknown takes an answer back.
 
 The reminders already set in this chat are listed in the facts with their ids. When a change
 makes one wrong (the dish changed, the step moved, it is no longer needed), cancel it in the same
@@ -399,6 +408,9 @@ def facts(
     out += menu_now(data, t, today)
     out += list_now(data, db, today)
     out += pantry_now(data, db, today)
+    monday = today - dt.timedelta(days=today.weekday())
+    first = today - dt.timedelta(days=tasks.ASK_DAYS)  # as far back as the morning asks
+    out += tasks.tasks_now(data, db, first, monday + dt.timedelta(days=13))
     out += problems_now(data, db, today, viewer)
     out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)
