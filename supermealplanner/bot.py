@@ -209,6 +209,7 @@ REMIND_TTL = 1800  # an offer can be tapped this long; then nothing is done
 REMIND_WHAT = 20  # characters of a reminder's text on its buttons
 REMIND_DAYS = 60  # the furthest ahead a reminder may be
 LATE_S = 600  # a reminder posted this much after its time says so
+MERGE_S = 1800  # reminders of one chat this close go out as one message, at the earliest time
 TASK_BUTTONS = (
     "task.buttons"  # {short id: {"key", "what", "kind", "day"}}: the tasks under messages
 )
@@ -3055,6 +3056,18 @@ class Bot:
                 self.spawn(self.drive(client, chat))
                 continue
             at_once.setdefault(at, []).append(r)
+        # a reminder of the chat due now brings forward the app's own of the next MERGE_S, so
+        # the two go as one message at the earlier time
+        due = [r for r in self.state.db.reminders(chat) if r["at"] <= now.timestamp()]
+        first = due[0]["at"] if due else None
+        for r, hm, start in self.app_times(now.date()) if first else []:
+            if (
+                now.timestamp() < start <= first + MERGE_S
+                and r.kind != "review"
+                and not self.state.db.was_sent(r.id, now.date(), hm)
+                and self._says(r, now.date())
+            ):
+                at_once.setdefault(hm, []).append(r)
         for at, rs in at_once.items():  # reminders due at one time go as one message
             day = now.date()
             said, own = [], {}
@@ -3066,18 +3079,46 @@ class Bot:
             own = list(own.values())
             marked = self.state.db.task_states([x.key for x in own])
             own = [x for x in own if x.key not in marked]
+            # the chat's own reminders due within MERGE_S go in the same message
+            h, m = (int(x) for x in at.split(":"))
+            start = dt.datetime.combine(day, dt.time(h, m), now.tzinfo).timestamp()
+            # brought forward: the window of the chat's reminder that brought it
+            end = (start if start <= now.timestamp() else first) + MERGE_S
+            once = [r for r in self.state.db.reminders(chat) if r["at"] <= end] if said else []
+            once = await self.live_once(client, once)
             # the morning's day message asks about what nobody marked in the last days
             fresh = self.unanswered(day) if any(r.kind == "day" for r in rs) else []
             ask = [x for x in fresh if x.key not in {y.key for y in own}]
-            lines, rows = self.task_buttons(own + ask)
+            lines, rows = self.task_buttons(own + self.once_tasks(once) + ask)
             if own and len(lines) > 1:
                 said.append("\n".join(lines[: len(own)]))
+            if once:
+                names = self.once_names(once)
+                if names:  # each person named once, at the top
+                    said.insert(0, f"⏰ {names}")
+                many = len(lines) > 1
+                said.append(
+                    "\n".join(
+                        (f"{n}. " if many else "" if names else "⏰ ")
+                        + self.once_line(r, now.timestamp())
+                        for n, r in enumerate(once, len(own) + 1)
+                    )
+                )
             if ask:
-                said.append(self.t("task_ask_title") + "\n" + "\n".join(lines[len(own) :]))
+                start = len(own) + len(once)
+                said.append(self.t("task_ask_title") + "\n" + "\n".join(lines[start:]))
             if said:
                 more = {"buttons": rows} if rows else {}
-                await self.send(client, chat, "\n\n".join(said), **more)
-            for r in rs:  # only after Telegram took it
+                try:
+                    await self.send(client, chat, "\n\n".join(said), **more)
+                except TelegramError as e:
+                    if e.code in (400, 403):  # the folded ones fail with it, like on their own
+                        for r in once:
+                            self.state.db.settle_reminder(r["id"], "failed")
+                    raise
+            for r in once:  # only after Telegram took it
+                self.state.db.settle_reminder(r["id"], "sent")
+            for r in rs:
                 self.state.db.mark_sent(r.id, day, at)
             if fresh:
                 self.mark_asked(fresh, day)
@@ -3304,6 +3345,10 @@ class Bot:
             [r for r in listed if "cancel" not in r], covered[-1].who if covered else None
         )
         for r in [r for r in items if r.get("set")] if uid else []:
+            met = self.near_reminder(chat_id, r["at"], r["text"])
+            if met and met[0] == "same":  # already set: not stored twice
+                done.append(t("remind_same", time=met[1], text=r["text"]))
+                continue
             db.add_reminder(
                 chat_id,
                 r["person"],
@@ -3315,6 +3360,8 @@ class Bot:
                 r.get("kind"),
             )
             done.append(t("remind_set_log", when=self._when(r["at"]), text=r["text"]))
+            if met:
+                done[-1] += " " + t("remind_joined", time=met[1])
         if done and tail is not None:
             tail.extend(done)
             await self.checkup(client, chat_id, before, reply_to, tail)
@@ -3430,10 +3477,21 @@ class Bot:
         self.state.db.set_kv(REMIND, [*rest, offer] if open_items else rest or None)
         who = self.person_of(user.get("id", 0))
         when = self._when(item["at"])
-        await self.toast(client, query, t("remind_set", when=when) if c == "h" else None)
+        met = self.near_reminder(chat["id"], item["at"], item["text"]) if c == "h" else None
+        said = t("remind_set", when=when) if c == "h" else None
+        if met and met[0] == "same":
+            said = t("remind_same", time=met[1], text=item["text"])
+        elif met:
+            said += " " + t("remind_joined", time=met[1])
+        await self.toast(client, query, said and said[:200])  # Telegram's limit for a toast
         await self.rekey(client, chat["id"], offer["msg"], self._remind_rows(key, items))
-        if c == "h":
+        if met and met[0] == "same":  # already set: not stored twice, and the AI hears it
+            self.state.db.add_chat(chat["id"], "assistant", None, said)
+        elif c == "h":
             person = item["person"] or who
+            line = t("remind_set_log", when=when, text=item["text"])
+            if met:
+                line += " " + t("remind_joined", time=met[1])
             self.state.db.add_reminder(
                 chat["id"],
                 person,
@@ -3444,10 +3502,7 @@ class Bot:
                 item.get("date"),
                 item.get("kind"),
             )
-            # the AI hears it with the rest of the chat
-            self.state.db.add_chat(
-                chat["id"], "assistant", None, t("remind_set_log", when=when, text=item["text"])
-            )
+            self.state.db.add_chat(chat["id"], "assistant", None, line)  # the AI hears it
         elif c == "c":
             local = dt.datetime.fromtimestamp(item["at"], self._zone())
             text = t("remind_calendar_turn", when=when, iso=local.isoformat(), text=item["text"])
@@ -3472,34 +3527,118 @@ class Bot:
 
     async def tick_once(self, client) -> None:
         """Post every one-off reminder whose time has come, naming the person it is for, then mark
-        it sent. One Telegram refuses for good (the chat is gone) is marked failed."""
-        now = time.time()
-        for r in self.state.db.due_reminders(now):
-            try:
-                gone = doctor.stale(self.data, r)
-            except Exception as e:  # noqa: BLE001  a broken plan must not hold reminders back
-                log.warning("could not check a reminder's dish: %s", safe(e))
-                gone = False
-            if gone:  # the menu dropped its dish since the last check
-                await self.checkup(client)
+        it sent. The chat's others due within MERGE_S go in the same message, early, each on its
+        own numbered line with its own buttons. One Telegram refuses for good (the chat is gone) is
+        marked failed, with every reminder it carried."""
+        now, seen = time.time(), set()
+        for first in self.state.db.due_reminders(now):
+            if first["id"] in seen:
                 continue
-            pid = self._person(r["person"])
-            text = f"⏰ {self.mention(pid)}: {r['text']}" if pid else f"⏰ {r['text']}"
-            if now - r["at"] > LATE_S:
-                text += "\n" + self.t("reminder_late", when=self._when(r["at"]))
-            if r.get("recipe") in self.data.recipes and r.get("date"):  # the dish it is about
-                text += "\n" + self.recipe_url(r["recipe"], r["date"])
-            when = dt.datetime.fromtimestamp(r["at"], self._zone())
-            _, rows = self.task_buttons([tasklist._chat(f"r:{r['id']}", when, r, r["id"])])
+            near = [
+                r
+                for r in self.state.db.reminders(first["chat"])
+                if r["at"] <= first["at"] + MERGE_S and r["id"] not in seen
+            ]
+            seen |= {r["id"] for r in near} | {first["id"]}
+            rs = await self.live_once(client, near)
+            if not rs:
+                continue
+            _, rows = self.task_buttons(self.once_tasks(rs))
+            names = self.once_names(rs)
+            if len(rs) == 1:
+                line = self.once_line(rs[0], now)
+                text = f"⏰ {names}: {line}" if names else f"⏰ {line}"
+            else:  # each person named once, at the top
+                text = "\n".join(
+                    [f"⏰ {names}".rstrip()]
+                    + [f"{n}. {self.once_line(r, now)}" for n, r in enumerate(rs, 1)]
+                )
             try:
-                await self.send(client, r["chat"], text, buttons=rows)
+                await self.send(client, first["chat"], text, buttons=rows)
             except TelegramError as e:
                 if e.code in (400, 403):
                     log.warning("a reminder could not be posted: %s", e)
-                    self.state.db.settle_reminder(r["id"], "failed")
+                    for r in rs:
+                        self.state.db.settle_reminder(r["id"], "failed")
                     continue
                 raise
-            self.state.db.settle_reminder(r["id"], "sent")  # only after Telegram took it
+            for r in rs:  # only after Telegram took it
+                self.state.db.settle_reminder(r["id"], "sent")
+
+    async def live_once(self, client, rs: list[dict]) -> list[dict]:
+        """The one-off reminders whose dish the menu still serves; one it dropped since the last
+        check goes to the checkup instead (doctor.stale)."""
+        live, gone = [], False
+        for r in rs:
+            try:
+                stale = doctor.stale(self.data, r)
+            except Exception as e:  # noqa: BLE001  a broken plan must not hold reminders back
+                log.warning("could not check a reminder's dish: %s", safe(e))
+                stale = False
+            gone |= bool(stale)
+            if not stale:
+                live.append(r)
+        if gone:
+            await self.checkup(client)
+        return live
+
+    def once_tasks(self, rs: list[dict]) -> list[tasklist.Task]:
+        zone = self._zone()
+        return [
+            tasklist._chat(f"r:{r['id']}", dt.datetime.fromtimestamp(r["at"], zone), r, r["id"])
+            for r in rs
+        ]
+
+    def once_names(self, rs: list[dict]) -> str:
+        pids = dict.fromkeys(p for r in rs if (p := self._person(r["person"])))
+        return ", ".join(self.mention(p) for p in pids)
+
+    def once_line(self, r: dict, now: float) -> str:
+        """A one-off reminder's text, with the late note and the dish it is about."""
+        text = r["text"]
+        if now - r["at"] > LATE_S:
+            text += "\n" + self.t("reminder_late", when=self._when(r["at"]))
+        if r.get("recipe") in self.data.recipes and r.get("date"):
+            text += "\n" + self.recipe_url(r["recipe"], r["date"])
+        return text
+
+    def near_reminder(self, chat_id: int, at: float, text: str) -> tuple[str, str] | None:
+        """What a reminder about to be set at `at` meets: ("same", HH:MM) when the chat already
+        has one that says the same within MERGE_S, ("join", HH:MM) when it goes out with another
+        (one of the chat's, or the app's own message of that time), None when alone."""
+        zone, key = self._zone(), _same_words(text)
+        near = [r for r in self.state.db.reminders(chat_id) if abs(r["at"] - at) <= MERGE_S]
+        for r in near:
+            if _same_words(r["text"]) == key:
+                return "same", f"{dt.datetime.fromtimestamp(r['at'], zone):%H:%M}"
+        if near:
+            r = min(near, key=lambda r: abs(r["at"] - at))
+            return "join", f"{dt.datetime.fromtimestamp(r['at'], zone):%H:%M}"
+        if chat_id != self.chat_id:
+            return None
+        day = dt.datetime.fromtimestamp(at, zone).date()
+        for r, hm, start in self.app_times(day):
+            if r.kind != "review" and abs(start - at) <= MERGE_S and self._says(r, day):
+                return "join", hm
+        return None
+
+    def app_times(self, day: dt.date) -> list[tuple]:
+        """The app's own reminders on `day`: (reminder, "HH:MM", epoch seconds), each time."""
+        zone, out = self._zone(), []
+        for r in self.data.settings.reminders:
+            if not r.enabled or (r.days != "daily" and WEEKDAYS[day.weekday()] not in r.days):
+                continue
+            for hm in r.at:
+                h, m = (int(x) for x in hm.split(":"))
+                out.append((r, hm, dt.datetime.combine(day, dt.time(h, m), zone).timestamp()))
+        return out
+
+    def _says(self, r, day: dt.date) -> bool:
+        try:
+            return bool(self.reminder_text(r, day))
+        except Exception as e:  # noqa: BLE001  a broken plan must not stop a reminder being set
+            log.info("could not read a reminder's text: %s", safe(e))
+            return False
 
     # ------------------------------------------------------------- the consistency check
     async def problems(self) -> list[doctor.Problem] | None:
@@ -3870,6 +4009,13 @@ UNSENT = (
 def _unsent(fresh: list[dict]) -> dict:
     """The line that tells a turn it rewrites an answer the chat never saw."""
     return {"role": "user", "content": UNSENT, "ids": [], "ts": fresh[-1]["ts"] if fresh else None}
+
+
+def _same_words(text: str) -> str:
+    """A reminder's words without case, accents, punctuation or spacing, to tell a repeat."""
+    plain = unicodedata.normalize("NFKD", str(text or "").casefold())
+    plain = "".join(c for c in plain if not unicodedata.combining(c))
+    return " ".join(re.sub(r"[^\w]+", " ", plain).split())
 
 
 def _reply_to(items: list[Item]) -> int | None:

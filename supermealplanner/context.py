@@ -264,6 +264,11 @@ household to delete or ignore a reminder: you cancel it. A reminder whose text n
 day ("for the cooking session on Saturday morning") is wrong once that time moves, even when its
 own time still fits: cancel it and list it again with the new words.
 
+Reminders of one chat due within about half an hour of each other go out as one message, and the
+app's own reminder of that time takes them in. Before you offer a reminder, look at the pending
+ones the facts list: when one at about that time already covers the step, offer nothing more; when
+it needs changing, cancel it and list one that says both.
+
 A reminders block replaces the offer still open in this chat (the facts list it, when there is
 one): list again the offered steps that still hold, and leave out any the chat has since made
 wrong (they keep the fish in the freezer after all: no reminder to take it out).

@@ -43,8 +43,8 @@ def test_a_reminder_set_from_the_chat_about_a_dish_ends_with_its_recipe(data_dir
     asyncio.run(b.tick_once(None))
     texts = [t for _, t in b.sent]
     link = f"https://meals.example/recipe/{day.dinner}?d={D(2)}"  # the word, not the address
-    assert f"⏰ Haz la cena\n[Recipe]({link})" in texts
-    assert "⏰ Riega las plantas" in texts  # about no dish: no link
+    # due together, so one message; the one about no dish gets no link
+    assert texts == [f"⏰\n1. Haz la cena\n[Recipe]({link})\n2. Riega las plantas"]
 
 
 def test_the_batch_and_soak_reminders_link_each_dishs_recipe(data_dir, tmp_path):
