@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS pair_code (
 );
 """
 
-HAVE = "shop.have"  # ingredient ids the household has at home: left off every list until re-added
+HAVE = "shop.have"  # «I have it»: ingredient id -> the day it was marked (pantry.at_home)
 TICKED = "shop.ticked"  # {monday: [ingredient ids]} ticked that week, in tick order, on every phone
 TICKED_AT = "shop.ticked_at"  # {monday: {ingredient id: when it was ticked}}, beside TICKED
 TICKED_WEEKS = 8
@@ -456,13 +456,23 @@ class DB:
             return {r["recipe"]: int(r["v"]) for r in c.execute(q, args).fetchall()}
 
     # the shopping list: what is at home, and what each week's list has ticked
-    def have(self) -> set[str]:
-        return set(self.get_kv(HAVE) or [])
+    def have_marks(self) -> dict[str, str | None]:
+        """«I have it»: ingredient id -> the day it was marked (ISO), None for a mark kept from
+        before the day was stored. What still holds today is pantry.at_home."""
+        v = self.get_kv(HAVE) or {}
+        return dict.fromkeys(v) if isinstance(v, list) else dict(v)
 
-    def set_have(self, ingredient: str, on: bool) -> None:
-        have = self.have()
-        have = have | {ingredient} if on else have - {ingredient}
-        self.set_kv(HAVE, sorted(have))
+    def have(self) -> set[str]:
+        """Every ingredient marked «I have it», still holding or not (pantry.at_home says)."""
+        return set(self.have_marks())
+
+    def set_have(self, ingredient: str, on: bool, day: dt.date | None = None) -> None:
+        marks = self.have_marks()
+        if on:
+            marks[ingredient] = (day or dt.date.today()).isoformat()
+        else:
+            marks.pop(ingredient, None)
+        self.set_kv(HAVE, dict(sorted(marks.items())))
 
     def ticked(self, monday: dt.date) -> set[str]:
         return set(self.tick_order(monday))
