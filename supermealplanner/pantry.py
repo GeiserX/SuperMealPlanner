@@ -68,7 +68,11 @@ def at_home(data: Data, db: DB, today: dt.date) -> set[str]:
         ing = data.ingredients.get(iid)
         if ing is None:
             continue
-        if ing.keeps_days is None or day and today < dt.date.fromisoformat(day) + dt.timedelta(days=ing.keeps_days):
+        if (
+            ing.keeps_days is None
+            or day
+            and today < dt.date.fromisoformat(day) + dt.timedelta(days=ing.keeps_days)
+        ):
             out.add(iid)
     return out
 
