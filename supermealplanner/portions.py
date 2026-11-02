@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .db import DB
 from .model import Data, Ingredient, Recipe
-from .planner import MEALS, Plan
+from .planner import MEALS, Plan, Session
 from .targets import current_kcal, day_factor
 
 MEAL_ORDER = MEALS
@@ -471,6 +471,18 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
     return out
 
 
+def session_sheets(
+    data: Data, db: DB, plans, day: dt.date
+) -> list[tuple[Session, list[BatchDish]]]:
+    """Each cooking session on `day` with its sheet, from every plan (Plans.sessions_on): the
+    Cook page, the batch reminder and the soaking all read this, so none misses a session dated
+    before its own plan starts."""
+    return [
+        (s, batch_sheet(data, db, replace(plan, sessions=[s]), day))
+        for plan, s in plans.sessions_on(day)
+    ]
+
+
 @dataclass
 class Soak:
     recipe: Recipe
@@ -482,8 +494,13 @@ class Soak:
 def soak_for(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[Soak]:
     """What to leave in water the night before a batch session: each dish's ingredients marked
     `soak`, in the quantity the whole dish needs."""
+    return soaks_in(data, batch_sheet(data, db, plan, session_date))
+
+
+def soaks_in(data: Data, sheet: list[BatchDish]) -> list[Soak]:
+    """The ingredients marked `soak` in a batch sheet's dishes, in the quantity each dish needs."""
     out = []
-    for b in batch_sheet(data, db, plan, session_date):
+    for b in sheet:
         for iid, qty in amounts(data, b.recipe, b.eaters).items():
             ing = data.ingredients[iid]
             if ing.soak:

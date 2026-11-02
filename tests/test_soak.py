@@ -86,7 +86,8 @@ def test_the_soaking_shows_on_the_tasks_page_and_through_the_api(data_dir, monke
     assert x["unit"] == "g" and x["qty"] >= 70 and x["amount"].endswith(" g")
     assert x["recipe"]["id"] in {d.recipe for d in soak.dishes}
     texts = next(d for d in tasks["days"] if d["day"] == eve.isoformat())["tasks"]
-    assert any("• Garbanzo" in t["text"] for t in texts)
+    soaks = [t for t in texts if t["kind"] == "soak"]  # one task per food to soak
+    assert soaks and all("Garbanzo" in t["text"] and t["key"].startswith("soak:") for t in soaks)
     assert all(y["ingredient"] == "garbanzo" for y in other["soak_for_tomorrow"])
     assert data.ingredients["lenteja"].soak is False
 

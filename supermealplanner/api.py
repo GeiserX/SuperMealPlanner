@@ -27,20 +27,21 @@ from fastapi import APIRouter, HTTPException, Request
 
 from . import __version__, llm, pantry
 from .i18n import Translator
-from .planner import MEAL_HOURS, day_menu, meals_now, paused_days, plan_for
+from .planner import MEAL_HOURS, Plans, day_menu, meals_now, paused_days, plan_for
 from .portions import (
     MEAL_ORDER,
     batch_for_text,
-    batch_sheet,
     batch_split_text,
     person_days,
     plate,
+    session_sheets,
     shopping_list,
-    soak_for,
+    soaks_in,
     ticked_last,
     together,
 )
 from .targets import current_kcal, day_factor, evaluate, trend
+from .tasks import tasks_for
 
 API_VERSION = 1
 CHEF_WAIT_MAX = 25  # the longest one GET /chef/{id} holds, so no client's request times out
@@ -289,16 +290,13 @@ def router(state) -> APIRouter:
                 }
             )
         tomorrow = date + dt.timedelta(days=1)
-        defrost = []
-        if plan:
-            for s in plan.sessions:
-                for x in s.dishes:
-                    r = state.data.recipes.get(x.recipe)
-                    if r and any(
-                        e == tomorrow and (e - x.cook).days > r.fridge_days for e in x.eat
-                    ):
-                        defrost.append(_recipe_brief(r))
-        later = plan_for(state.data, tomorrow)
+        jobs = tasks_for(state.data, state.db, date, date)  # the task list (tasks.py)
+        defrost = [
+            _recipe_brief(state.data.recipes[j.recipe])
+            for j in jobs
+            if j.kind == "defrost" and j.recipe in state.data.recipes
+        ]
+        plans = Plans(state.data)
         soak = [
             {
                 "recipe": _recipe_brief(x.recipe),
@@ -308,7 +306,8 @@ def router(state) -> APIRouter:
                 "unit": x.ingredient.unit,
                 "amount": x.amount,
             }
-            for x in (soak_for(state.data, state.db, later, tomorrow) if later else [])
+            for _, sheet in session_sheets(state.data, state.db, plans, tomorrow)
+            for x in soaks_in(state.data, sheet)
         ]
         return {
             "day": date.isoformat(),
@@ -372,7 +371,21 @@ def router(state) -> APIRouter:
             "monday": m.isoformat(),
             "today": state.today().isoformat(),
             "days": [
-                {"day": x.isoformat(), "tasks": [{"at": at, "text": text} for at, text in jobs]}
+                {
+                    "day": x.isoformat(),
+                    "tasks": [
+                        {
+                            "key": j.key,
+                            "at": j.at,
+                            "kind": j.kind,
+                            "source": j.source,
+                            "text": j.text,
+                            "recipe": j.recipe,
+                            "eat": j.eat.isoformat() if j.eat else None,
+                        }
+                        for j in jobs
+                    ],
+                }
                 for x, jobs in week_tasks(state, m)
             ],
         }
@@ -383,8 +396,11 @@ def router(state) -> APIRouter:
         device(request)
         t = Translator(state.data.locale)
         date = _day(d, state.today())
-        plan = plan_for(state.data, date)
-        sheet = batch_sheet(state.data, state.db, plan, date) if plan else []
+        sheet = [  # every plan's sessions that day (one may come before its own plan starts)
+            b
+            for _, dishes in session_sheets(state.data, state.db, Plans(state.data), date)
+            for b in dishes
+        ]
         names = {p.id: p.name for p in state.data.household.people}
         return {
             "day": date.isoformat(),

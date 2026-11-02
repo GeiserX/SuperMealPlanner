@@ -77,6 +77,8 @@ fourth "| set" field in the block) is one the person asked for: the app sets it 
 so, with no offer. {"cancel": id} (a "- cancel | <id>" line) cancels a reminder set from that chat.
 A reminder about a dish may carry "recipe" and "date" (the day it is eaten; a "| dish <recipe id>
 <YYYY-MM-DD>" field in the block): when that day's menu no longer has the dish, the app cancels it.
+It may also carry "kind", the step it is (one of STEP_KINDS, as a last word of the dish field):
+the task list and the consistency check read it.
 
 A plugin whose actions need a person's yes while it works defines
       def answer(request: dict, decision: dict, settings: dict) -> dict
@@ -154,7 +156,15 @@ def extract_options(text: str) -> tuple[str, list[str]]:
 REMINDERS_MAX, REMINDER_CHARS = 5, 300
 REMINDERS = re.compile(r"\n?```reminders[ \t]*\n(.*?)```[ \t]*", re.DOTALL)
 WHEN = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}")
-DISH = re.compile(r"dish\s+([a-z0-9][a-z0-9-]{0,63})\s+(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+# what a reminder about a dish has someone do, as one word at the end of its dish field: the task
+# list and the checks read it (soak-fridge: soaking in the fridge, which may take longer)
+STEP_KINDS = ("soak-fridge", "soak", "cook", "thaw", "buy", "move")
+DISH = re.compile(
+    r"dish\s+([a-z0-9][a-z0-9-]{0,63})\s+(\d{4}-\d{2}-\d{2})(?:\s+("
+    + "|".join(STEP_KINDS)
+    + r"))?",
+    re.IGNORECASE,
+)
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -188,6 +198,9 @@ def reminders(raw) -> list[dict]:
         recipe, date = str(r.get("recipe") or "").strip(), str(r.get("date") or "").strip()
         if recipe and DATE.fullmatch(date):  # about a dish: cancelled when the menu drops it
             item["recipe"], item["date"] = recipe, date
+            kind = str(r.get("kind") or "").strip().lower()
+            if kind in STEP_KINDS:
+                item["kind"] = kind
         if all((o.get("when"), o.get("text")) != (item["when"], item["text"]) for o in out):
             out.append(item)
     return out[:REMINDERS_MAX] + cancels[:REMINDERS_MAX]
@@ -217,6 +230,7 @@ def extract_reminders(text: str) -> tuple[str, list[dict]]:
                     "person": (parts[2] or None) if len(parts) > 2 else None,
                     "set": len(parts) > 3 and parts[3].lower() == "set",
                     **({"recipe": dish[1].lower(), "date": dish[2]} if dish else {}),
+                    **({"kind": dish[3].lower()} if dish and dish[3] else {}),
                 }
             )
     return REMINDERS.sub("", text).strip(), reminders(found)

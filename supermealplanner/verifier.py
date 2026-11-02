@@ -363,13 +363,9 @@ def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
             f"in the evening, from the cooking reminder at {', '.join(at)}" if at else "after lunch"
         )
 
-    out, seen = [], set()
-    for i in range(14):
-        plan = plans.plan(monday + dt.timedelta(days=i))
-        for s in plan.sessions if plan else []:
-            if s.date != monday + dt.timedelta(days=i) or (s.date, s.morning) in seen:
-                continue
-            seen.add((s.date, s.morning))
+    out = []
+    for i in range(14):  # every plan's: a session may come before its own plan starts
+        for _, s in plans.sessions_on(monday + dt.timedelta(days=i)):
             dishes = "; ".join(
                 f"{x.recipe} for {', '.join(e.isoformat() for e in x.eat)}" for x in s.dishes
             )

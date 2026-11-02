@@ -45,7 +45,6 @@ from .planner import (
     MEAL_HOURS,
     MEALS,
     Day,
-    Plan,
     Plans,
     _choose_sessions,
 )
@@ -235,7 +234,7 @@ def _lunches(data: Data, plans: Plans, today: dt.date, dates: list[dt.date]) -> 
                     {"dish": r.name, "date": d, "cook": cook},
                 )
             )
-        elif cook < today and not _cooked(plans.plan(d), day):
+        elif cook < today and not _cooked(plans, day):
             out.append(
                 Problem(
                     "uncooked",
@@ -275,8 +274,7 @@ def _sessions_before(plans: Plans, d: dt.date) -> list[dt.date]:
     out = []
     for i in range(AHEAD_KEEPS_DAYS, 0, -1):
         x = d - dt.timedelta(days=i)
-        plan = plans.plan(x)
-        if plan and x not in plans.paused and any(s.date == x for s in plan.sessions):
+        if x not in plans.paused and plans.sessions_on(x):
             out.append(x)
     return out
 
@@ -296,7 +294,7 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
             continue
         for meal in MEALS:
             r = data.recipes.get(getattr(day, meal) or "")
-            if r is None or (meal == "lunch" and _cooked(plans.plan(d), day)):
+            if r is None or (meal == "lunch" and _cooked(plans, day)):
                 continue
             soak = [
                 data.ingredients[i.id].name
@@ -326,8 +324,7 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
             what = r.name + f" [{r.id}], {meal} on {_day(d)}"
             link = f"`dish {r.id} {d.isoformat()}`"
             if session and not before:
-                plan = plans.plan(d)
-                same = plan is not None and any(s.date == d for s in plan.sessions)
+                same = bool(plans.sessions_on(d))
                 when = (
                     "the session that day comes after the meal"
                     if same
@@ -379,11 +376,12 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
     return out
 
 
-def _cooked(plan: Plan | None, day: Day) -> bool:
-    """A session on the lunch's cook date cooked that dish for that day."""
-    return plan is not None and any(
-        s.date == day.lunch_cook and x.recipe == day.lunch and day.date in x.eat
-        for s in plan.sessions
+def _cooked(plans: Plans, day: Day) -> bool:
+    """A session on the lunch's cook date, of any plan (one may come before its plan starts),
+    cooked that dish for that day."""
+    return any(
+        x.recipe == day.lunch and day.date in x.eat
+        for _, s in plans.sessions_on(day.lunch_cook)
         for x in s.dishes
     )
 

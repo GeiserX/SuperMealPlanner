@@ -64,16 +64,16 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import __version__, changes, context, doctor, gestures, llm, menu, pantry, render, verifier
+from . import tasks as tasklist
 from .i18n import Translator
 from .model import WEEKDAYS
-from .planner import ICONS, day_menu, paused_days, plan_for
+from .planner import ICONS, Plans, day_menu, paused_days, plan_for
 from .portions import (
     batch_dish_text,
     batch_sheet,
     person_days,
+    session_sheets,
     shopping_list,
-    soak_for,
-    thaw_for,
 )
 
 log = logging.getLogger("supermealplanner.bot")
@@ -2547,18 +2547,14 @@ class Bot:
         t = self.t
         today = self.state.today()
         monday = today - dt.timedelta(days=today.weekday())
-        plan = plan_for(self.data, monday)
-        sessions = (
-            sorted(
-                (s for s in plan.sessions if monday <= s.date < monday + dt.timedelta(days=7)),
-                key=lambda s: (s.date, not s.morning),
-            )
-            if plan
-            else []
-        )
+        plans = Plans(self.data)
         blocks = []
-        for s in sessions:
-            dishes = self.batch_text(self.data, plan, s.date, s)
+        for s, sheet in (
+            x
+            for i in range(7)
+            for x in session_sheets(self.data, self.state.db, plans, monday + dt.timedelta(days=i))
+        ):
+            dishes = self.sheet_text(sheet)
             if dishes:
                 when = t("batch_morning" if s.morning else "batch_afternoon")
                 blocks.append(t("batch_cook", date=t.date(s.date), when=when) + "\n\n" + dishes)
@@ -2701,40 +2697,17 @@ class Bot:
         names = ", ".join(self.mention(p.id) for p in people)
         if r.kind == "message":
             return r.text.format(names=names, today=t.date(day))
-        plan = plan_for(data, day)
-        if r.kind == "shopping":
-            rest = {day + dt.timedelta(days=i) for i in range(7 - day.weekday())}
-            if rest <= paused_days(data):  # the rest of the week is paused: nothing to buy for
-                return None
-            return t(
-                "reminder_shopping", url=self.link(t("link_list"), f"/list?d={day.isoformat()}")
-            )
+        if r.kind in ("shopping", "defrost"):  # the day's tasks (tasks.py), as the pages list them
+            kind = "shop" if r.kind == "shopping" else "defrost"
+            said = [x.text for x in self.kitchen_tasks(day, day) if x.kind == kind]
+            return "\n".join(dict.fromkeys(said)) or None
         if r.kind == "batch":
-            said = [
-                x
-                for x in (self.batch_reminder(plan, day), self.soak_text(day), self.thaw_text(day))
-                if x
-            ]
-            return "\n\n".join(said) or None
+            return self.batch_message(day)
+        plan = plan_for(data, day)
         if not plan:
             return None
         if r.kind == "day":
             return self.menu_text(plan, day)
-        if r.kind == "defrost":
-            tomorrow = plan.day(day + dt.timedelta(days=1))
-            if (
-                tomorrow
-                and tomorrow.lunch in data.recipes
-                and (tomorrow.date - tomorrow.lunch_cook).days
-                > data.recipes[tomorrow.lunch].fridge_days
-            ):
-                return t(
-                    "reminder_defrost",
-                    dish=self.recipe_url(
-                        tomorrow.lunch, tomorrow.date, data.recipes[tomorrow.lunch].name
-                    ),
-                )
-            return None
         if r.kind == "meal":
             d = plan.day(day)
             rid = getattr(d, r.meal) if d else None
@@ -2773,38 +2746,47 @@ class Bot:
             return "\n".join(todo) or None
         return None
 
-    def batch_reminder(self, plan, day: dt.date) -> str | None:
-        """Today's afternoon session and tomorrow morning's: a session cooked the morning a lunch
-        is eaten (a Saturday before lunch, the first day back from a pause) is said the evening
-        before, or nobody hears of it. Not when the chat already set its own reminder about it
-        for that evening."""
-        t, data = self.t, self.data
-        said = []
-        for s in plan.sessions if plan else []:
-            if s.date == day and not s.morning:
-                dishes = self.batch_text(data, plan, day, s)
-                if dishes:  # every dish deleted: nothing to remind about yet
-                    url = self.link(t("link_sheet"), f"/batch?d={day.isoformat()}")
-                    said.append(t("reminder_batch", dishes=dishes, url=url))
-                    break
+    def kitchen_tasks(self, first: dt.date, last: dt.date) -> list[tasklist.Task]:
+        """The task list (tasks.py) in this household's words: the chat's reminders and the pages
+        say the same tasks."""
+        return tasklist.tasks_for(self.data, self.state.db, first, last, bot=self)
+
+    def batch_message(self, day: dt.date) -> str | None:
+        """The evening batch reminder, from the day's tasks: today's afternoon session and
+        tomorrow morning's (a session cooked the morning a lunch is eaten is said the evening
+        before, or nobody hears of it; not when the chat already set its own reminder about it for
+        that evening), the dried pulses to leave in water tonight and what to take out of the
+        freezer for tomorrow, even when today is paused."""
+        t = self.t
         tomorrow = day + dt.timedelta(days=1)
-        later = plan_for(data, tomorrow)  # tomorrow may start the next plan
-        for s in later.sessions if later and tomorrow not in paused_days(data) else []:
-            if s.date == tomorrow and s.morning and not self._session_reminded(s, day):
-                dishes = self.batch_text(data, later, tomorrow, s)
-                if dishes:
-                    url = self.link(t("link_sheet"), f"/batch?d={tomorrow.isoformat()}")
-                    said.append(t("reminder_batch_morning", dishes=dishes, url=url))
-                    break
+        jobs = self.kitchen_tasks(day, tomorrow)
+        said = []
+        for x in jobs:
+            if x.key == f"cook:{day.isoformat()}:pm":
+                url = self.link(t("link_sheet"), f"/batch?d={day.isoformat()}")
+                said.append(t("reminder_batch", dishes=x.line, url=url))
+        for x in jobs:
+            if x.key == f"cook:{tomorrow.isoformat()}:am" and not self._session_reminded(x, day):
+                url = self.link(t("link_sheet"), f"/batch?d={tomorrow.isoformat()}")
+                said.append(t("reminder_batch_morning", dishes=x.line, url=url))
+        tonight = [x for x in jobs if x.day == day and x.source == "auto"]
+        soaks = [x.line for x in tonight if x.kind == "soak"]
+        if soaks:
+            url = self.link(t("link_sheet"), f"/batch?d={tomorrow.isoformat()}")
+            said.append(t("reminder_soak", items="\n".join(soaks), url=url))
+        thaws = [x.line for x in tonight if x.kind == "thaw"]
+        if thaws:
+            url = self.link(t("link_day"), f"/?d={tomorrow.isoformat()}")
+            said.append(t("reminder_thaw", items="\n".join(thaws), url=url))
         return "\n\n".join(said) or None
 
-    def _session_reminded(self, session, day: dt.date) -> bool:
+    def _session_reminded(self, cook: tasklist.Task, day: dt.date) -> bool:
         """A reminder set in the chat about one of the session's dishes (its recipe and a day it
         is eaten), due the evening of `day`: the chat already said it."""
         zone = self._zone()
         start = dt.datetime.combine(day, dt.time(12, 0), zone).timestamp()
         end = dt.datetime.combine(day + dt.timedelta(days=1), dt.time(), zone).timestamp()
-        dishes = {(x.recipe, e.isoformat()) for x in session.dishes for e in x.eat}
+        dishes = {(rid, e.isoformat()) for rid, e in cook.dishes}
         rows = [
             *self.state.db.reminders(self.chat_id),
             *self.state.db.reminders(self.chat_id, "sent"),
@@ -2813,66 +2795,15 @@ class Bot:
             start <= r["at"] < end and (r.get("recipe"), r.get("date")) in dishes for r in rows
         )
 
-    def soak_text(self, day: dt.date) -> str | None:
-        """The eve of a batch session: the dried pulses to leave in water tonight, even when
-        today is paused."""
-        t = self.t
-        tomorrow = day + dt.timedelta(days=1)
-        plan = plan_for(self.data, tomorrow)
-        soaks = soak_for(self.data, self.state.db, plan, tomorrow) if plan else []
-        if not soaks:
-            return None
-        eaten = {
-            b.recipe.id: b.containers[0].eat
-            for b in batch_sheet(self.data, self.state.db, plan, tomorrow)
-            if b.containers
-        }
-        items = "\n".join(
-            t(
-                "reminder_soak_item",
-                name=x.ingredient.name,
-                amount=x.amount,
-                dish=self.recipe_url(x.recipe.id, eaten[x.recipe.id], x.recipe.name)
-                if x.recipe.id in eaten
-                else x.recipe.name,
-            )
-            for x in soaks
-        )
-        url = self.link(t("link_sheet"), f"/batch?d={tomorrow.isoformat()}")
-        return t("reminder_soak", items=items, url=url)
-
-    def thaw_text(self, day: dt.date) -> str | None:
-        """The evening before a day whose meals use something kept frozen (bread): take it out
-        tonight, even when today is paused."""
-        t = self.t
-        tomorrow = day + dt.timedelta(days=1)
-        if tomorrow in paused_days(self.data):
-            return None
-        plan = plan_for(self.data, tomorrow)
-        thaws = thaw_for(self.data, self.state.db, plan, tomorrow) if plan else []
-        if not thaws:
-            return None
-        items = "\n".join(
-            t(
-                "reminder_thaw_item",
-                name=x.ingredient.name,
-                amount=x.amount,
-                meal=t("meal_" + x.meal),
-                dish=self.recipe_url(x.recipe.id, tomorrow, x.recipe.name),
-            )
-            for x in thaws
-        )
-        return t(
-            "reminder_thaw",
-            items=items,
-            url=self.link(t("link_day"), f"/?d={tomorrow.isoformat()}"),
-        )
-
     def batch_text(self, data, plan, day: dt.date, session) -> str:
         """The session's dishes, one block each: servings, cooking time, lunches, split by person."""
         ids = {x.recipe for x in session.dishes}
-        names = {p.id: p.name for p in data.household.people}
         sheet = batch_sheet(data, self.state.db, plan, day)
+        return self.sheet_text([b for b in sheet if b.recipe.id in ids])
+
+    def sheet_text(self, sheet) -> str:
+        """A batch sheet's dishes for the chat, one block each, with each recipe's page."""
+        names = {p.id: p.name for p in self.data.household.people}
         return "\n\n".join(
             batch_dish_text(self.t, b, names)
             + "\n"
@@ -2880,7 +2811,6 @@ class Bot:
             if b.containers
             else batch_dish_text(self.t, b, names)
             for b in sheet
-            if b.recipe.id in ids
         )
 
     def recipe_url(self, recipe: str, eaten, label: str | None = None) -> str:
@@ -3013,6 +2943,8 @@ class Bot:
                 item["set"] = True
             if r.get("recipe") and self._links(r["recipe"], r.get("date")):
                 item["recipe"], item["date"] = r["recipe"], r["date"]
+                if r.get("kind"):
+                    item["kind"] = r["kind"]
             out.append(item)
         return out
 
@@ -3069,7 +3001,8 @@ class Bot:
             pid = self._person(r["person"])
             who = f", {self.data.household.person(pid).name}" if pid else ""
             local = dt.datetime.fromtimestamp(r["at"], self._zone())
-            dish = f" (about {r['recipe']} on {r['date']})" if r.get("recipe") else ""
+            step = f", {r['kind']}" if r.get("kind") else ""
+            dish = f" (about {r['recipe']} on {r['date']}{step})" if r.get("recipe") else ""
             out.append(f"- {r['id']}: {local:%Y-%m-%d %H:%M}{who}: {r['text']}{dish}")
         live = [
             r
@@ -3129,7 +3062,14 @@ class Bot:
         )
         for r in [r for r in items if r.get("set")] if uid else []:
             db.add_reminder(
-                chat_id, r["person"], r["at"], r["text"], uid, r.get("recipe"), r.get("date")
+                chat_id,
+                r["person"],
+                r["at"],
+                r["text"],
+                uid,
+                r.get("recipe"),
+                r.get("date"),
+                r.get("kind"),
             )
             done.append(t("remind_set_log", when=self._when(r["at"]), text=r["text"]))
         if done and tail is not None:
@@ -3259,6 +3199,7 @@ class Bot:
                 user.get("id"),
                 item.get("recipe"),
                 item.get("date"),
+                item.get("kind"),
             )
             # the AI hears it with the rest of the chat
             self.state.db.add_chat(

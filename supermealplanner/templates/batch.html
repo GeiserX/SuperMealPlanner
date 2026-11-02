@@ -6,13 +6,21 @@
   <h1>{{ t('batch_title', date=t.date(monday, False)) }}</h1>
   <a href="/batch?d={{ next }}">›</a>
 </header>
-{% if not sessions %}<p class="empty">{{ t('batch_none') }}</p>{% endif %}
+{% if not days %}<p class="empty">{{ t('batch_none') }}</p>{% endif %}
+{% for day, sessions, todo in days %}
 {% for s, dishes in sessions %}
 <section class="meal">
-  <h2>{{ t.date(s.date) | capitalize }} · {{ t('batch_morning') if s.morning else t('batch_afternoon') }}</h2>
+  <h2>{{ t.date(day) | capitalize }} · {{ t('batch_morning') if s.morning else t('batch_afternoon') }}</h2>
   {% if s.busy %}<p class="note">{{ t('batch_busy', events=s.busy | join(', ')) }}</p>{% endif %}
-  {{ sheet(dishes, s.date) }}
+  {{ sheet(dishes, day) }}
 </section>
+{% endfor %}
+{% if todo %}
+<section class="meal" data-day="{{ day }}">
+  <h2>{{ t.date(day) | capitalize }} · {{ t('batch_tasks_title') }}</h2>
+  <ul class="tasks">{% for x in todo %}<li><small>{{ x.at }}</small> {{ x.text | links | replace('\n', '<br>') | safe }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
 {% endfor %}
 <p class="sub">{{ t('batch_safety') }}</p>
 {% endblock %}
