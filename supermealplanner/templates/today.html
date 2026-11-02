@@ -6,11 +6,12 @@
   <h1>{{ t.date(day) | capitalize }}</h1>
   <a href="/?d={{ next }}" aria-label="next day">›</a>
 </header>
+{% if jobs %}<section class="meal day-tasks"><h2>{{ t('today_tasks_title') }}</h2>
+<ul class="tasks">{% for x in jobs %}<li><small>{{ x.at }}</small> {{ x.text | links | replace('\n', '<br>') | safe }}</li>{% endfor %}</ul></section>{% endif %}
 {% if not plan or not pday %}
   <p class="empty">{{ t('paused_day') if paused else t('no_plan_day') }}</p>
 {% else %}
   {% if pday.busy %}<p class="note">{{ t('calendar_busy', events=pday.busy | join(', ')) }}</p>{% endif %}
-  {% for r in defrost %}<p class="note cold">{{ t('defrost_tonight', dish=r.name) }} <a href="/recipe/{{ r.id }}">{{ t('see_recipe') }}</a></p>{% endfor %}
   {% for meal in meals %}
     {% set rid = pday[meal] %}
     {% if rid and rid in recipes %}

@@ -23,7 +23,6 @@ no_plan_day: "No plan for this day yet. The app makes one on its own every hour,
 no_plan_week: No plan for this week.
 calendar_busy: "Calendar: {events}"
 see_sheet: See the sheet
-defrost_tonight: "Tonight: move {dish} from the freezer to the fridge."
 lunch_fresh: Freshly made
 lunch_fridge: "From the fridge (cooked {date})"
 lunch_freezer: "From the freezer (cooked {date})"
@@ -339,8 +338,12 @@ bot_devices_unknown: "There is no connected phone {id}."
 tab_tasks: Tasks
 tasks_title: "Tasks · week of {date}"
 tasks_none_day: Nothing to do.
-tasks_note: The same reminders the chat sends, at their time, and the ones set from the chat.
-see_recipe: Recipe
+tasks_note: One list of everything to do, at its time. The chat's reminders, the Cook page and the day's page all read it, and the reminders set from the chat are on it too.
+task_cook: "🍲 Batch cooking {when}: {dishes}. {url}"
+task_soak: "🫘 Tonight, leave to soak: {name}, {amount}, for {dish}"
+task_thaw: "🧊 Tonight, take out of the freezer: {name}, {amount} ({meal}: {dish})"
+batch_tasks_title: Other tasks that day
+today_tasks_title: To do today
 vote_like: I like it
 vote_dislike: I don't like it
 vote_as: "Rate as:"

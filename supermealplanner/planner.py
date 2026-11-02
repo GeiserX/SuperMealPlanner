@@ -241,19 +241,50 @@ class Plans:
         self.raw = [load_plan(p) for p in sorted(plans_dir(data).glob("*.yaml"))]
         self._seen: dict[int, Plan] = {}
 
-    def plan(self, day: dt.date, raw: bool = False) -> Plan | None:
-        """The newest plan that covers `day` (plan_for, without reading the files again)."""
+    def _best(self, day: dt.date) -> int | None:
         best = None
         for i, p in enumerate(self.raw):
             if p.start <= day < p.end:
                 best = i
+        return best
+
+    def _view(self, i: int) -> Plan:
+        if i not in self._seen:
+            self._seen[i] = without(self.raw[i], self.paused)
+        return self._seen[i]
+
+    def plan(self, day: dt.date, raw: bool = False) -> Plan | None:
+        """The newest plan that covers `day` (plan_for, without reading the files again)."""
+        best = self._best(day)
         if best is None:
             return None
-        if raw:
-            return self.raw[best]
-        if best not in self._seen:
-            self._seen[best] = without(self.raw[best], self.paused)
-        return self._seen[best]
+        return self.raw[best] if raw else self._view(best)
+
+    def sessions_on(self, day: dt.date) -> list[tuple[Plan, Session]]:
+        """Every cooking session on `day`, morning first, each with a plan to read its sheet from.
+        A session may come before its own plan starts (a Saturday that cooks a lunch of the next
+        plan's Tuesday), so the plan covering `day` alone misses it: every plan is read. A dish
+        counts only for the days its plan still covers (a newer plan over them replaces it), and
+        two plans' sessions at the same time are one session."""
+        found: dict[bool, tuple[Plan, Session]] = {}
+        for i in range(len(self.raw)):
+            view = self._view(i)
+            for s in view.sessions:
+                if s.date != day:
+                    continue
+                dishes = [
+                    replace(x, eat=eat)
+                    for x in s.dishes
+                    if (eat := [e for e in x.eat if self._best(e) == i])
+                ]
+                if not dishes:
+                    continue
+                if s.morning in found:
+                    plan, old = found[s.morning]
+                    found[s.morning] = (plan, replace(old, dishes=old.dishes + dishes))
+                else:
+                    found[s.morning] = (view, replace(s, dishes=dishes))
+        return [found[m] for m in (True, False) if m in found]
 
     def day(self, day: dt.date) -> Day | None:
         plan = self.plan(day)

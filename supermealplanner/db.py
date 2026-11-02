@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS target (
 CREATE TABLE IF NOT EXISTS reminder (
   id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL, person TEXT, at REAL NOT NULL,
   text TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', by INTEGER, created TEXT NOT NULL,
-  recipe TEXT, date TEXT
+  recipe TEXT, date TEXT, kind TEXT
 );
 CREATE TABLE IF NOT EXISTS rating (
   recipe TEXT NOT NULL, person TEXT NOT NULL, vote INTEGER NOT NULL, day TEXT NOT NULL,
@@ -89,7 +89,9 @@ class DB:
                 if col not in cols:
                     c.execute(f"ALTER TABLE chat ADD COLUMN {col} INTEGER")
             cols = {r["name"] for r in c.execute("PRAGMA table_info(reminder)")}
-            for col in ("recipe", "date"):  # before 0.25: a reminder about a dish and its day
+            # recipe, date: before 0.25, a reminder about a dish and its day; kind: what the step
+            # is (soak, cook, thaw...), since the task list
+            for col in ("recipe", "date", "kind"):
                 if col not in cols:
                     c.execute(f"ALTER TABLE reminder ADD COLUMN {col} TEXT")
 
@@ -328,7 +330,8 @@ class DB:
 
     # one-off reminders: posted in their chat at `at` (epoch seconds), then marked sent. recipe and
     # date: the dish it is about and the day it is eaten, so the app cancels it when the menu
-    # drops that dish
+    # drops that dish; kind: the step it is (tasks.CHAT_KINDS), so the checks can tell a soak from
+    # a cook
     def add_reminder(
         self,
         chat: int,
@@ -338,11 +341,12 @@ class DB:
         by: int | None = None,
         recipe: str | None = None,
         date: str | None = None,
+        kind: str | None = None,
     ) -> int:
         with self.conn() as c:
             cur = c.execute(
-                "INSERT INTO reminder(chat, person, at, text, by, created, recipe, date) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO reminder(chat, person, at, text, by, created, recipe, date, kind) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     chat,
                     person,
@@ -352,6 +356,7 @@ class DB:
                     dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
                     recipe if recipe and date else None,
                     date if recipe and date else None,
+                    kind if recipe and date else None,
                 ),
             )
             return cur.lastrowid

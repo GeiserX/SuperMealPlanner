@@ -21,14 +21,14 @@ from .api import router as api_router
 from .db import DB
 from .i18n import Translator
 from .model import Data, load
-from .planner import ICONS, day_menu, meals_now, paused_days, plan_for
+from .planner import ICONS, Plans, day_menu, meals_now, paused_days, plan_for
 from .portions import (
     MEAL_ORDER,
     batch_for_text,
-    batch_sheet,
     batch_split_text,
     person_days,
     plate,
+    session_sheets,
     shopping_list,
     ticked_last,
     together,
@@ -139,7 +139,6 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         people = person_days(state.data, state.db, plan, day) if plan else []
         pday = plan.day(day) if plan else None
         tomorrow = day + dt.timedelta(days=1)
-        defrost = []
         menu = day_menu(state.data, pday) if pday else []
         swaps = {p.id: p.swaps for p in state.data.household.people}
         picks = [
@@ -153,14 +152,6 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             for meal in MEAL_ORDER
             if pday and getattr(pday, meal) in state.data.recipes
         }
-        if plan:
-            for s in plan.sessions:
-                for x in s.dishes:
-                    r = state.data.recipes.get(x.recipe)
-                    if r and any(
-                        e == tomorrow and (e - x.cook).days > r.fridge_days for e in x.eat
-                    ):
-                        defrost.append(r)
         return tpl.TemplateResponse(
             request,
             "today.html",
@@ -176,7 +167,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 totals=totals,
                 people=people,
                 names={p.id: p.name for p in state.data.household.people},
-                defrost=defrost,
+                jobs=_words(state).kitchen_tasks(day, day),
                 recipes=state.data.recipes,
                 meals=MEAL_ORDER,
                 open_meals=meals_now(state.now().time()),
@@ -313,13 +304,16 @@ def create_app(root: str | Path | None = None) -> FastAPI:
     @app.get("/batch", response_class=HTMLResponse)
     def batch(request: Request, d: str | None = None):
         m = monday(parse_day(d))
-        plan = plan_for(state.data, m)
-        sessions = []
-        if plan:
-            week = [s for s in plan.sessions if m <= s.date < m + dt.timedelta(days=7)]
-            for day in sorted({s.date for s in week}):
-                same = [s for s in week if s.date == day]
-                sessions += _per_session(same, batch_sheet(state.data, state.db, plan, day))
+        plans = Plans(state.data)
+        jobs = _words(state).kitchen_tasks(m, m + dt.timedelta(days=6))
+        days = []  # by the day the cooking happens: a Saturday's cooking for next Tuesday is Saturday
+        for i in range(7):
+            day = m + dt.timedelta(days=i)
+            sessions = session_sheets(state.data, state.db, plans, day)
+            # the planner's own cook task is the sheet itself; a chat reminder to cook stays
+            todo = [x for x in jobs if x.day == day and (x.kind, x.source) != ("cook", "auto")]
+            if sessions or todo:
+                days.append((day, sessions, todo))
         names = {p.id: p.name for p in state.data.household.people}
         return tpl.TemplateResponse(
             request,
@@ -328,7 +322,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
                 request,
                 tab="batch",
                 monday=m,
-                sessions=sessions,
+                days=days,
                 names=names,
                 prev=m - dt.timedelta(days=7),
                 next=m + dt.timedelta(days=7),
@@ -508,47 +502,26 @@ def create_app(root: str | Path | None = None) -> FastAPI:
     return app
 
 
-def _per_session(sessions: list, sheet: list) -> list:
-    """A day's batch sheet split by session (morning, afternoon): (session, its dishes)."""
-    return [
-        (s, [b for b in sheet if b.recipe.id in {x.recipe for x in s.dishes}]) for s in sessions
-    ]
-
-
 def _local(path: str) -> bool:
     """A path on this site, never another one (a redirect after a form)."""
     return path.startswith("/") and not path.startswith(("//", "/\\"))
 
 
-TASK_KINDS = ("defrost", "batch", "shopping")
-
-
-def week_tasks(state: App, monday: dt.date) -> list[tuple[dt.date, list[tuple[str, str]]]]:
-    """Each day of the week with its kitchen tasks as (time, text): the very texts the chat's
-    automatic reminders send that day, and the one-off reminders the chat set for it."""
+def _words(state: App):
+    """A bot to word the tasks with (the running one, else one that never connects)."""
+    if state.bot is not None:
+        return state.bot
     from .bot import Bot
-    from .model import WEEKDAYS
 
-    data = state.data
-    bot = Bot(state)
-    tz = ZoneInfo(data.household.timezone)
+    return Bot(state)
+
+
+def week_tasks(state: App, monday: dt.date) -> list[tuple[dt.date, list]]:
+    """Each day of the week with its tasks (tasks.py): the planner's own steps, at the time the
+    chat's reminder says them, and the reminders the chat set for that day."""
     days = [monday + dt.timedelta(days=i) for i in range(7)]
-    out: dict[dt.date, list[tuple[str, str]]] = {d: [] for d in days}
-    for d in days:
-        for r in data.settings.reminders:
-            if not r.enabled or r.kind not in TASK_KINDS:
-                continue
-            if r.days != "daily" and WEEKDAYS[d.weekday()] not in r.days:
-                continue
-            text = bot.reminder_text(r, d)
-            if text:
-                out[d] += [(at, text) for at in r.at]
-    for st in ("pending", "sent"):
-        for r in state.db.reminders(state=st):
-            when = dt.datetime.fromtimestamp(r["at"], tz)
-            if when.date() in out:
-                out[when.date()].append((f"{when:%H:%M}", "⏰ " + r["text"]))
-    return [(d, sorted(out[d])) for d in days]
+    jobs = _words(state).kitchen_tasks(days[0], days[-1])
+    return [(d, [x for x in jobs if x.day == d]) for d in days]
 
 
 def _spark(points, w: int = 280, h: int = 60) -> str:

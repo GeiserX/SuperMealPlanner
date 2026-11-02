@@ -234,7 +234,11 @@ it at once and says so, and nobody is asked again. Without "set", never say a re
 Every reminder about a dish of the menu (cook it, defrost it, soak or prepare what it needs, buy
 for it) gets a field `dish <recipe id> <the date it is eaten>` at the end of its line; the app then
 ends the reminder with the link to that recipe:
-`- 2026-01-17 22:00 | Move the fish to the fridge | <person id> | | dish salmon-bake 2026-01-18`.
+`- 2026-01-17 22:00 | Move the fish to the fridge | <person id> | | dish salmon-bake 2026-01-18 thaw`.
+End that field with the step it is, one word: soak (a dried pulse in water), soak-fridge (soaking
+in the fridge, for longer), cook (cooking it, or something it needs, ahead), thaw (out of the
+freezer), buy, move (to the fridge or the freezer). The app lists it as a task of that kind on the
+Cook page and the day's page, and checks the steps against each other.
 When that day's menu no longer has the dish, the app cancels the reminder by itself and says so.
 A dish that needs something done before its day (a dried pulse to soak the night before, a
 recipe's `ahead` steps, such as cooking the chickpeas or roasting a pepper) needs a reminder for it
