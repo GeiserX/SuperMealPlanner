@@ -237,6 +237,9 @@ class Item:
     grant: dict | None = None
     # a photo or a file it carries, fetched when its turn starts {"file_id", "name", "mime", "size"}
     file: dict | None = None
+    # the bot asked itself (a task not done): what the turn changes waits for a tap, even when it
+    # runs as a private chat's person so that it sees only what they may see
+    auto: bool = False
 
 
 @dataclass
@@ -681,6 +684,7 @@ class Bot:
                         self.clock(),
                         x.get("grant"),
                         x.get("file"),
+                        bool(x.get("auto")),
                     )
                     for x in kept
                 ]
@@ -730,6 +734,7 @@ class Bot:
                     "who": add.who,
                     "grant": add.grant,
                     "file": add.file,
+                    "auto": add.auto,
                 }
             )
         else:
@@ -973,6 +978,7 @@ class Bot:
         log_mid: bool = True,
         grant: dict | None = None,
         file: dict | None = None,
+        auto: bool = False,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
@@ -995,7 +1001,7 @@ class Bot:
                 spoken.row = row
                 self.spoken_rows[row] = spoken.id
             mid = (msg or {}).get("message_id")
-            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file)
+            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file, auto)
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
@@ -1316,6 +1322,8 @@ class Bot:
         # change that waits for a yes and a proposal still get their own message, with buttons.
         tail: list[str] = []
         made = True  # a reminder made wrong by a change goes only once the change is made
+        if anchor.auto and isinstance(change, dict):  # nobody asked for it: it waits for a tap
+            change = {k: v for k, v in change.items() if k != "asked"}
         own = anchor.who is None and anchor.uid is None  # the bot's own turn: nobody asked
         now = not own and (
             isinstance(change, str) or (isinstance(change, dict) and change.get("asked") is True)
@@ -2909,12 +2917,13 @@ class Bot:
     def reorganise(self, client, chat: int, who, text: str, uid: int | None = None) -> None:
         """A turn the bot asks itself to reorganise the rest of the week around a task. In the
         group it is the bot's own (who None), like the weekly review: any member confirms what it
-        proposes. In a private chat it is that person's (who and uid), so the facts are only what
-        they may see and they confirm it themselves."""
+        proposes. In a private chat it runs as that person (who and uid), so the facts are only
+        what they may see and they confirm it themselves; either way a change it makes waits for
+        that tap (Item.auto), even one marked asked."""
         if self.data.settings.llm.provider == "none":
             return
         user = {"first_name": self.t("task_who")} | ({"id": uid} if uid is not None else {})
-        self.take(chat, user, who, None, text, True)
+        self.take(chat, user, who, None, text, True, auto=True)
         self.spawn(self.drive(client, chat))
 
     def _session_reminded(self, cook: tasklist.Task, day: dt.date) -> bool:

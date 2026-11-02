@@ -380,11 +380,11 @@ def test_what_the_not_done_turn_proposes_waits_for_a_household_tap(data_dir, tmp
 
 
 def test_a_not_done_in_a_private_chat_is_that_persons_turn(data_dir, tmp_path, monkeypatch):
-    """A private-chat reminder's Not done: the turn is the tapper's, so the facts are only what
-    they may see, and they can confirm what it proposes themselves."""
+    """A private-chat reminder's Not done: the turn runs as the tapper, so the facts are only what
+    they may see, and what it changes waits for their own tap, even a change marked asked."""
     b, db = setup(data_dir, tmp_path)
     iid = next(iter(b.data.ingredients))
-    cfg(data_dir, text=f"Then this.\n```change\npantry:\n  {iid}: 0\n```")
+    cfg(data_dir, text=f"Then this.\n```change\nasked: true\npantry:\n  {iid}: 0\n```")
     s = evening_session(b.data)
     dish = s.dishes[0]
     eat = str(dish.eat[0])
@@ -405,6 +405,6 @@ def test_a_not_done_in_a_private_chat_is_that_persons_turn(data_dir, tmp_path, m
     assert viewers == [b.person_of(7)]  # the tapper's turn: only what they may see
     offered = [p for p in sends(b, 7) if "reply_markup" in p and p is not msg]
     yes = [x for p in offered for x in buttons(p) if x["callback_data"].startswith("c:")]
-    assert yes
+    assert yes  # marked asked, still it waits for a yes: nobody asked for it
     press(b, next(p for p in offered if any(x in buttons(p) for x in yes)), yes[0]["text"], 7)
     assert not (toasts(b)[-1] or "").startswith("Only ")
