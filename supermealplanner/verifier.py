@@ -248,8 +248,7 @@ async def findings(
             return None
         problems, after = found
     else:  # nothing to make: the week as it stands, with what was there without this answer
-        before = {p.key for p in doctor.problems(data, db, today)}
-        after = await asyncio.to_thread(as_is, data, db, today, offered, before)
+        after = await asyncio.to_thread(as_is, data, db, today, offered)
         problems = after.pop("new", [])
     if sent is not None:
         scope = RECHECK.format(problems="\n".join(f"- {p}" for p in sent))
@@ -355,9 +354,12 @@ def structural(
         return new, after
 
 
-def as_is(data: Data, db: DB, today: dt.date, offered, before: set[str]) -> dict:
+def as_is(data: Data, db: DB, today: dt.date, offered, before: set[str] | None = None) -> dict:
     """The week as it stands, with the reminders the answer offers: what a refused change, or an
-    answer with nothing to make, leaves."""
+    answer with nothing to make, leaves. before: the problems there without the answer; worked
+    out here when not given (it reads every plan: never on the event loop)."""
+    if before is None:
+        before = {p.key for p in doctor.problems(data, db, today)}
     return week(data, data, db, today, None, offered, None, before)
 
 
