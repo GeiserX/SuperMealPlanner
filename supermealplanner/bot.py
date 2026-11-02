@@ -3056,6 +3056,18 @@ class Bot:
                 self.spawn(self.drive(client, chat))
                 continue
             at_once.setdefault(at, []).append(r)
+        # a reminder of the chat due now brings forward the app's own of the next MERGE_S, so
+        # the two go as one message at the earlier time
+        due = [r for r in self.state.db.reminders(chat) if r["at"] <= now.timestamp()]
+        first = due[0]["at"] if due else None
+        for r, hm, start in self.app_times(now.date()) if first else []:
+            if (
+                now.timestamp() < start <= first + MERGE_S
+                and r.kind != "review"
+                and not self.state.db.was_sent(r.id, now.date(), hm)
+                and self._says(r, now.date())
+            ):
+                at_once.setdefault(hm, []).append(r)
         for at, rs in at_once.items():  # reminders due at one time go as one message
             day = now.date()
             said, own = [], {}
@@ -3069,7 +3081,9 @@ class Bot:
             own = [x for x in own if x.key not in marked]
             # the chat's own reminders due within MERGE_S go in the same message
             h, m = (int(x) for x in at.split(":"))
-            end = dt.datetime.combine(day, dt.time(h, m), now.tzinfo).timestamp() + MERGE_S
+            start = dt.datetime.combine(day, dt.time(h, m), now.tzinfo).timestamp()
+            # brought forward: the window of the chat's reminder that brought it
+            end = (start if start <= now.timestamp() else first) + MERGE_S
             once = [r for r in self.state.db.reminders(chat) if r["at"] <= end] if said else []
             once = await self.live_once(client, once)
             # the morning's day message asks about what nobody marked in the last days
@@ -3602,18 +3616,22 @@ class Bot:
             return "join", f"{dt.datetime.fromtimestamp(r['at'], zone):%H:%M}"
         if chat_id != self.chat_id:
             return None
-        local = dt.datetime.fromtimestamp(at, zone)
+        day = dt.datetime.fromtimestamp(at, zone).date()
+        for r, hm, start in self.app_times(day):
+            if r.kind != "review" and abs(start - at) <= MERGE_S and self._says(r, day):
+                return "join", hm
+        return None
+
+    def app_times(self, day: dt.date) -> list[tuple]:
+        """The app's own reminders on `day`: (reminder, "HH:MM", epoch seconds), each time."""
+        zone, out = self._zone(), []
         for r in self.data.settings.reminders:
-            if not r.enabled or r.kind == "review":
-                continue
-            if r.days != "daily" and WEEKDAYS[local.weekday()] not in r.days:
+            if not r.enabled or (r.days != "daily" and WEEKDAYS[day.weekday()] not in r.days):
                 continue
             for hm in r.at:
                 h, m = (int(x) for x in hm.split(":"))
-                start = dt.datetime.combine(local.date(), dt.time(h, m), zone).timestamp()
-                if start <= at <= start + MERGE_S and self._says(r, local.date()):
-                    return "join", hm
-        return None
+                out.append((r, hm, dt.datetime.combine(day, dt.time(h, m), zone).timestamp()))
+        return out
 
     def _says(self, r, day: dt.date) -> bool:
         try:

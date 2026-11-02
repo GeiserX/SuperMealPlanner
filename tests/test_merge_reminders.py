@@ -12,7 +12,7 @@ from supermealplanner.bot import TelegramError
 from .test_chains import at
 from .test_reminders import ahead, block, setup
 from .test_settings_stores_bot import msg, run
-from .test_task_done import BATCH, evening_session, tick
+from .test_task_done import BATCH, at_clock, evening_session, tick
 from .test_turns import buttons, cfg, sends, tap, toasts
 
 
@@ -61,6 +61,27 @@ def test_the_apps_evening_message_takes_in_a_reminder_of_that_time(data_dir, tmp
     assert f"{len(jobs) + 1}. Keep 1 green pepper for Friday" in sent["text"]
     assert len(buttons(sent)) == 2 * (len(jobs) + 1)  # a done / not done row for each
     assert db.reminders(-100) == [] and db.reminders(-100, "sent")[0]["id"] == rid
+
+
+def test_a_reminder_due_before_the_apps_own_brings_it_forward(data_dir, tmp_path):
+    """21:15 from the chat, 21:30 from the app: one message at 21:15, nothing at 21:30."""
+    b, db = setup(data_dir, tmp_path)
+    s = evening_session(b.data)
+    rid = db.add_reminder(-100, "ana", at(s.date, "21:15"), "Keep 1 green pepper for Friday", 7)
+    b.data.settings.reminders = [BATCH]
+    b.due = lambda now: []  # 21:15: the app's 21:30 is not due yet
+    real = botmod.dt.datetime
+    botmod.dt.datetime = at_clock(s.date, "21:15")
+    try:
+        run(b.tick_reminders(None))
+    finally:
+        botmod.dt.datetime = real
+    (sent,) = sends(b, -100)
+    assert "Batch cooking today" in sent["text"] and "Keep 1 green pepper" in sent["text"]
+    assert db.reminders(-100, "sent")[0]["id"] == rid
+    assert db.was_sent("batch", s.date, "21:30")
+    tick(b, s.date, "21:30", BATCH)
+    assert len(sends(b, -100)) == 1  # not again at 21:30
 
 
 def test_a_message_telegram_refuses_fails_every_reminder_it_carried(
