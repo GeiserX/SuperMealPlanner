@@ -499,7 +499,7 @@ def router(state) -> APIRouter:
             "ticked": ticks["ticked"],
             "ticked_order": ticks["ticked_order"],
             "ticked_at": ticks["ticked_at"],
-            "have": sorted(state.db.have()),
+            "have": sorted(pantry.at_home(state.data, state.db, state.today())),
             # needed this week, but the pantry already holds enough: left off the list
             "stocked": sorted(i.id for i in (shop.stocked if shop else [])),
         }
@@ -526,13 +526,14 @@ def router(state) -> APIRouter:
 
     @api.post("/list/have")
     def have(body: dict, request: Request):
-        """«I have it at home»: the ingredient stays off every list until it is put back."""
+        """«I have it at home»: off the lists until it is put back, or, fresh, for its keeps_days."""
         device(request)
         ingredient = str(body.get("ingredient", "")).strip()
         if not ingredient:
             raise HTTPException(400, "ingredient is required")
-        state.db.set_have(ingredient, bool(body.get("on", True)))
-        return {"ok": True, "have": sorted(state.db.have())}
+        today = state.today()
+        state.db.set_have(ingredient, bool(body.get("on", True)), today)
+        return {"ok": True, "have": sorted(pantry.at_home(state.data, state.db, today))}
 
     # ---------------------------------------------------------------- the pantry
     @api.get("/pantry")
@@ -558,8 +559,7 @@ def router(state) -> APIRouter:
             ],
             "have": [
                 {"ingredient": i, "name": state.data.ingredients[i].name}
-                for i in sorted(state.db.have())
-                if i in state.data.ingredients
+                for i in sorted(pantry.at_home(state.data, state.db, today))
             ],
         }
 

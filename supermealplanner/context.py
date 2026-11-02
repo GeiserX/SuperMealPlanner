@@ -542,7 +542,7 @@ def pantry_now(data: Data, db: DB, today: dt.date) -> list[str]:
     from . import pantry
 
     items = pantry.now(data, db, today)
-    have = sorted(data.ingredients[i].name for i in db.have() if i in data.ingredients)
+    have = sorted(data.ingredients[i].name for i in pantry.at_home(data, db, today))
     out = [
         (
             "\n## Pantry (at home now: what the list's ticks bought and what the chat said, less what "

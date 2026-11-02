@@ -285,3 +285,38 @@ def test_a_tick_on_the_web_page_feeds_the_pantry(app, data_dir):
         data={"week": str(MONDAY), "item": "pollo", "on": "1"},
     )
     assert r.status_code == 200 and DB(load(data_dir).state / "supermealplanner.db").lots()
+
+
+# ---------------------------------------------------------------- «I have it» on fresh food
+
+
+def test_i_have_it_on_fresh_food_holds_only_while_it_keeps(data_dir, tmp_path):
+    """Fresh meat marked «I have it» once was eaten days later and never came back on a list:
+    the cook found no meat for a dinner the plan counted on. A fresh mark lasts keeps_days."""
+    _b, db = setup(data_dir, tmp_path)
+    data = keeps(data_dir, pollo=2)
+    db.set_have("pollo", True, D(0))
+    db.set_have("aceite", True, D(0))
+    assert pantry.at_home(data, db, D(1)) == {"pollo", "aceite"}
+    assert pantry.at_home(data, db, D(2)) == {"aceite"}  # the oil keeps; the chicken is gone
+    assert pantry.at_home(data, db, D(30)) == {"aceite"}
+    db.set_have("pollo", True, D(30))  # marked again: off the list again
+    assert "pollo" in pantry.at_home(data, db, D(31))
+
+
+def test_a_fresh_mark_from_before_the_day_was_kept_no_longer_holds(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = keeps(data_dir, pollo=2)
+    db.set_kv("shop.have", ["pollo", "aceite"])  # how it was stored before
+    assert pantry.at_home(data, db, D(0)) == {"aceite"}
+
+
+def test_the_list_asks_again_for_fresh_food_marked_long_ago(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = keeps(data_dir, pollo=2)
+    plan = plan_for(data, MONDAY)
+    assert needs(data, db, plan, MONDAY).get("pollo"), "the fixture week must use chicken"
+    db.set_have("pollo", True, D(-10))
+    shop = shopping_list(data, db, plan, MONDAY, today=MONDAY)
+    lines = {line.ingredient.id for sl in shop.stores for line in sl.lines}
+    assert "pollo" in lines and "pollo" not in {i.id for i in shop.have}

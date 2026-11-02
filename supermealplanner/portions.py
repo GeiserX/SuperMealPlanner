@@ -342,7 +342,9 @@ def shopping_list(
     alt_ids = [a for a in cfg.alternatives if a != primary and a in cats]
 
     groups: dict[str, dict[str, list[ShopLine]]] = {}
-    at_home = db.have()
+    from .pantry import at_home as holding
+
+    at_home = holding(data, db, today or monday)
     have: list[Ingredient] = []
     stocked: list[Ingredient] = []
     if today is not None:

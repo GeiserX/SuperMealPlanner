@@ -271,12 +271,12 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         on: str = Form("1"),
         back: str = Form("/list"),
     ):
-        """«Ya tengo»: the item leaves every list until someone puts it back."""
+        """«Ya tengo»: the item leaves the lists (pantry.at_home says for how long)."""
         if not same_site(request):
             raise HTTPException(403, "cross-site form post")
         if item not in state.data.ingredients:
             raise HTTPException(400, "unknown ingredient")
-        state.db.set_have(item, on == "1")
+        state.db.set_have(item, on == "1", state.today())
         return RedirectResponse(back if _local(back) else "/list", status_code=303)
 
     @app.post("/rate")
