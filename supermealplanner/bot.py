@@ -2906,11 +2906,15 @@ class Bot:
         db.set_kv(TASK_BUTTONS, dict(list(kept.items())[-TASK_BUTTONS_KEEP:]))
         return lines, rows
 
-    def reorganise(self, client, chat: int, who, text: str) -> None:
-        """A turn the bot asks itself to reorganise the rest of the week around a task."""
+    def reorganise(self, client, chat: int, who, text: str, uid: int | None = None) -> None:
+        """A turn the bot asks itself to reorganise the rest of the week around a task. In the
+        group it is the bot's own (who None), like the weekly review: any member confirms what it
+        proposes. In a private chat it is that person's (who and uid), so the facts are only what
+        they may see and they confirm it themselves."""
         if self.data.settings.llm.provider == "none":
             return
-        self.take(chat, {"first_name": self.t("task_who")}, who, None, text, True)
+        user = {"first_name": self.t("task_who")} | ({"id": uid} if uid is not None else {})
+        self.take(chat, user, who, None, text, True)
         self.spawn(self.drive(client, chat))
 
     def _session_reminded(self, cook: tasklist.Task, day: dt.date) -> bool:
@@ -3674,11 +3678,13 @@ class Bot:
             "step": key,
             "date": t.date(dt.date.fromisoformat(item["day"])),
         }
-        # the bot's own turn, like the weekly review: what it proposes waits for a household tap
+        # in the group the bot's own turn, in a private chat the tapper's (reorganise)
+        mine = (who, uid) if chat_id > 0 else (None, None)
         if state == tasklist.NOT_DONE:
-            self.reorganise(client, chat_id, None, t("task_not_done_turn", **words))
+            self.reorganise(client, chat_id, mine[0], t("task_not_done_turn", **words), mine[1])
         elif before == tasklist.NOT_DONE:
-            self.reorganise(client, chat_id, None, t("task_done_after_all_turn", **words))
+            text = t("task_done_after_all_turn", **words)
+            self.reorganise(client, chat_id, mine[0], text, mine[1])
 
 
 def _for_handle(msg: dict) -> bool:

@@ -12,7 +12,7 @@ from supermealplanner.model import Reminder
 from supermealplanner.planner import Plans, plan_for
 
 from .conftest import MONDAY
-from .test_chains import SALAD, remind
+from .test_chains import SALAD, at, remind
 from .test_menu import change
 from .test_reminders import setup
 from .test_settings_stores_bot import run
@@ -61,7 +61,10 @@ def press(b, params, label: str, user: int, mid: int = 1001):
         "from": {"id": user, "first_name": "X"},
         "message": {
             "message_id": mid,
-            "chat": {"id": params["chat_id"], "type": "group"},
+            "chat": {
+                "id": params["chat_id"],
+                "type": "group" if params["chat_id"] < 0 else "private",
+            },
             "reply_markup": params["reply_markup"],
         },
         "data": btn["callback_data"],
@@ -374,3 +377,34 @@ def test_what_the_not_done_turn_proposes_waits_for_a_household_tap(data_dir, tmp
     assert yes  # waits for a yes
     press(b, next(p for p in offered if any(x in buttons(p) for x in yes)), yes[0]["text"], 8)
     assert not (toasts(b)[-1] or "").startswith("Only ")  # not "Only Ana can answer this."
+
+
+def test_a_not_done_in_a_private_chat_is_that_persons_turn(data_dir, tmp_path, monkeypatch):
+    """A private-chat reminder's Not done: the turn is the tapper's, so the facts are only what
+    they may see, and they can confirm what it proposes themselves."""
+    b, db = setup(data_dir, tmp_path)
+    iid = next(iter(b.data.ingredients))
+    cfg(data_dir, text=f"Then this.\n```change\npantry:\n  {iid}: 0\n```")
+    s = evening_session(b.data)
+    dish = s.dishes[0]
+    eat = str(dish.eat[0])
+    rid = db.add_reminder(7, "ana", at(s.date, "18:00"), "x", 7, dish.recipe, eat, "cook")
+    monkeypatch.setattr(botmod.time, "time", lambda: db.reminder(rid)["at"] + 30)
+    viewers, real = [], context.facts
+
+    def facts(data, db, today, viewer=None, *rest, **kw):
+        viewers.append(viewer)
+        return real(data, db, today, viewer, *rest, **kw)
+
+    monkeypatch.setattr(botmod.context, "facts", facts)
+    run(b.tick_once(None))
+    (msg,) = [p for p in sends(b, 7) if p["text"].startswith("⏰")]
+    press(b, msg, "✗ Not done", 7)
+    (turn,) = lines(data_dir, "turns.jsonl")
+    assert "Task not done" in turn["new"][-1]
+    assert viewers == [b.person_of(7)]  # the tapper's turn: only what they may see
+    offered = [p for p in sends(b, 7) if "reply_markup" in p and p is not msg]
+    yes = [x for p in offered for x in buttons(p) if x["callback_data"].startswith("c:")]
+    assert yes
+    press(b, next(p for p in offered if any(x in buttons(p) for x in yes)), yes[0]["text"], 7)
+    assert not (toasts(b)[-1] or "").startswith("Only ")
