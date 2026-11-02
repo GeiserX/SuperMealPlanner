@@ -3674,10 +3674,11 @@ class Bot:
             "step": key,
             "date": t.date(dt.date.fromisoformat(item["day"])),
         }
+        # the bot's own turn, like the weekly review: what it proposes waits for a household tap
         if state == tasklist.NOT_DONE:
-            self.reorganise(client, chat_id, who, t("task_not_done_turn", **words))
+            self.reorganise(client, chat_id, None, t("task_not_done_turn", **words))
         elif before == tasklist.NOT_DONE:
-            self.reorganise(client, chat_id, who, t("task_done_after_all_turn", **words))
+            self.reorganise(client, chat_id, None, t("task_done_after_all_turn", **words))
 
 
 def _for_handle(msg: dict) -> bool:

@@ -354,3 +354,23 @@ def test_a_freezer_lunch_from_an_old_session_carries_its_buttons_and_the_check_a
     db.mark_task(key, "done", "ana")
     assert "Only if" not in (b.reminder_text(DAY, D(11)) or "")
     assert f"unconfirmed:{key}" not in {p.key for p in doctor.problems(b.data, db, D(11))}
+
+
+def test_what_the_not_done_turn_proposes_waits_for_a_household_tap(data_dir, tmp_path):
+    """The reorganise turn after a Not done is the bot's own, like the weekly review: a change it
+    proposes is not made at once and carries buttons a household member can tap."""
+    b, _db = setup(data_dir, tmp_path)
+    iid = next(iter(b.data.ingredients))
+    cfg(data_dir, text=f"Then this.\n```change\nasked: true\npantry:\n  {iid}: 0\n```")
+    s = evening_session(b.data)
+    tick(b, s.date, "21:30", BATCH)
+    (msg,) = [p for p in sends(b, -100) if "Batch cooking today" in p["text"]]
+    pre = "1. " if len(b.batch_jobs(s.date)) > 1 else ""
+    press(b, msg, pre + "✗ Not done", 7)
+    (turn,) = lines(data_dir, "turns.jsonl")
+    assert "Task not done" in turn["new"][-1]
+    offered = [p for p in sends(b, -100) if "reply_markup" in p and p is not msg]
+    yes = [x for p in offered for x in buttons(p) if x["callback_data"].startswith("c:")]
+    assert yes  # waits for a yes
+    press(b, next(p for p in offered if any(x in buttons(p) for x in yes)), yes[0]["text"], 8)
+    assert not (toasts(b)[-1] or "").startswith("Only ")  # not "Only Ana can answer this."
