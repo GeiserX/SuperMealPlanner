@@ -134,7 +134,7 @@ llm:
   api_key_env: LLM_API_KEY
   instructions: "Answer like a friendly home cook."
   timeout_s: 600
-  review_timeout_s: 1200      # one review of an answer or of the plan (complete()); unset: timeout_s; an answer's whole review, revisions included, gets twice this
+  review_timeout_s: 1200      # one review of an answer once sent, or of the plan (complete()); unset: timeout_s
 transcription:                # voice notes; optional
   provider: openai            # none | openai (any /audio/transcriptions endpoint) | plugin
   base_url: http://whisper:8000/v1

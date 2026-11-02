@@ -375,6 +375,8 @@ review_turn: "[Weekly review, automatic: nobody wrote this] Check the week of {w
 plan_check_who: "plan check"
 review_failed: "⚠️ The check of this answer could not run, so nobody reviewed it against the rest of the week. The app checks the plan again in a few minutes."
 plan_check_turn: "[Plan check, automatic: nobody wrote this] The check of the plan as it stands found problems in this week and the next (in your data, under «Problems the app found»). Propose the fixes as menu changes, without asking again what is already decided: the household confirms them with a tap, so never say they are done. Write one short message: what you propose and why, and what anyone has to do. A problem you cannot fix alone goes in the message as a question."
+verify_who: "answer check"
+verify_turn: "[Check of your last answer, automatic: nobody wrote this] Your last answer is already in the chat. The app checked it against the rest of this week and the next and found:\n{problems}\nFix it now in one short follow-up message: only the corrections, each in a few words, without repeating what was right or mentioning this check. A reminder that is wrong you cancel and list again with the right words and time, one per step; one that no longer applies (it counted on something that will not happen) you cancel. A menu change goes in a change block without `asked`: the person confirms it with a tap. What you cannot fix, say in one line. If nothing needs fixing after all, write nothing."
 
 # the consistency check (doctor.py): what the app found, after a change and in the morning
 doctor_reminder_cancelled: "🗑 Reminder cancelled, the menu no longer has its dish: {when}: {text}"

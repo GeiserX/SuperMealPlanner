@@ -1,6 +1,7 @@
 """Prep a dish needs before its day (doctor.py), and the reviewer that checks every answer changing
-anything before it goes out (verifier.py): on a copy of the data, then a review job through the
-provider over the whole rest of the week, then up to two revisions, the first reviewed again."""
+anything once it is sent (verifier.py): the structural check, then a review job through the
+provider over the whole rest of the week, and what it finds fixed in one follow-up of the bot's own,
+never reviewed again."""
 
 import asyncio
 import datetime as dt
@@ -8,7 +9,7 @@ import json
 
 import yaml
 
-from supermealplanner import doctor, llm, verifier
+from supermealplanner import doctor, verifier
 from supermealplanner.model import WEEKDAYS, load
 from supermealplanner.planner import plan_for
 
@@ -16,7 +17,7 @@ from .conftest import MONDAY
 from .test_doctor import D, edit_plan, keys
 from .test_reminders import ZONE, setup
 from .test_settings_stores_bot import msg, run
-from .test_turns import cfg, sends
+from .test_turns import buttons, cfg, drain, sends, tap, toasts
 
 SALAD = {
     "id": "ensalada-garbanzos",
@@ -204,40 +205,82 @@ def test_a_change_the_app_refuses_is_named_as_such(data_dir, tmp_path):
     assert problems and problems[0].startswith("The app refuses this menu change")
 
 
-def test_the_answer_goes_back_with_the_problems_and_a_clean_revision_ends_the_review(
+def say(b, text, **m):
+    """A message to the bot, and everything it starts (the review, the follow-up) run to the end."""
+
+    async def go():
+        await b.handle(None, msg(text, **m))
+        await drain(b)
+
+    run(go())
+
+
+def test_an_answer_goes_out_at_once_and_what_the_review_finds_comes_in_one_follow_up(
     data_dir, tmp_path
 ):
     b, _db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
-    fixed = change({"set": {"date": "2026-10-16", "meal": "dinner", "recipe": "merluza-cena-0"}})
+    fixed = (
+        "```change\n"
+        + yaml.safe_dump(
+            {
+                "plan": [
+                    {"set": {"date": "2026-10-16", "meal": "dinner", "recipe": "merluza-cena-0"}}
+                ]
+            }
+        )
+        + "```"
+    )
     verdict = {"health": ["Ana cannot have chickpeas: pick another dinner on 2026-10-16."]}
     cfg(
         data_dir,
         text="Cena del viernes: ensalada.\n" + bad_dinner(),
-        revised="Cena del viernes: merluza.\n" + fixed,
-        verdicts=[json.dumps(verdict), "{}"],
+        revised="Corrección: merluza el viernes.\n" + fixed,
+        verdicts=[json.dumps(verdict)],
     )
-    run(b.handle(None, msg("@chefbot cambia la cena del viernes", message_id=1)))
-    turns = lines(data_dir, "turns.jsonl")
-    assert len(turns) == 2  # the answer and one revision: its review was clean
-    note = turns[1]["new"][0]
-    assert turns[1]["conversation"] == "c1"
+    say(b, "@chefbot cambia la cena del viernes", message_id=1)
+    _first, follow = lines(data_dir, "turns.jsonl")  # the answer, then the bot's own follow-up
+    note = follow["new"][-1]
+    assert note.startswith(f"{b.t('verify_who')}: [Check of your last answer")
+    # the change was already made: what it broke is still this answer's doing, not "standing"
     assert "the session that day comes after the meal" in note
     assert "health: Ana cannot have chickpeas" in note
-    check, again = lines(data_dir, "checks.jsonl")
-    assert "Cena del viernes: merluza" in again["brief"]  # the revision was reviewed too
-    assert "1. wishes" in check["system"] and "3. health" in check["system"]
-    assert "Cena del viernes: ensalada" in check["brief"]
+    (check,) = lines(data_dir, "checks.jsonl")  # the follow-up is not reviewed again
+    assert "Cena del viernes: ensalada" in check["brief"] and "already sent" in check["system"]
     texts = [p["text"] for p in sends(b, -100)]
-    assert any("merluza" in t for t in texts) and not any("ensalada." in t for t in texts)
+    assert texts[0].startswith("Cena del viernes: ensalada.")  # the answer went out as written
+    assert any("Corrección: merluza" in t for t in texts)
+    assert not any(b.t("review_failed") in t for t in texts)
+    # the follow-up's change waits for the yes of the person who asked (Luis, user 7)
+    assert plan_for(b.data, D(4)).day(D(4)).dinner == "ensalada-garbanzos"
+    asked = next(p for p in sends(b, -100) if p.get("reply_markup"))
+    yes = buttons(asked)[0]["callback_data"]
+    run(tap(b, yes, 8, 1))
+    assert b.t("tap_not_yours", name=b.mention("luis")) in toasts(b)
+    run(tap(b, yes, 7, 1))
     assert plan_for(b.data, D(4)).day(D(4)).dinner == "merluza-cena-0"
+
+
+def test_the_answer_is_in_the_chat_before_the_review_starts(data_dir, tmp_path, monkeypatch):
+    b, _db = vsetup(data_dir, tmp_path)
+    seen = []
+
+    async def complete(data, system, messages):
+        seen.append([p["text"] for p in sends(b, -100)])
+        return "{}"
+
+    monkeypatch.setattr(verifier.llm, "complete", complete)
+    cfg(data_dir, text="Hecho.\n" + merluza_wednesday())
+    say(b, "@chefbot merluza el miércoles", message_id=1)
+    (said,) = seen
+    assert said and said[0].startswith("Hecho.")
 
 
 def test_a_clean_change_goes_out_as_it_came_after_one_check(data_dir, tmp_path):
     b, _db = vsetup(data_dir, tmp_path)
     ok = change({"set": {"date": "2026-10-14", "meal": "dinner", "recipe": "merluza-cena-1"}})
     cfg(data_dir, text="Hecho.\n" + ok, verdict='{"wishes": [], "health": []}')
-    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
-    assert len(lines(data_dir, "turns.jsonl")) == 1
+    say(b, "@chefbot merluza el miércoles", message_id=1)
+    assert len(lines(data_dir, "turns.jsonl")) == 1  # no follow-up
     assert len(lines(data_dir, "checks.jsonl")) == 1
 
 
@@ -276,19 +319,21 @@ def test_health_records_reach_the_check_only_for_whom_the_chat_may_see(data_dir,
     assert "little salt" in brief and "garbanzo" not in brief
 
 
-def test_a_broken_provider_hands_the_answer_on_saying_it_was_not_reviewed(data_dir, tmp_path):
+def test_a_broken_provider_says_nothing_was_checked_and_the_plan_check_goes_again(
+    data_dir, tmp_path, monkeypatch
+):
     b, db = vsetup(data_dir, tmp_path)
-    reply = llm.Reply("ok\n" + bad_dinner(), "c1")
 
     async def boom(*a, **k):
         raise RuntimeError("down")
 
-    verifier.llm.complete, real = boom, verifier.llm.complete
-    try:
-        out = run(verifier.review(b.data, db, MONDAY, {"new": [], "history": []}, reply))
-    finally:
-        verifier.llm.complete = real
-    assert out == (reply, False)
+    monkeypatch.setattr(verifier.llm, "complete", boom)
+    answer = {"text": "ok\n" + bad_dinner(), "change": None, "made": True, "offered": []}
+    assert run(verifier.after(b.data, db, MONDAY, {}, [answer])) is None
+    cfg(data_dir, text="Hecho.\n" + merluza_wednesday())
+    say(b, "@chefbot merluza el miércoles", message_id=1)
+    assert len(lines(data_dir, "turns.jsonl")) == 1  # no follow-up claims anything
+    assert db.get_kv(verifier.PLAN_RETRY) is True
 
 
 def test_a_pulse_cooked_the_night_before_is_soaked_the_night_before_that(data_dir, tmp_path):
@@ -637,40 +682,30 @@ def test_an_answer_that_only_offers_reminders_is_reviewed(data_dir, tmp_path):
     b, _db = vsetup(data_dir, tmp_path)
     when, _ = ahead()
     cfg(data_dir, text="Te aviso.\n" + block((when, "Sacar la merluza")))
-    run(b.handle(None, msg("@chefbot avísame", message_id=1)))
+    say(b, "@chefbot avísame", message_id=1)
     (check,) = lines(data_dir, "checks.jsonl")
     assert "Sacar la merluza" in check["brief"]
 
 
-def test_the_reviewer_goes_round_until_clean_at_most_twice(data_dir, tmp_path):
+def test_a_follow_up_is_never_reviewed_again_so_one_answer_gets_one_at_most(data_dir, tmp_path):
     b, _db = vsetup(data_dir, tmp_path)
     bad = json.dumps({"timeline": ["Thaw the hake the night before, on 2026-10-13."]})
     cfg(
         data_dir,
         text="Hecho.\n" + merluza_wednesday(),
-        revised="Hecho, con aviso.\n" + merluza_wednesday(),
-        verdicts=[bad, bad, "{}"],
+        revised="Falta: sacar la merluza el martes.\n" + merluza_wednesday(),
+        verdict=bad,  # every review finds it
     )
-    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
-    assert len(lines(data_dir, "turns.jsonl")) == 3  # the answer and two revisions
-    # the first revision is reviewed for what is still wrong; the last one could change nothing
-    first, again = lines(data_dir, "checks.jsonl")
-    assert "Check the whole rest of this week" in first["system"]
-    assert "This answer is a revision" in again["system"]
-    assert "Thaw the hake the night before" in again["system"]
-    texts = [p["text"] for p in sends(b, -100)]
-    assert any("con aviso" in t for t in texts)
-    assert not any(b.t("review_failed") in t for t in texts)
-    # still not clean after two revisions: no third one
-    (data_dir / "plugins" / "turns.jsonl").unlink()
-    (data_dir / "plugins" / "checks.jsonl").unlink()
-    cfg(data_dir, text="Otra.\n" + merluza_wednesday(), verdicts=[bad])
-    run(b.handle(None, msg("@chefbot otra vez", message_id=2)))
-    assert len(lines(data_dir, "turns.jsonl")) == 3
+    say(b, "@chefbot merluza el miércoles", message_id=1)
+    assert len(lines(data_dir, "turns.jsonl")) == 2  # the answer and its one follow-up
+    (check,) = lines(data_dir, "checks.jsonl")
+    assert "Check the whole rest of this week" in check["system"]
+    say(b, "@chefbot y el jueves", message_id=2)
+    assert len(lines(data_dir, "turns.jsonl")) == 4  # the same again, never a loop
     assert len(lines(data_dir, "checks.jsonl")) == 2
 
 
-def test_a_review_that_times_out_says_so_and_the_plan_check_goes_at_the_next_tick(
+def test_a_review_that_times_out_claims_nothing_and_the_plan_check_goes_at_the_next_tick(
     data_dir, tmp_path, monkeypatch
 ):
     b, db = vsetup(data_dir, tmp_path)
@@ -682,9 +717,11 @@ def test_a_review_that_times_out_says_so_and_the_plan_check_goes_at_the_next_tic
     monkeypatch.setattr(verifier.llm, "complete", slow)
     monkeypatch.setattr(verifier, "review_timeout", lambda data: 0.05, raising=False)
     cfg(data_dir, text="Hecho.\n" + merluza_wednesday())
-    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
+    say(b, "@chefbot merluza el miércoles", message_id=1)
     texts = [p["text"] for p in sends(b, -100)]
-    assert any(t.startswith("Hecho.") and b.t("review_failed") in t for t in texts)
+    assert len(texts) == 1 and texts[0].startswith("Hecho.")
+    assert b.t("review_failed") not in texts[0]  # sent before the review: it claims nothing
+    assert len(lines(data_dir, "turns.jsonl")) == 1
     assert db.get_kv(verifier.PLAN_RETRY) is True
     started = []
 
@@ -710,7 +747,7 @@ def test_the_review_reads_the_whole_week_not_only_what_the_change_touches(data_d
     rid = db.add_reminder(chat, "ana", at(D(1), 20), "Sacar la merluza")
     db.mark_task(f"r:{rid}", "done", "ana")
     cfg(data_dir, text="Hecho.\n" + merluza_wednesday())
-    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
+    say(b, "@chefbot merluza el miércoles", message_id=1)
     (check,) = lines(data_dir, "checks.jsonl")
     brief = check["brief"]
     untouched = plan_for(b.data, MONDAY).day(MONDAY).lunch
@@ -721,7 +758,7 @@ def test_the_review_reads_the_whole_week_not_only_what_the_change_touches(data_d
     assert "Check the whole rest of this week and the next" in check["system"]
 
 
-def test_the_chat_shows_the_bot_typing_until_the_review_ends(data_dir, tmp_path, monkeypatch):
+def test_the_chat_shows_the_bot_typing_until_the_answer_goes(data_dir, tmp_path, monkeypatch):
     from supermealplanner import bot as botmod
 
     b, _db = vsetup(data_dir, tmp_path)
@@ -733,11 +770,11 @@ def test_the_chat_shows_the_bot_typing_until_the_review_ends(data_dir, tmp_path,
 
     monkeypatch.setattr(verifier.llm, "complete", slow)
     cfg(data_dir, text="Hecho.\n" + merluza_wednesday())
-    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
+    say(b, "@chefbot merluza el miércoles", message_id=1)
     methods = [m for m, _ in b.calls]
     answer = next(i for i, (m, p) in enumerate(b.calls) if m == "sendMessage")
-    assert methods[:answer].count("sendChatAction") >= 2
-    assert "sendChatAction" not in methods[answer:]  # it stops with the answer
+    assert "sendChatAction" in methods[:answer]
+    assert "sendChatAction" not in methods[answer:]  # not while the review runs
 
 
 def test_the_weekly_review_and_a_step_not_done_are_reviewed_with_no_change(data_dir, tmp_path):
@@ -812,7 +849,7 @@ def test_the_review_is_told_of_a_broken_chain_the_answer_leaves_in_place(data_di
     dinner(b.data, D(7))
     db.add_reminder(-100, "ana", at(D(7), 20), "x", 7, "pescado-batch", str(tuesday), "thaw")
     cfg(data_dir, text="Hecho.\n" + merluza_wednesday())
-    run(b.handle(None, msg("@chefbot merluza el miércoles", message_id=1)))
+    say(b, "@chefbot merluza el miércoles", message_id=1)
     (check,) = lines(data_dir, "checks.jsonl")
     standing = check["brief"].split("## Problems already there before the answer")[1]
     standing = standing.split("\n## ")[0]
@@ -834,36 +871,35 @@ def test_a_step_nobody_marked_is_not_put_to_every_change_answer(data_dir, tmp_pa
     assert after["new"] == ["Nothing cooks x."]
 
 
-def test_the_whole_review_has_one_deadline_and_a_late_re_review_keeps_the_revision(
+def test_answers_sent_while_a_review_runs_get_one_review_of_the_latest_state(
     data_dir, tmp_path, monkeypatch
 ):
-    import time
+    b, _db = vsetup(data_dir, tmp_path)
+    briefs, release = [], asyncio.Event
 
-    b, db = vsetup(data_dir, tmp_path)
-    calls = []
+    async def go():
+        gate = release()
 
-    async def complete(data, system, messages):
-        calls.append(1)
-        if len(calls) == 1:
+        async def complete(data, system, messages):
+            briefs.append(messages[0]["content"])
+            if len(briefs) == 1:
+                await gate.wait()  # the first review is still running when the next answer goes
             return json.dumps({"timeline": ["Thaw the hake the night before."]})
-        await asyncio.sleep(5)  # the re-review never ends in time
-        return "{}"
 
-    async def converse(data, turn):
-        await asyncio.sleep(0.8)  # a slow revision eats most of the time left
-        return llm.Reply("Hecho, con aviso.\n" + merluza_wednesday(), "c1")
+        monkeypatch.setattr(verifier.llm, "complete", complete)
+        cfg(data_dir, text="Primera.\n" + merluza_wednesday(), revised="Corrección.")
+        await b.handle(None, msg("@chefbot merluza el miércoles", message_id=1))
+        while not briefs:
+            await asyncio.sleep(0.01)
+        cfg(data_dir, text="Segunda.\n" + merluza_wednesday(), revised="Corrección.")
+        (data_dir / "plugins" / "turns.jsonl").unlink()  # the plugin answers "text" once more
+        await b.handle(None, msg("@chefbot y otra cosa", message_id=2))
+        gate.set()
+        await drain(b)
 
-    monkeypatch.setattr(verifier.llm, "complete", complete)
-    monkeypatch.setattr(verifier.llm, "converse", converse)
-    monkeypatch.setattr(verifier, "review_timeout", lambda data: 0.5)
-    # the copy and its check take no time here, so only the provider's calls count
-    monkeypatch.setattr(verifier, "structural", lambda *a: ([], {}))
-    turn = {"new": [], "history": [], "chat": {"id": -100}}
-    reply = llm.Reply("Hecho.\n" + merluza_wednesday(), "c1")
-    t0 = time.monotonic()
-    out, ok = run(verifier.review(b.data, db, MONDAY, turn, reply))
-    took = time.monotonic() - t0
-    assert "con aviso" in out.text and ok  # revised against a review that ran
-    assert len(calls) == 2
-    # the re-review gets what is left of 2 x 0.5 s (0.2 s), not a whole 0.5 s of its own
-    assert took < 1.15
+    run(go())
+    first, latest = briefs  # the overtaken one, then one that covers both answers
+    assert "Primera." in first and "Segunda." not in first
+    assert "Primera." in latest and "Segunda." in latest
+    follow = [t for t in lines(data_dir, "turns.jsonl") if b.t("verify_who") in t["new"][-1]]
+    assert len(follow) == 1  # one follow-up for both

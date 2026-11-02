@@ -1,26 +1,35 @@
-"""The reviewer: a full second look at every answer that changes anything, and at every new or
-changed plan, before it reaches the household.
+"""The reviewer: a full second look at every answer that changes anything, once it is sent, and at
+every new or changed plan.
 
 It runs on an answer with any change block (the menu, a recipe, the pantry, a setting, a task's
 state, notes), with reminders it offers or cancels, and on a turn the bot asked itself to review or
 reorganise the week (the weekly review, the plan check's morning turn, a step not done). An answer
-that changes nothing goes out as it is.
+that changes nothing is not reviewed.
 
-What it reads is the whole rest of this week and the next as the answer leaves them, never only the
+The answer goes out as soon as it is written: answering quickly matters more than answering once.
+The review then runs in the background (after) on what was sent and on the state it left. When it
+finds problems, the bot takes one turn of its own that fixes them in one short follow-up message
+(corrections said briefly, reminders cancelled and written again, a menu change offered for a
+yes). Reviews coalesce: an answer sent while a review runs is covered by one review of the latest
+state, the answers since the last review together. A follow-up is never reviewed again, so one
+answer gets one follow-up at most.
+
+What it reads is the whole rest of this week and the next as the answer left them, never only the
 diff: the menu, the cooking sessions, the text of every recipe on it, every task with what the
 household said of it (done, not done, unknown), the pantry and what is going off, every problem the
 consistency check finds (doctor.problems, the soak, cook and thaw chains among them) and each
 person's health record. The problems that were there before the answer are context: the review
 lists one only when the answer touches it or could fix it, so a standing problem the answer cannot
-fix does not send every answer back. A turn the bot asked itself about the week counts them all. A
-step nobody marked stays out: the morning's day message asks about it, and its own turn reorganises
-the week.
+fix does not bring a follow-up to every answer. A turn the bot asked itself about the week counts
+them all. A step nobody marked stays out: the morning's day message asks about it, and its own turn
+reorganises the week.
 
 Two checks:
-- structural, plain code: the change is made on a copy of the data folder and the consistency check
-  runs on the copy, with the reminders the answer offers counted as set. What it finds that was not
-  there before is this change's doing. A menu change the app would refuse is one of them, with the
-  app's reason.
+- structural, plain code: a change that still waits for a yes is made on a copy of the data folder
+  and the consistency check runs on the copy, with the reminders the answer offers counted as set; a
+  change already made is read from the data itself, against the problems taken just before it was
+  made. What it finds that was not there before is this answer's doing. A menu change the app would
+  refuse is one of them, with the app's reason.
 - judgment, a review job through the household's AI provider (llm.complete; it can be a session
   that reads files and the web): separate checks of (1) what the household asked for, (2) the
   timeline (what is cooked when, which session prepares what, what has to be soaked, defrosted or
@@ -30,19 +39,9 @@ Two checks:
   reading. When the answer moves something, or a step was not done, the timeline says how to
   reorganise the rest of the week.
 
-When either finds something, the problems go back to the provider in the same conversation and its
-new answer replaces the one before; nobody saw it. The revision is reviewed again, but only for
-what is still wrong of the problems it was sent back with and what it brought itself, and the
-reminders it left behind are said once. A second revision, the last (REVIEW_ROUNDS), follows only
-when that re-review still finds something, and it is not reviewed again: nothing could change it.
-What the last revision cannot fix, it says in its answer.
-
-Nothing is sent before the review ends: the bot keeps the typing indicator on meanwhile. The whole
-review, revisions included, has REVIEW_BUDGET times llm.review_timeout_s; a call is cut to what is
-left. When the first review cannot run (the provider fails, gives no verdict, or takes too long),
-or a revision fails, the answer does not go out as if it had been checked: it carries one line
-saying the review could not run, and the plan check runs again at the next tick (PLAN_RETRY). A
-re-review that cannot run leaves the revision as it is: it was written against a review that ran.
+A review has llm.review_timeout_s. When it cannot run (the provider fails, gives no verdict, or
+takes too long), nothing says the answer was checked, and the plan check runs again at the next
+tick (PLAN_RETRY), so what is wrong in the week still comes up.
 
 The same checks run on the plan as it stands (check_plan): once for each new or changed menu of
 this week and the next, with the full text of every recipe on it. What they find is kept with the
@@ -64,7 +63,6 @@ import logging
 import re
 import shutil
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -83,8 +81,6 @@ PROBLEMS_MAX, PROBLEM_CHARS = 8, 800  # per check: a long list is noise, not a c
 RECIPES_MAX = 150_000  # characters of recipe text the judgment gets; the two weeks fit in it
 PLAN_KEY = "verifier.plan"  # the plan check's findings, with the key of the plan they are about
 PLAN_RETRY = "verifier.plan_retry"  # a review could not run: the plan check goes at the next tick
-REVIEW_ROUNDS = 2  # revisions of one answer at most; the last one is not reviewed again
-REVIEW_BUDGET = 2  # the whole review of one answer, in llm.review_timeout_s
 PLAN_SEEN = (
     "timeline",
     "nonsense",
@@ -96,10 +92,10 @@ SKIP = (
 )  # food on no dish has its own section; the app cancels the other
 HEALTH_FIELDS = ("allergies", "intolerances", "diet", "meds", "fasting")
 
-VERIFY = """You check a meal-planning assistant's answer before the household sees it. The answer
+VERIFY = """You check a meal-planning assistant's answer, already sent to the household. The answer
 changes something (the menu, a recipe, the cooking days, the pantry, a setting, the reminders or
 what was done of a task), or answers the weekly review or a step that was not done. You do not
-answer the household: you list what is wrong, so the assistant fixes it.
+answer the household: you list what is wrong, so the assistant fixes it in one short follow-up.
 {scope}
 Make three checks, separately, each on its own, then a fourth and a fifth:
 1. wishes: does the proposal, and the menu it leaves, match what the household asked for? The
@@ -148,13 +144,6 @@ WHOLE_WEEK_TURN = (
     "or something moved, say in timeline what that shifts in the rest of the week and how to "
     "reorganise it."
 )
-RECHECK = (
-    "This answer is a revision. The answer before it was sent back with these problems:\n"
-    "{problems}\n"
-    "List only what is still wrong of those and what the revision itself brought. A problem the "
-    "answer says it cannot fix, and one that was there before and that it does not touch, is not "
-    "one."
-)
 PLAN_SCOPE = """
 Here there is no proposal: the menu of this week and the next is checked as it stands, the plan
 the app made and every change since. Every real problem in it counts. What you put in timeline,
@@ -162,13 +151,6 @@ nonsense and clarity is read by every person, in their own chat too: never name 
 health or the foods they avoid; those go in wishes or health.
 """
 PLAN_SYSTEM = VERIFY.format(scope=PLAN_SCOPE, only="")
-
-REVISE = """[The app checked your answer before anyone saw it; nobody has seen it yet.] It found:
-{problems}
-
-Write your answer again, whole, with these fixed: the new answer replaces the one above, with its
-change, reminders and options blocks. If you cannot fix one, keep the rest and say in one short line
-what is left and why. Do not mention this check."""
 
 
 def in_scope(change, offered=(), turn: dict | None = None) -> bool:
@@ -185,40 +167,44 @@ def review_timeout(data: Data) -> float:
     return cfg.review_timeout_s or cfg.timeout_s
 
 
-async def review(
-    data: Data, db: DB, today: dt.date, turn: dict, reply: llm.Reply, viewer=None, asker=None
-) -> tuple[llm.Reply, bool]:
-    """The reply as the reviews leave it, and whether it was reviewed. A review that finds problems
-    sends the answer back; the revision is reviewed again for what is still wrong, and revised once
-    more if needed, REVIEW_ROUNDS revisions at most, the last one not reviewed again. False when
-    the first review or a revision failed, or the time ran out before the problems found were
-    sent back: the reply is the last one written, and the bot says the review could not run."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + REVIEW_BUDGET * review_timeout(data)
-    rounds, total, items = 0, 0, None
-    while True:
-        left = deadline - loop.time()
-        try:
-            if left <= 0:
-                raise TimeoutError
-            items = await findings(data, db, today, turn, reply, viewer, asker, items, left)
-        except Exception as e:  # noqa: BLE001  the answer still goes, saying it was not reviewed
-            log.warning("verifier failed: %s", type(e).__name__)
-            log.info("verifier: %d revisions, %d problems in all", rounds, total)
-            return reply, rounds > 0  # a revision was written against a review that ran
-        total += len(items or [])
-        if not items:
-            log.info("verifier: %d revisions, %d problems in all", rounds, total)
-            return reply, True
-        left = deadline - loop.time()
-        revised = await revise(data, turn, reply, items, left) if left > 0 else None
-        if revised is None:
-            log.info("verifier: %d revisions, %d problems in all", rounds, total)
-            return reply, False
-        reply, rounds = revised, rounds + 1
-        if rounds == REVIEW_ROUNDS:  # a review after the last revision could change nothing
-            log.info("verifier: %d revisions, %d problems in all", rounds, total)
-            return reply, True
+async def after(
+    data: Data,
+    db: DB,
+    today: dt.date,
+    turn: dict,
+    answers: list[dict],
+    viewer=None,
+    asker=None,
+    before: set[str] | None = None,
+) -> list[str] | None:
+    """One review of answers already sent, on the state they left: what is wrong, [] when nothing
+    is, None when the review could not run. answers: each {"text": the whole answer, its blocks
+    too, "change": its change block, "made": whether it was made, "offered": its reminders}, oldest
+    first; several when answers went out while the review before ran. before: the problems' keys
+    taken just before the first of them changed anything."""
+    text = "\n\n---\n\n".join(a["text"] for a in answers)
+    offered = [r for a in answers for r in a.get("offered") or []]
+    # a change already made is in the data; one that waits for a yes is made on a copy
+    waiting = [a["change"] for a in answers if isinstance(a.get("change"), dict) and not a["made"]]
+    try:
+        items = await findings(
+            data,
+            db,
+            today,
+            turn,
+            text,
+            waiting[-1] if waiting else None,
+            offered,
+            viewer,
+            asker,
+            before,
+            review_timeout(data),
+        )
+    except Exception as e:  # noqa: BLE001  nothing says it was checked; the plan check retries
+        log.warning("verifier failed: %s", type(e).__name__)
+        return None
+    log.info("verifier: %d problems", len(items))
+    return items
 
 
 async def findings(
@@ -226,36 +212,29 @@ async def findings(
     db: DB,
     today: dt.date,
     turn: dict,
-    reply: llm.Reply,
-    viewer,
-    asker,
-    sent: list[str] | None = None,
+    text: str,
+    change: dict | None,
+    offered: list[dict],
+    viewer=None,
+    asker=None,
+    before: set[str] | None = None,
     timeout: float | None = None,
-) -> list[str] | None:
-    """One review of the reply: what the structural check and the judgment found. Nothing when it
-    changes nothing; None when the app refuses its block anyway (and says why). sent: the problems
-    the answer before this revision went back with; the review then looks only for what is still
-    wrong of them and what the revision brought."""
-    _, change = changes.extract(reply.text)
-    offered = reply.reminders or llm.extract_reminders(reply.text)[1]
-    if not in_scope(change, offered, turn):
-        return []
+) -> list[str]:
+    """One review: what the structural check and the judgment found. change: a block still waiting
+    for a yes, made on a copy; without one (or when the app would refuse it, which it said), the
+    week as it stands, with `before` the problems there before the answer."""
     chat = (turn.get("chat") or {}).get("id")
-    # said once: a revision that keeps them, as it may, must not be sent back for it again
-    behind = left_behind(db, chat, offered) if chat is not None and sent is None else []
+    behind = left_behind(db, chat, offered) if chat is not None else []
+    found = None
     if isinstance(change, dict) and any(k != "asked" for k in change):
         found = await asyncio.to_thread(structural, data, db, today, change, asker, offered)
-        if found is None:
-            return None
+    if found is not None:
         problems, after = found
-    else:  # nothing to make: the week as it stands, with what was there without this answer
-        after = await asyncio.to_thread(as_is, data, db, today, offered)
-        problems = after.pop("new", [])
-    if sent is not None:
-        scope = RECHECK.format(problems="\n".join(f"- {p}" for p in sent))
     else:
-        scope = WHOLE_WEEK_TURN if turn.get("review") else WHOLE_WEEK
-    judged = await judge(data, today, reply.text, problems, after, viewer, scope, timeout)
+        after = await asyncio.to_thread(as_is, data, db, today, offered, before)
+        problems = after.pop("new", [])
+    scope = WHOLE_WEEK_TURN if turn.get("review") else WHOLE_WEEK
+    judged = await judge(data, today, text, problems, after, viewer, scope, timeout)
     log.info(
         "verifier: %d structural, %s judged",
         len(problems),
@@ -270,8 +249,7 @@ SIBLINGS_S = 60  # reminders set within this long of each other came from one an
 def left_behind(db: DB, chat: int, offered: list[dict]) -> list[str]:
     """Reminders this answer leaves as they were while it cancels others set in the same answer
     (one plan, one session): when a time moved, the ones whose text describes it were often
-    forgotten. Said to the AI once, in the first review only, which keeps them or cancels and
-    rewrites them."""
+    forgotten. Said to the AI in the follow-up, which keeps them or cancels and rewrites them."""
     ids = {int(r["cancel"]) for r in offered if str(r.get("cancel", "")).isdigit()}
     if not ids:
         return []
@@ -718,38 +696,3 @@ def health_records(data: Data, viewer=None) -> dict:
         for pid, v in people.items()
         if isinstance(v, dict) and str(pid) in ids and (viewer is None or str(pid) == viewer)
     }
-
-
-async def revise(
-    data: Data, turn: dict, reply: llm.Reply, problems: list[str], timeout: float | None = None
-) -> llm.Reply | None:
-    """One more turn in the same conversation with the problems; its answer replaces the one
-    before. An empty revision keeps the one before; None when the revision failed. timeout: what
-    is left of the review's time, never more than one answer's."""
-    ts = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
-    note = REVISE.format(problems="\n".join(f"- {p}" for p in problems))
-    again = {
-        **turn,
-        "conversation": reply.conversation or turn.get("conversation"),
-        "new": [{"role": "user", "content": note, "ids": [], "ts": ts}],
-        "history": [
-            *turn.get("history", []),
-            *turn.get("new", []),
-            {"role": "assistant", "content": reply.text, "ids": [], "ts": ts},
-        ],
-        "attachments": [],
-    }
-    try:
-        own = data.settings.llm.timeout_s
-        limit = own if timeout is None else min(timeout, own)
-        out = await asyncio.wait_for(llm.converse(data, again), timeout=limit)
-    except Exception as e:  # noqa: BLE001
-        log.warning("verifier: the revision failed: %s", type(e).__name__)
-        return None
-    if not out.text.strip() and not out.proposals:
-        return reply
-    return replace(
-        out,
-        conversation=out.conversation or reply.conversation,
-        covers=reply.covers | out.covers,
-    )
