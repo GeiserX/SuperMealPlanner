@@ -60,6 +60,10 @@ def test_a_reminder_the_chat_set_for_a_dinner_is_on_the_cook_page_and_the_day_pa
         c.app.state.smp.db.add_reminder(
             -100, "ana", at, "Deja las alubias en remojo", 8, dinner, D(3).isoformat()
         )
+        cook = at + 3600  # a reminder to cook, set from the chat with its step
+        c.app.state.smp.db.add_reminder(
+            -100, "ana", cook, "Cuece las alubias", 8, dinner, D(3).isoformat(), "cook"
+        )
         batch = c.get(f"/batch?d={MONDAY}").text
         day = c.get(f"/?d={D(2)}").text
         other = c.get(f"/?d={D(3)}").text
@@ -68,6 +72,7 @@ def test_a_reminder_the_chat_set_for_a_dinner_is_on_the_cook_page_and_the_day_pa
     assert "Deja las alubias en remojo" in _section(day, "Deja las alubias en remojo")
     assert "21:30" in _section(day, "Deja las alubias en remojo")
     assert "Deja las alubias en remojo" not in other
+    assert "Cuece las alubias" in batch and "Cuece las alubias" in day
 
 
 def test_a_session_before_its_plan_starts_is_on_the_cook_page_and_the_reminder_of_its_day(

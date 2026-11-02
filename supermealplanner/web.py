@@ -310,7 +310,8 @@ def create_app(root: str | Path | None = None) -> FastAPI:
         for i in range(7):
             day = m + dt.timedelta(days=i)
             sessions = session_sheets(state.data, state.db, plans, day)
-            todo = [x for x in jobs if x.day == day and x.kind != "cook"]  # cook: the sheet itself
+            # the planner's own cook task is the sheet itself; a chat reminder to cook stays
+            todo = [x for x in jobs if x.day == day and (x.kind, x.source) != ("cook", "auto")]
             if sessions or todo:
                 days.append((day, sessions, todo))
         names = {p.id: p.name for p in state.data.household.people}
