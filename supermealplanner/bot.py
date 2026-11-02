@@ -211,9 +211,16 @@ REMIND_DAYS = 60  # the furthest ahead a reminder may be
 LATE_S = 600  # a reminder posted this much after its time says so
 MERGE_S = tasklist.MERGE_S  # reminders of one chat this close go out as one message, the earliest
 SLOTS = "bot.slots"  # {"id,id,...": the slot's rewrite}: one consistent message for a slot
-SLOT_AHEAD_S = 300  # a slot is rewritten this long before it goes out, so it still leaves on time
-SLOT_TIMEOUT_S = 90  # the rewrite's one AI call; past it the slot goes out as it was set
+# a slot is rewritten from this long before it goes out: a provider that runs a job per call (the
+# plugin's) takes minutes for one, and the rewrite has to land before the message leaves
+SLOT_AHEAD_S = 1800
+SLOT_MARGIN_S = 60  # the rewrite ends this long before its slot goes out
+SLOT_MIN_S = 30  # less time than this left: the slot goes out as it was set, nothing is tried
+SLOT_TIMEOUT_S: float | None = None  # a cap on the rewrite's AI call; unset: one review's time
 SLOT_KEEP_S = 2 * 86400  # a rewrite is kept this long (a slot that changed never uses it)
+SLOT_RAN_OUT_DAYS = 7  # food that came in this many days back and is gone now ran out
+SLOT_CHAT_N = 40  # the most chat messages since a slot's reminders were set the rewrite reads
+SLOT_CHAT_CHARS = 600  # of each
 # the steps a later one counts on: one of them nobody marked done makes the slot say "if"
 SLOT_NEEDS = tasklist.STEPS
 TASK_BUTTONS = (
@@ -233,11 +240,12 @@ out together as one message to the person who does them. They can repeat each ot
 each other, or count on something that did not happen. Write them again as one consistent message
 from the state below, as it is now:
 - every step once: two reminders that say the same step become one step; where they disagree, the
-  state below wins, then the newest reminder (the highest id);
+  state below wins, then what the chat said after the reminders were set, then the newest
+  reminder (the highest id);
 - where one food serves several things, say the amounts apart (for example: keep 2 green peppers,
   1 for X and 1 for Y, and cut the rest into strips);
-- leave out what the state contradicts: a dish no longer on that day's menu, food the pantry says
-  ran out, a thaw or a defrost of food nobody froze;
+- leave out what the state or the chat contradicts: a dish no longer on that day's menu, food the
+  pantry says ran out, a thaw or a defrost of food the chat says nobody froze;
 - a step that counts on another (a soak, a thaw, a cooking session) nobody marked done is said
   with an if: "if you soaked the chickpeas last night, cook them; if not, ...";
 - short and plain, written to the person who does it, in the household's language ({locale}); no
@@ -2973,7 +2981,7 @@ class Bot:
             kept.pop(sid, None)  # the newest last, so the oldest go first
             kept[sid] = {"key": x.key, "what": what, "kind": x.kind, "day": x.day.isoformat()}
             keys = (together or {}).get(x.key) or []
-            if len(keys) > 1:
+            if keys:
                 kept[sid]["keys"] = keys
             pre = f"{n}. " if many else ""
             lines.append(pre + what)
@@ -3626,13 +3634,16 @@ class Bot:
         kept = (self.state.db.get_kv(SLOTS) or {}).get(_slot_key(rs))
         if not kept:
             return self.once_tasks(rs), [self.once_line(r, now) for r in rs], {}, []
-        byid = {r["id"]: r for r in rs}
+        byid, slot = {r["id"]: r for r in rs}, _slot_key(rs)
         found, texts, together = [], [], {}
-        for step in kept["steps"]:
+        for n, step in enumerate(kept["steps"]):
             mine = [byid[i] for i in step["ids"] if i in byid]
             if not mine:
                 continue
-            x = replace(self.once_tasks(mine[:1])[0], text="⏰ " + step["text"])
+            # a key of its own: two steps may name the same reminder (one that said two things),
+            # and a reminder's own key is what its buttons in another message are kept under
+            key = f"slot:{slot}:{n}"
+            x = replace(self.once_tasks(mine[:1])[0], key=key, text="⏰ " + step["text"])
             found.append(x)
             together[x.key] = [f"r:{r['id']}" for r in mine]
             text = step["text"]
@@ -3671,16 +3682,58 @@ class Bot:
 
         self.spawn(work())
 
+    def upcoming_slots(self, until: float) -> list[tuple[float, list[dict]]]:
+        """The messages the chat's reminders go out in up to `until`, as (when, reminders), put
+        together the way they will be sent: the app's own message of a time (tick_reminders)
+        takes in every pending one up to MERGE_S after it, and comes forward to a chat reminder
+        due before it within MERGE_S; otherwise the chat's first goes with the ones up to MERGE_S
+        after it (tick_once)."""
+        db, now, zone = self.state.db, time.time(), self._zone()
+        chats: dict[int, list[dict]] = {}
+        for r in db.reminders():
+            if r["at"] <= until + MERGE_S:
+                chats.setdefault(r["chat"], []).append(r)
+        out = []
+        for chat, rs in chats.items():
+            apps = []
+            if chat == self.chat_id:
+                days = {dt.datetime.fromtimestamp(x, zone).date() for x in (now, until)}
+                apps = sorted(
+                    {
+                        start
+                        for day in days
+                        for r, hm, start in self.app_times(day)
+                        if now < start <= until
+                        and r.kind != "review"
+                        and not db.was_sent(r.id, day, hm)
+                        and self._says(r, day)
+                    }
+                )
+            while rs:
+                if apps and apps[0] < rs[0]["at"]:  # the app's own message goes first
+                    at = apps.pop(0)
+                else:  # the chat's first, with the app's own of its window brought forward
+                    at = rs[0]["at"]
+                    apps = [x for x in apps if x > at + MERGE_S]
+                if at > until:
+                    break
+                took = [r for r in rs if r["at"] <= at + MERGE_S]
+                rs = rs[len(took) :]
+                if took:
+                    out.append((at, took))
+        return sorted(out, key=lambda x: x[0])
+
     async def prepare_slots(self) -> None:
-        """Each slot of the chat's reminders due within SLOT_AHEAD_S, rewritten as one consistent
-        message from the state as it is now (rewrite_slot), when it needs it: more than one
-        reminder (different answers wrote them, so they can repeat and contradict each other), or
-        one the state puts in doubt (slot_doubts). Kept in SLOTS for exactly those reminders, so a
-        slot that changed since goes out as it was set; tried once per slot."""
+        """Each message of the chat's reminders due within SLOT_AHEAD_S (upcoming_slots),
+        rewritten as one consistent message from the state as it is now (rewrite_slot), when it
+        needs it: more than one reminder (different answers wrote them, so they can repeat and
+        contradict each other), or one the state puts in doubt (slot_doubts). Kept in SLOTS for
+        exactly those reminders, so a slot that changed since goes out as it was set; tried once
+        per slot, with what is left of the time before it goes out."""
         if self.data.settings.llm.provider == "none":
             return
         db = self.state.db
-        for _, near in self.slot_groups(db.due_reminders(time.time() + SLOT_AHEAD_S)):
+        for at, near in self.upcoming_slots(time.time() + SLOT_AHEAD_S):
             rs = [r for r in near if not self._stale(r)]
             key = _slot_key(rs)
             if not rs or key in (db.get_kv(SLOTS) or {}) or key in self.slot_tried:
@@ -3688,8 +3741,11 @@ class Bot:
             doubts = await asyncio.to_thread(self.slot_doubts, rs)
             if len(rs) < 2 and not doubts:
                 continue
+            left = at - time.time() - SLOT_MARGIN_S
+            if left < SLOT_MIN_S:  # it would not land before the message leaves
+                continue
             self.slot_tried.add(key)
-            made = await self.rewrite_slot(rs, doubts)
+            made = await self.rewrite_slot(rs, doubts, left)
             if made is None:
                 continue
             now = time.time()
@@ -3716,8 +3772,14 @@ class Bot:
             return []
         now = dt.datetime.now(zone)
         out = []
-        try:
-            empty = {x.ingredient for x in pantry.now(data, db, now.date()) if x.qty <= pantry.EPS}
+        try:  # ran out: it came in lately (bought, or said to be at home) and the pantry has none
+            since = now.date() - dt.timedelta(days=SLOT_RAN_OUT_DAYS)
+            came = {
+                x["ingredient"]
+                for x in db.lots()
+                if dt.datetime.fromisoformat(x["at"]).astimezone(zone).date() >= since
+            }
+            empty = came - {x.ingredient for x in pantry.now(data, db, now.date())}
         except Exception as e:  # noqa: BLE001  the rest still counts
             log.info("could not read the pantry for a slot: %s", safe(e))
             empty = set()
@@ -3760,11 +3822,14 @@ class Bot:
                     )
         return out
 
-    async def rewrite_slot(self, rs: list[dict], doubts: list[str]) -> dict | None:
-        """One AI pass (llm.complete, SLOT_TIMEOUT_S) that writes a slot again as one consistent
-        message from the state now: {"steps": [{"text", "ids"}], "dropped": [ids]}, every
-        reminder in a step or dropped. None when it fails, takes too long or answers anything
-        else: the slot then goes out as it was set."""
+    async def rewrite_slot(self, rs: list[dict], doubts: list[str], left: float) -> dict | None:
+        """One AI pass (llm.complete) that writes a slot again as one consistent message from the
+        state now: {"steps": [{"text", "ids"}], "dropped": [ids]}, every reminder in a step or
+        dropped. It may take what is left before the slot goes out, never more than one review
+        (verifier.review_timeout) or SLOT_TIMEOUT_S; the provider is told that time, so a job of
+        its own stops by then too. None when it fails, takes too long or answers anything else:
+        the slot then goes out as it was set."""
+        limit = min(left, verifier.review_timeout(self.data), SLOT_TIMEOUT_S or left)
         try:
             facts = await asyncio.to_thread(self.slot_facts, rs, doubts)
             raw = await asyncio.wait_for(
@@ -3772,8 +3837,9 @@ class Bot:
                     self.data,
                     SLOT_SYSTEM.format(locale=self.data.locale),
                     [{"role": "user", "content": facts}],
+                    timeout=limit,
                 ),
-                SLOT_TIMEOUT_S,
+                limit,
             )
         except Exception as e:  # noqa: BLE001  TimeoutError too
             log.warning("rewriting a slot of reminders failed: %s", type(e).__name__)
@@ -3804,12 +3870,36 @@ class Bot:
         if doubts:
             out.append("\n## What the app found against them (certain)")
             out += [f"- {x}" for x in doubts]
+        out += self.slot_chat(rs)
         out += verifier.doctor_menu(data, self.t, today)
         out += tasklist.tasks_now(
             data, db, day - dt.timedelta(days=doctor.REMINDER_LEAD_DAYS), day + dt.timedelta(1)
         )
         out += context.pantry_now(data, db, today)
         return "\n".join(out)
+
+    def slot_chat(self, rs: list[dict]) -> list[str]:
+        """What the slot's chat said after its first reminder was set (the last SLOT_CHAT_N): a
+        plan the household changed in words ("nothing gets frozen") lives only there."""
+        made = [r["created"] for r in rs if r.get("created")]
+        if not made:
+            return []
+        since = min(dt.datetime.fromisoformat(x) for x in made)
+        zone = self._zone()
+        rows = [
+            x
+            for x in self.state.db.chat_rows(rs[0]["chat"], SLOT_CHAT_N)
+            if dt.datetime.fromisoformat(x["ts"]) > since
+        ]
+        if not rows:
+            return []
+        out = ["\n## What the chat said since these reminders were set (oldest first)"]
+        for x in rows:
+            local = dt.datetime.fromisoformat(x["ts"]).astimezone(zone)
+            who = x["who"] or x["role"]
+            text = " ".join(str(x["text"] or "").split())[:SLOT_CHAT_CHARS]
+            out.append(f"- {local:%a %H:%M} {who}: {text}")
+        return out
 
     async def live_once(self, client, rs: list[dict]) -> list[dict]:
         """The one-off reminders whose dish the menu still serves; one it dropped since the last

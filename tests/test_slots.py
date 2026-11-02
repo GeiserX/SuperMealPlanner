@@ -1,16 +1,16 @@
-"""One reminder per slot, checked when it goes out. Reminders of one chat within MERGE_S of each
-other go out as one message; when several answers each set their own for that time, the steps
-repeat and contradict each other and the cook cannot tell which to follow. An answer that adds a
-reminder to a slot is sent back to write the slot again as one; a slot that still holds several,
-or one the state puts in doubt (a step nobody marked done), is rewritten by one AI pass just before
-it goes out, and goes out as it was set when that pass fails."""
+"""One consistent message per slot, settled before it goes out. Reminders of one chat within
+MERGE_S of each other go out as one message; when several answers each set their own for that time,
+the steps repeat and contradict each other and the cook cannot tell which to follow. The answer is
+not held back for it: a slot that holds several, or one the state puts in doubt (a step nobody
+marked done, food that ran out), is rewritten by one AI pass up to half an hour before it goes out,
+and goes out as it was set when that pass fails."""
 
 import asyncio
 import datetime as dt
 import json
 
 from supermealplanner import bot as botmod
-from supermealplanner import llm, tasks, verifier
+from supermealplanner import llm, pantry, tasks, verifier
 
 from .conftest import MONDAY
 from .test_chains import at
@@ -28,15 +28,17 @@ def when(day, hm):
     return f"{day.isoformat()} {hm}"
 
 
-# ---------------------------------------------------------------- the answer: one per slot
+# ---------------------------------------------------------------- the answer is not held back
 
 
-def test_an_answer_that_adds_a_reminder_to_a_slot_is_sent_back_to_write_it_as_one(
+def test_an_answer_that_sets_a_reminder_next_to_another_is_not_sent_back_for_it(
     data_dir, tmp_path, monkeypatch
 ):
+    """Answer quickly, settle the slot later: the slot is rewritten before it goes out, so the
+    review does not spend a revision round on two reminders at about the same time."""
     b, db = setup(data_dir, tmp_path)
     day = soon()
-    old = db.add_reminder(-100, "ana", at(day, "21:30"), "Freeze the beef and the salmon", 7)
+    db.add_reminder(-100, "ana", at(day, "21:30"), "Freeze the beef and the salmon", 7)
     offered = [{"when": when(day, "21:40"), "text": "Keep 1 green pepper, cut the rest", "set": 1}]
 
     async def judged(*a, **k):  # the judgment finds nothing: only the app's own check counts
@@ -46,56 +48,18 @@ def test_an_answer_that_adds_a_reminder_to_a_slot_is_sent_back_to_write_it_as_on
     reply = llm.Reply(text="Done.")
     reply.reminders = offered
     turn = {"chat": {"id": -100}}
-    found = run(verifier.findings(b.data, db, MONDAY, turn, reply, None, "ana"))
-    (problem,) = found
-    assert "2 reminders would go out together at about 21:30" in problem
-    assert f"reminder {old} (already set): «Freeze the beef and the salmon»" in problem
-    assert "listed in this answer: «Keep 1 green pepper, cut the rest»" in problem
-    assert f"cancel {old} and list one reminder" in problem
-    assert "1 for X and 1 for Y" in problem  # amounts split explicitly
-    assert problem.endswith("end its line with set.")
-
-
-def test_the_revision_that_cancels_the_others_and_writes_one_passes(data_dir, tmp_path):
-    b, db = setup(data_dir, tmp_path)
-    day = soon()
-    old = db.add_reminder(-100, "ana", at(day, "21:30"), "Freeze the beef", 7)
-    one = {"when": when(day, "21:30"), "text": "Freeze the beef; keep 1 green pepper", "set": 1}
-    assert verifier.crowded(b.data, db, -100, [{"cancel": str(old)}, one]) == []
-    # two in one answer for one time are the same problem, with nothing to cancel
-    two = [one, {"when": when(day, "21:45"), "text": "Soak the chickpeas"}]
-    (problem,) = verifier.crowded(b.data, db, -100, [{"cancel": str(old)}, *two])
-    assert "cancel" not in problem.split("One time holds")[1].split("list one")[0]
-    assert "end its line with set" not in problem
-
-
-def test_steps_for_different_dishes_keep_their_own_reminders(data_dir, tmp_path):
-    """The chains read each reminder by its dish field and kind: a soak folded into a thaw would
-    leave one of them missing, so those stay apart; anything else is folded in."""
-    b, db = setup(data_dir, tmp_path)
-    day = soon()
-    db.add_reminder(-100, "ana", at(day, "21:30"), "Soak", 7, "lentils", "2030-01-02", "soak")
-    thaw = {
-        "when": when(day, "21:35"),
-        "text": "Thaw the hake",
-        "recipe": "hake",
-        "date": "2030-01-03",
-        "kind": "thaw",
-    }
-    assert verifier.crowded(b.data, db, -100, [thaw]) == []
-    note = {"when": when(day, "21:40"), "text": "Keep 1 green pepper"}
-    assert len(verifier.crowded(b.data, db, -100, [thaw, note])) == 1  # the note is folded in
-    far = {"when": when(day, "23:30"), "text": "Shop"}
-    assert verifier.crowded(b.data, db, -100, [far]) == []  # another slot
+    assert run(verifier.findings(b.data, db, MONDAY, turn, reply, None, "ana")) == []
 
 
 # ---------------------------------------------------------------- when it goes out
 
 
-def fake_complete(monkeypatch, answer, calls=None):
-    async def complete(data, system, messages):
+def fake_complete(monkeypatch, answer, calls=None, waits=None):
+    async def complete(data, system, messages, timeout=None):
         if calls is not None:
             calls.append(messages[0]["content"])
+        if waits is not None:
+            waits.append(timeout)
         if isinstance(answer, Exception):
             raise answer
         if answer == "slow":
@@ -297,3 +261,128 @@ def test_the_apps_message_carries_the_slots_rewrite_and_keeps_its_own_blocks(
     assert "Keep 1 green pepper" not in sent["text"]
     assert len(buttons(sent)) == 2 * (len(jobs) + 1)
     assert {r["id"] for r in db.reminders(-100, "sent")} == {a, c}
+
+
+def test_a_rewrite_starts_early_enough_for_a_job_of_minutes_and_tells_the_provider_its_time(
+    data_dir, tmp_path, monkeypatch
+):
+    """A provider that runs a job per call takes minutes: the rewrite starts half an hour before
+    the slot, and the provider is told how long the app waits, so its job stops by then."""
+    b, db = setup(data_dir, tmp_path)
+    day = soon()
+    a = db.add_reminder(-100, "ana", at(day, "21:30"), "Freeze the beef", 7)
+    c = db.add_reminder(-100, "ana", at(day, "21:40"), "Keep 1 green pepper", 7)
+    calls, waits = [], []
+    fake_complete(monkeypatch, {"steps": [{"text": "x", "ids": [a, c]}]}, calls, waits)
+    clock(monkeypatch, at(day, "21:00"))
+    run(b.prepare_slots())
+    assert len(calls) == 1
+    (wait,) = waits
+    assert wait == min(30 * 60 - botmod.SLOT_MARGIN_S, verifier.review_timeout(b.data))
+    assert botmod._slot_key([db.reminder(a), db.reminder(c)]) in db.get_kv(botmod.SLOTS)
+
+
+def test_the_provider_gets_the_shorter_wait_as_its_timeout(data_dir, tmp_path, monkeypatch):
+    b, _ = setup(data_dir, tmp_path)
+    seen = []
+
+    def plugin(system, messages, settings):
+        seen.append(settings["timeout_s"])
+        return "ok"
+
+    monkeypatch.setattr(llm, "_plugin", lambda data: plugin)
+    run(llm.complete(b.data, "s", [{"role": "user", "content": "m"}], timeout=300.7))
+    run(llm.complete(b.data, "s", [{"role": "user", "content": "m"}]))
+    assert seen == [300, b.data.settings.llm.timeout_s]
+
+
+def test_two_steps_that_name_the_same_reminder_have_buttons_of_their_own(
+    data_dir, tmp_path, monkeypatch
+):
+    """One reminder that said two things becomes two steps: a tap on one marks only what it says,
+    and the buttons of that reminder alone in another message never take over the step's."""
+    b, db = setup(data_dir, tmp_path)
+    day = soon()
+    a = db.add_reminder(-100, "ana", at(day, "21:30"), "Freeze the beef and keep 1 pepper", 7)
+    c = db.add_reminder(-100, "ana", at(day, "21:40"), "Keep 1 pepper", 7)
+    steps = [
+        {"text": "Freeze the beef", "ids": [a]},
+        {"text": "Keep 2 peppers, 1 for X and 1 for Y", "ids": [a, c]},
+    ]
+    fake_complete(monkeypatch, {"steps": steps})
+    clock(monkeypatch, at(day, "21:26"))
+    run(b.prepare_slots())
+    clock(monkeypatch, at(day, "21:30") + 30)
+    run(b.tick_once(None))
+    (sent,) = sends(b, -100)
+    data = [x["callback_data"] for x in buttons(sent)]
+    assert len(set(data)) == 4
+    press(b, sent, "1. ✅ Done", 7)
+    assert tasks.state(db, f"r:{a}") == tasks.DONE
+    assert tasks.state(db, f"r:{c}") == tasks.UNKNOWN
+    b.task_buttons(b.once_tasks([db.reminder(a)]))  # the morning asks about it on its own
+    press(b, sent, "2. ✅ Done", 7)
+    assert tasks.state(db, f"r:{c}") == tasks.DONE
+
+
+def test_chat_reminders_after_the_apps_own_time_are_rewritten_for_its_message(
+    data_dir, tmp_path, monkeypatch
+):
+    """The app's 21:30 message takes in the chat's reminders up to 22:00: the slot is the one it
+    sends, even when no chat reminder is due at 21:30."""
+    b, db = setup(data_dir, tmp_path)
+    s = evening_session(b.data)
+    b.data.settings.reminders = [BATCH]
+    a = db.add_reminder(-100, "ana", at(s.date, "21:45"), "Keep 1 green pepper", 7)
+    c = db.add_reminder(-100, "ana", at(s.date, "21:50"), "Keep 1 green pepper, cut the rest", 7)
+    calls = []
+    steps = [{"text": "Keep 2 green peppers; cut the rest", "ids": [a, c]}]
+    fake_complete(monkeypatch, {"steps": steps}, calls)
+    clock(monkeypatch, at(s.date, "21:20"))
+    run(b.prepare_slots())
+    assert len(calls) == 1
+    clock(monkeypatch, at(s.date, "21:30") + 10)
+    tick(b, s.date, "21:30", BATCH)
+    (sent,) = sends(b, -100)
+    assert "Batch cooking today" in sent["text"]
+    assert "Keep 2 green peppers; cut the rest" in sent["text"]
+    assert "Keep 1 green pepper" not in sent["text"]
+    assert {r["id"] for r in db.reminders(-100, "sent")} == {a, c}
+
+
+def test_food_that_ran_out_puts_a_lone_reminder_about_its_dish_in_doubt(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    rec = next(
+        r for r in b.data.recipes.values() if any(i.id in b.data.ingredients for i in r.ingredients)
+    )
+    iid = next(i.id for i in rec.ingredients if i.id in b.data.ingredients)
+    day = soon()
+    rid = db.add_reminder(
+        -100, "ana", at(day, "21:30"), "Cook it", 7, rec.id, day.isoformat(), "cook"
+    )
+    pantry.correct(b.data, db, {iid: 500})
+    assert not any("ran out" in x for x in b.slot_doubts([db.reminder(rid)]))
+    pantry.correct(b.data, db, {iid: 0})  # it ran out
+    (doubt,) = [x for x in b.slot_doubts([db.reminder(rid)]) if "ran out" in x]
+    assert b.data.ingredients[iid].name in doubt
+
+
+def test_the_rewrite_reads_what_the_chat_said_after_the_reminders_were_set(data_dir, tmp_path):
+    """The cook said nothing would be frozen after the thaw reminder was set: only the chat says
+    so, and the rewrite reads it."""
+    b, db = setup(data_dir, tmp_path)
+    day = soon()
+    rid = db.add_reminder(-100, "ana", at(day, "21:30"), "Thaw the turkey", 7)
+    before = db.add_chat(-100, "user", "ana", "Freeze everything")
+    after = db.add_chat(-100, "user", "ana", "Nothing gets frozen")
+    set_at = dt.datetime.now(dt.UTC) - dt.timedelta(hours=1)
+    with db.conn() as conn:
+        conn.execute(
+            "UPDATE chat SET ts=? WHERE id=?",
+            ((set_at - dt.timedelta(hours=1)).isoformat(timespec="seconds"), before),
+        )
+        conn.execute("UPDATE reminder SET created=? WHERE id=?", (set_at.isoformat(), rid))
+    assert after
+    facts = b.slot_facts([db.reminder(rid)], [])
+    assert "ana: Nothing gets frozen" in facts
+    assert "Freeze everything" not in facts

@@ -9,6 +9,9 @@ Providers (settings.yaml, `llm`):
 - plugin: a Python file under the data directory that defines
       def complete(system: str, messages: list[dict], settings: dict) -> str
   (or an async def). Use it for anything else: a local CLI, an internal gateway, a mock.
+  settings["timeout_s"] is how long the app waits for this call: llm.timeout_s, or less when the
+  call has less time (a reminder rewritten before it goes out). Past it the app stops waiting, so a
+  job the plugin runs should stop by then.
 Messages are [{"role": "user"|"assistant", "content": str}, ...].
 
 A plugin that keeps a conversation on its side (one ongoing session per chat, so each message sends
@@ -334,9 +337,15 @@ def _merge(messages: list[dict]) -> list[dict]:
     return out
 
 
-async def complete(data: Data, system: str, messages: list[dict]) -> str:
+async def complete(
+    data: Data, system: str, messages: list[dict], timeout: float | None = None
+) -> str:
+    """One answer to these messages. timeout: how long the caller waits, when it is shorter than
+    llm.timeout_s; a plugin gets it as settings["timeout_s"], so a job it runs stops by then
+    instead of running on in a thread nobody waits for."""
     cfg = data.settings.llm
     key = os.environ.get(cfg.api_key_env, "")
+    wait = min(180.0, timeout) if timeout else 180
     if cfg.provider == "none":
         raise LLMError("no provider configured")
     if cfg.provider == "openai":
@@ -347,7 +356,7 @@ async def complete(data: Data, system: str, messages: list[dict]) -> str:
             "max_tokens": cfg.max_tokens,
             "messages": [{"role": "system", "content": system}, *messages],
         }
-        async with httpx.AsyncClient(timeout=180) as c:
+        async with httpx.AsyncClient(timeout=wait) as c:
             r = await c.post(f"{base}/chat/completions", json=body, headers=headers)
         if r.status_code >= 400:
             raise LLMError(f"{r.status_code}: {r.text[:300]}")
@@ -361,17 +370,20 @@ async def complete(data: Data, system: str, messages: list[dict]) -> str:
             "system": system,
             "messages": messages,
         }
-        async with httpx.AsyncClient(timeout=180) as c:
+        async with httpx.AsyncClient(timeout=wait) as c:
             r = await c.post(f"{base}/v1/messages", json=body, headers=headers)
         if r.status_code >= 400:
             raise LLMError(f"{r.status_code}: {r.text[:300]}")
         return "".join(b.get("text", "") for b in r.json()["content"]).strip()
     if cfg.provider == "plugin":
         fn = _plugin(data)
+        settings = cfg.model_dump()
+        if timeout:
+            settings["timeout_s"] = max(1, int(min(timeout, cfg.timeout_s)))
         if inspect.iscoroutinefunction(fn):
-            out = await fn(system, messages, cfg.model_dump())
+            out = await fn(system, messages, settings)
         else:  # a blocking plugin runs off the event loop
-            out = await asyncio.to_thread(fn, system, messages, cfg.model_dump())
+            out = await asyncio.to_thread(fn, system, messages, settings)
         return str(out).strip()
     raise LLMError(f"unknown provider {cfg.provider}")
 

@@ -251,8 +251,6 @@ async def findings(
     else:  # nothing to make: the week as it stands, with what was there without this answer
         after = await asyncio.to_thread(as_is, data, db, today, offered)
         problems = after.pop("new", [])
-    if chat is not None:  # one reminder per slot, in every round: the revision must fix it too
-        problems = [*problems, *crowded(data, db, chat, offered)]
     if sent is not None:
         scope = RECHECK.format(problems="\n".join(f"- {p}" for p in sent))
     else:
@@ -304,62 +302,6 @@ def left_behind(db: DB, chat: int, offered: list[dict]) -> list[str]:
         "holds, leave it and say nothing about it."
     )
     return [said]
-
-
-def crowded(data: Data, db: DB, chat: int, offered: list[dict]) -> list[str]:
-    """A slot (the chat's reminders within tasks.MERGE_S of each other, which go out as one
-    message) the answer sets a reminder in and leaves holding more reminders than it needs: one,
-    or one per dish step when they are for different dishes or steps (the chains read each by its
-    dish field and kind, so those cannot be folded together). Steps that several answers wrote
-    for one slot repeat and contradict each other; the answer cancels the others and writes the
-    slot again as one. Certain, like the structural problems."""
-    zone = ZoneInfo(data.household.timezone)
-    gone = {int(r["cancel"]) for r in offered if str(r.get("cancel", "")).isdigit()}
-
-    def link(r: dict):
-        return (r["recipe"], str(r.get("date")), r.get("kind")) if r.get("recipe") else None
-
-    slot = [
-        (r["at"], r["id"], r["text"], link(r)) for r in db.reminders(chat) if r["id"] not in gone
-    ]
-    new = []
-    for r in offered:
-        if "cancel" in r:
-            continue
-        try:
-            when = dt.datetime.strptime(str(r.get("when")), "%Y-%m-%d %H:%M")
-        except ValueError:
-            continue
-        new.append((when.replace(tzinfo=zone).timestamp(), None, r.get("text") or "", link(r)))
-    out, said = [], set()
-    for at, *_ in new:
-        near = sorted(
-            (x for x in [*slot, *new] if abs(x[0] - at) <= tasks.MERGE_S), key=lambda x: x[0]
-        )
-        links = {x[3] for x in near if x[3]}
-        seen = tuple(sorted((x[0], x[1] or 0, x[2]) for x in near))
-        if len(near) <= max(1, len(links)) or seen in said:
-            continue
-        said.add(seen)
-        local = dt.datetime.fromtimestamp(near[0][0], zone)
-        steps = "; ".join(
-            (f"reminder {rid} (already set)" if rid else "listed in this answer") + f": «{text}»"
-            for _, rid, text, _ in near
-        )
-        old = [str(rid) for _, rid, _, _ in near if rid]
-        cancel = f"cancel {', '.join(old)} and " if old else ""
-        out.append(
-            f"{len(near)} reminders would go out together at about {local:%H:%M} on "
-            f"{WEEKDAYS[local.weekday()]} {local.date().isoformat()}, each as its own step: "
-            f"{steps}. One time holds one reminder (one per dish step only when they are for "
-            f"different dishes or steps, each with its dish field): {cancel}list one reminder for "
-            "that time whose text says every step once, in the order they are done, with no step "
-            "repeated or contradicting another, and where one food serves several things say the "
-            "amounts apart (for example: keep 2 green peppers, 1 for X and 1 for Y, and cut the "
-            "rest into strips)."
-            + (" It replaces reminders already set, so end its line with set." if old else "")
-        )
-    return out
 
 
 def structural(
