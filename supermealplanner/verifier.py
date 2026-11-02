@@ -108,8 +108,9 @@ Make three checks, separately, each on its own, then a fourth and a fifth:
 2. timeline: what is cooked when, which cooking session prepares what, and what has to be soaked,
    defrosted or cooked ahead. A dish must never count on a session that comes after it is eaten.
    Every step done ahead needs a reminder at the right time (soak the night before, defrost the
-   night before, cook or roast before the meal); the proposal's reminders block counts. The
-   structural problems the app found are certain: list each again here.
+   night before, cook or roast before the meal); the proposal's reminders block counts. Two
+   reminders at about the same time that repeat a step are a problem. The structural problems
+   the app found are certain: list each again here.
 3. health: each person's health record below (allergies, intolerances, diet rules, medicines and
    their food rules, fasting). An allergy or intolerance in that person's plate is always a
    problem; a diet rule broken is one; a meal inside a fasting window is one.
