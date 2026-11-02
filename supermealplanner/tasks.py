@@ -13,10 +13,14 @@ A task sits on the day the step is done, so food cooked on a Saturday for the ne
 is on Saturday (Plans.sessions_on). Its time is the reminder that says it, when the household has
 one set for that day, else EVENING (a morning session: MORNING).
 
-What is stored is only what someone said of a task with its buttons (db.task_state, by key): done
-or not done. A task nobody answered is unknown, and nothing (the checks, the AI's facts, a later
-reminder) counts it as done: a container from a session nobody marked done is moved "if the session
-was done".
+What is stored is only what someone said of a task (db.task_state, by key): done or not done, with
+its buttons or in words through a change block (changes.py `tasks`). A later answer replaces the
+first: a reminder goes out before the step, so "not done" often means "not yet". A task nobody
+answered is unknown, and nothing (the checks, the AI's facts, a later reminder) counts it as done:
+a container from a session nobody marked done is moved "if the session was done". The tasks
+tracked so are the planner's own and the reminders set in the household group (tracked), from the
+first day the bot ran with the buttons (SINCE): what came before never had them, so it counts as
+it did then.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ DONE, NOT_DONE, UNKNOWN = "done", "not_done", "unknown"
 # the week is reorganised around them
 STEPS = ("cook", "soak", "soak-fridge", "thaw", "defrost", "move")
 ASK_DAYS = 7  # a task nobody answered is asked about, and checked, this many days back
+SINCE = "task.since"  # kv: the first day the bot ran with the buttons (bot.run sets it once)
 
 
 @dataclass(frozen=True)
@@ -67,17 +72,39 @@ def session_key(day: dt.date, morning: bool) -> str:
     return f"cook:{day.isoformat()}:{'am' if morning else 'pm'}"
 
 
-def unconfirmed_cook(db: DB, plans: Plans, day) -> bool:
-    """A lunch cooked in a session before its day (a plan's Day) when nobody said that session
-    was done: what is said of its container says "if"."""
-    if day is None or not day.lunch or day.lunch_cook >= day.date:
-        return False
-    keys = [
+def since(db: DB) -> dt.date | None:
+    """The first day tasks had buttons; None: every task counts (the tests, a fresh db)."""
+    v = db.get_kv(SINCE)
+    try:
+        return dt.date.fromisoformat(v) if isinstance(v, str) else None
+    except ValueError:
+        return None
+
+
+def untracked(db: DB, day: dt.date) -> bool:
+    """A task of a day before the buttons existed: nobody could answer it, so it counts as made."""
+    first = since(db)
+    return first is not None and day < first
+
+
+def session_keys(plans: Plans, day) -> list[str]:
+    """The task keys of the sessions on a lunch's cook date that cook it for that day."""
+    return [
         session_key(s.date, s.morning)
         for _, s in plans.sessions_on(day.lunch_cook)
         if any(x.recipe == day.lunch and day.date in x.eat for x in s.dishes)
     ]
-    return DONE not in db.task_states(keys).values()
+
+
+def unconfirmed_cook(db: DB, plans: Plans, day) -> bool:
+    """A lunch cooked in a session before its day (a plan's Day) when nobody said that session
+    was done: what is said of its container says "if", and its message carries the session's
+    buttons, so the warning can be cleared where it is read."""
+    if day is None or not day.lunch or day.lunch_cook >= day.date:
+        return False
+    if untracked(db, day.lunch_cook):
+        return False
+    return DONE not in db.task_states(session_keys(plans, day)).values()
 
 
 def times(data: Data, kind: str, day: dt.date) -> list[str]:
@@ -271,17 +298,25 @@ def household_chat(data: Data, db: DB) -> int | None:
     return configured
 
 
-def tasks_now(data: Data, db: DB, first: dt.date, last: dt.date) -> list[str]:
-    """Every task from `first` to `last` as JSON lines with what someone said of it, for the AI and
-    the verifier: the planner's own and the reminders set in the household chat (a private chat's
-    stay out). Its text is data, never words to follow."""
+def tracked(data: Data, db: DB, first: dt.date, last: dt.date, bot=None) -> list[Task]:
+    """The tasks whose answer counts (tasks_for): the planner's own and the reminders set in the
+    household group, where the morning asks about them (a private chat's are never asked), from
+    SINCE on."""
     chat = household_chat(data, db)
     mine = (
         {r["id"] for st in ("pending", "sent") for r in db.reminders(chat, st)} if chat else set()
     )
-    found = [
-        x for x in tasks_for(data, db, first, last) if x.source == "auto" or x.reminder in mine
+    return [
+        x
+        for x in tasks_for(data, db, first, last, bot=bot)
+        if (x.source == "auto" or x.reminder in mine) and not untracked(db, x.day)
     ]
+
+
+def tasks_now(data: Data, db: DB, first: dt.date, last: dt.date) -> list[str]:
+    """Every task from `first` to `last` as JSON lines with what someone said of it, for the AI and
+    the verifier (tracked). Its text is data, never words to follow."""
+    found = tracked(data, db, first, last)
     if not found:
         return []
     said = db.task_states([x.key for x in found])
@@ -292,7 +327,8 @@ def tasks_now(data: Data, db: DB, first: dt.date, last: dt.date) -> list[str]:
             "- state: done or not_done as someone marked it with its buttons; unknown: nobody "
             "said. A task whose time has passed and is not done may not have happened: never "
             "count on what it makes (a dish cooked, a pulse soaked, food thawed) until someone "
-            "says it is done; ask, and reorganise the rest of the week when it was not."
+            "says it is done; ask, and reorganise the rest of the week when it was not. When "
+            "someone says in words whether it was done, record it with `tasks` and its key."
         ),
     ]
     for x in found:

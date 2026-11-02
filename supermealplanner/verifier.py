@@ -329,8 +329,10 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
     the check asks, so a plan already judged is judged again when the checks change."""
     found = doctor.problems(data, db, today)
     # a recipe nobody can have is about the library, not this plan, and names someone's food: the
-    # findings of this check reach private chats, so it stays out of the brief
-    problems = [p.text for p in found if p.kind not in (*SKIP, "avoided")]
+    # findings of this check reach private chats, so it stays out of the brief. A step nobody
+    # marked is asked about by the morning's day message, and its own turn reorganises the week:
+    # the plan check raising it too would be a second turn about the same step
+    problems = [p.text for p in found if p.kind not in (*SKIP, "avoided", "unconfirmed")]
     t = Translator(data.locale)
     monday = today - dt.timedelta(days=today.weekday())
     plans = Plans(data)

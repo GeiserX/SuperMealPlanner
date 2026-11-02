@@ -33,10 +33,13 @@ nothing happens. /reminders lists the ones set, with a button to cancel each.
 
 Every message that reminds of a task (tasks.py: a cooking session, a soak, a thaw, a container to
 move, the shopping, a reminder set from the chat) carries two buttons per task, done and not done;
-the first answer is stored with the task. The next morning's day message asks about each task of
-the last days nobody answered. A "not done", or no answer by then for a step something later hangs
-on (tasks.STEPS), starts a turn the bot asks itself to reorganise the rest of the week. Nothing
-counts a task as done until someone marked it done.
+the answer is stored with the task, and a later tap (or a `tasks` change block, for an answer given
+in words) changes it. A message that says "only if the session was done" of a lunch carries that
+session's buttons. The next morning's day message asks once about each task of the last days nobody
+answered. A "not done", or no answer by then for a step a dish still to come counts on (doctor's
+unconfirmed), starts a turn the bot asks itself to reorganise the rest of the week; a "done" after
+a "not done" starts one that puts back what was moved for it. Nothing counts a task as done until
+someone marked it done.
 
 Telegram shows a bot with privacy mode on (the default) only commands and replies to it, so for
 mentions (and edits of messages without one) make the bot a group admin or turn privacy off
@@ -208,6 +211,7 @@ TASK_BUTTONS = (
 TASK_BUTTONS_KEEP = 400  # Telegram's 64 bytes of callback data hold the short id, not the key
 TASK_ASKED = "task.asked"  # {task key: the morning the day message asked about it}: asked once
 TASK_WHAT = 80  # characters of a task's text where its buttons say which task is which
+TASK_CHANGE_DAYS = 31  # how far back a change block may say a task was done (a freezer lunch)
 # A spoken turn from the app (POST /api/v1/chef): the message it becomes carries its id under this
 # key, which no Telegram message has. Its answer is kept this long for the app to read.
 SPOKEN = "_spoken"
@@ -233,7 +237,6 @@ class Item:
     grant: dict | None = None
     # a photo or a file it carries, fetched when its turn starts {"file_id", "name", "mime", "size"}
     file: dict | None = None
-    task: str | None = None  # the turn reorganises the week around this task (a "not done")
 
 
 @dataclass
@@ -558,6 +561,8 @@ class Bot:
                     await self.learn_usernames(client)
                     await self.check_group(client, me)
                     if not self.started:  # once per process: a loop restart cuts nothing off
+                        if self.state.db.get_kv(tasklist.SINCE) is None:  # tasks.py: SINCE
+                            self.state.db.set_kv(tasklist.SINCE, self.state.today().isoformat())
                         await self.announce_version(client)
                         await self.interrupted(client)
                         await self.resume(client)
@@ -676,7 +681,6 @@ class Bot:
                         self.clock(),
                         x.get("grant"),
                         x.get("file"),
-                        x.get("task"),
                     )
                     for x in kept
                 ]
@@ -726,7 +730,6 @@ class Bot:
                     "who": add.who,
                     "grant": add.grant,
                     "file": add.file,
-                    "task": add.task,
                 }
             )
         else:
@@ -970,7 +973,6 @@ class Bot:
         log_mid: bool = True,
         grant: dict | None = None,
         file: dict | None = None,
-        task: str | None = None,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
@@ -993,7 +995,7 @@ class Bot:
                 spoken.row = row
                 self.spoken_rows[row] = spoken.id
             mid = (msg or {}).get("message_id")
-            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file, task)
+            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file)
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
@@ -1235,9 +1237,6 @@ class Bot:
             }
             if llm.asks(data):
                 turn["ask"] = self._asker(client, turn_state)
-            steps = [i.task for i in items if i.task]
-            if steps:  # a task not done: the answer reorganises the week around it
-                turn["task"] = steps[0]
             try:
                 reply = await asyncio.wait_for(
                     llm.converse(data, turn), timeout=data.settings.llm.timeout_s
@@ -2089,6 +2088,20 @@ class Bot:
         except changes.ChangeError as e:
             return self.refused(pending, e)
         lines = changes.describe(proposal, self.data, t)
+        if proposal.tasks:  # before anything is written: a task the list does not have
+            today = self.state.today()
+            known = {
+                x.key
+                for x in tasklist.tasks_for(
+                    self.data,
+                    self.state.db,
+                    today - dt.timedelta(days=TASK_CHANGE_DAYS),
+                    today + dt.timedelta(days=13),
+                )
+            }
+            gone = sorted(set(proposal.tasks) - known)
+            if gone:
+                return self.refused(pending, f"no task {', '.join(gone)}; use the keys under Tasks")
         out, sha = [], None
         retired = changes.retired(proposal, self.data)
         if (
@@ -2153,7 +2166,10 @@ class Bot:
                 return "\n".join([*out, self.refused(pending, type(e).__name__, saving=True)])
         if proposal.pantry:  # the database, like the menu: no token needed
             await asyncio.to_thread(pantry.correct, self.data, self.state.db, proposal.pantry)
-        if sha or proposal.plan or proposal.pantry:
+        if proposal.tasks:  # what someone said in words of a step, as its buttons would store it
+            for key, state in proposal.tasks.items():
+                self.state.db.mark_task(key, state, pending.get("asker"))
+        if sha or proposal.plan or proposal.pantry or proposal.tasks:
             done = changes.summary(proposal, self.data, t)
             link = self.change_link(proposal)
             out.insert(0, f"{done}\n{link}" if link else done)
@@ -2823,22 +2839,38 @@ class Bot:
         )
 
     def reminder_tasks(self, r, day: dt.date) -> list[tasklist.Task]:
-        """The tasks a reminder of the settings says on that day, each to be marked done."""
+        """The tasks a reminder of the settings says on that day, each to be marked done. A message
+        that says "only if the session was done" of a lunch carries that session's buttons too, so
+        the warning can be cleared where it is read."""
         if r.kind == "batch":
             return self.batch_jobs(day)
         if r.kind in ("shopping", "defrost"):
             kind = "shop" if r.kind == "shopping" else "defrost"
-            return [x for x in self.kitchen_tasks(day, day) if x.kind == kind]
+            out = [x for x in self.kitchen_tasks(day, day) if x.kind == kind]
+            if r.kind == "defrost" and out:
+                out += self.if_cooked(day + dt.timedelta(days=1))
+            return out
+        if r.kind == "day" or (r.kind == "meal" and r.meal == "lunch"):
+            return self.if_cooked(day)
         return []
+
+    def if_cooked(self, day: dt.date) -> list[tasklist.Task]:
+        """The sessions a lunch of `day` counts on when nobody said they were done (the "if" its
+        messages say: tasks.unconfirmed_cook)."""
+        plans = Plans(self.data)
+        d = plans.day(day)
+        if not tasklist.unconfirmed_cook(self.state.db, plans, d):
+            return []
+        keys = set(tasklist.session_keys(plans, d))
+        return [x for x in self.kitchen_tasks(d.lunch_cook, d.lunch_cook) if x.key in keys]
 
     def unanswered(self, day: dt.date) -> list[tasklist.Task]:
         """The tasks of the tasks.ASK_DAYS before `day` nobody marked and nobody was asked about
-        yet: the chat's own reminders only from the household group, where the question goes."""
+        yet (tasks.tracked: the chat's own reminders only from the household group, where the
+        question goes, and nothing from before the buttons existed)."""
         db = self.state.db
         first = day - dt.timedelta(days=tasklist.ASK_DAYS)
-        found = self.kitchen_tasks(first, day - dt.timedelta(days=1))
-        group = {r["id"] for st in ("pending", "sent") for r in db.reminders(self.chat_id, st)}
-        found = [x for x in found if x.source == "auto" or x.reminder in group]
+        found = tasklist.tracked(self.data, db, first, day - dt.timedelta(days=1), bot=self)
         said = db.task_states([x.key for x in found])
         asked = db.get_kv(TASK_ASKED) or {}
         return [x for x in found if x.key not in said and x.key not in asked]
@@ -2874,11 +2906,11 @@ class Bot:
         db.set_kv(TASK_BUTTONS, dict(list(kept.items())[-TASK_BUTTONS_KEEP:]))
         return lines, rows
 
-    def reorganise(self, client, chat: int, who, text: str, task: str) -> None:
+    def reorganise(self, client, chat: int, who, text: str) -> None:
         """A turn the bot asks itself to reorganise the rest of the week around a task."""
         if self.data.settings.llm.provider == "none":
             return
-        self.take(chat, {"first_name": self.t("task_who")}, who, None, text, True, task=task)
+        self.take(chat, {"first_name": self.t("task_who")}, who, None, text, True)
         self.spawn(self.drive(client, chat))
 
     def _session_reminded(self, cook: tasklist.Task, day: dt.date) -> bool:
@@ -2988,7 +3020,8 @@ class Bot:
             marked = self.state.db.task_states([x.key for x in own])
             own = [x for x in own if x.key not in marked]
             # the morning's day message asks about what nobody marked in the last days
-            ask = self.unanswered(day) if any(r.kind == "day" for r in rs) else []
+            fresh = self.unanswered(day) if any(r.kind == "day" for r in rs) else []
+            ask = [x for x in fresh if x.key not in {y.key for y in own}]
             lines, rows = self.task_buttons(own + ask)
             if own and len(lines) > 1:
                 said.append("\n".join(lines[: len(own)]))
@@ -2999,14 +3032,24 @@ class Bot:
                 await self.send(client, chat, "\n\n".join(said), **more)
             for r in rs:  # only after Telegram took it
                 self.state.db.mark_sent(r.id, day, at)
-            if ask:
-                self.mark_asked(ask, day)
-                steps = [(x, w) for x, w in zip(ask, lines[len(own) :]) if x.kind in tasklist.STEPS]
-                if steps:
-                    text = self.t(
-                        "task_unanswered_turn", tasks="; ".join(f"{w} ({x.key})" for x, w in steps)
-                    )
-                    self.reorganise(client, chat, None, text, steps[0][0].key)
+            if fresh:
+                self.mark_asked(fresh, day)
+                await self.reorganise_unanswered(client, chat, fresh, day)
+
+    async def reorganise_unanswered(self, client, chat, fresh: list[tasklist.Task], day) -> None:
+        """A turn about the steps just asked about, only those a dish still to come counts on
+        (doctor's unconfirmed): a session whose dishes were all eaten, or a defrost of a lunch
+        already gone, changes nothing in the week and gets only its buttons."""
+        try:
+            found = await asyncio.to_thread(doctor.problems, self.data, self.state.db, day)
+        except Exception as e:  # noqa: BLE001  the buttons are out; only the turn is lost
+            log.warning("the consistency check failed: %s", safe(e))
+            return
+        hangs = {p.key.removeprefix("unconfirmed:") for p in found if p.kind == "unconfirmed"}
+        steps = [x for x in fresh if x.key in hangs]
+        if steps:
+            what = "; ".join(f"{self.task_what(x)} ({x.key})" for x in steps)
+            self.reorganise(client, chat, None, self.t("task_unanswered_turn", tasks=what))
 
     def mark_asked(self, found: list[tasklist.Task], day: dt.date) -> None:
         """Remember that these tasks were asked about, for the ASK_DAYS they could be again."""
@@ -3579,13 +3622,17 @@ class Bot:
         await self.rekey(client, chat_id, message.get("message_id"), rows)
 
     async def tapped_task(self, client, query, chat_id: int, sid: str, choice: str) -> None:
-        """Done or not done, from a task's buttons: stored once (a second tap changes nothing), its
-        row says what was chosen, the chat log has it as that person's answer, and a "not done"
-        starts a turn that reorganises the rest of the week around it."""
+        """Done or not done, from a task's buttons. A later tap changes the answer (a reminder goes
+        out before the step: "not done" often means "not yet"), and both buttons stay, the chosen
+        one marked. The chat log has the answer as that person's. A new "not done" starts a turn
+        that reorganises the rest of the week around it; a "done" after a "not done" starts one
+        that checks what was moved for it still holds."""
         db, t = self.state.db, self.t
         item = (db.get_kv(TASK_BUTTONS) or {}).get(sid)
         message = query.get("message") or {}
-        if item is None or choice not in ("y", "n"):
+        key = (item or {}).get("key", "")
+        r = db.reminder(int(key[2:])) if key.startswith("r:") and key[2:].isdigit() else None
+        if item is None or choice not in ("y", "n") or (r and r["state"] == "cancelled"):
             await self.toast(client, query, t("tap_gone"))
             return
         uid = (query.get("from") or {}).get("id")
@@ -3594,32 +3641,43 @@ class Bot:
             await self.toast(client, query, t("task_not_yours"))
             return
         state = tasklist.DONE if choice == "y" else tasklist.NOT_DONE
-        fresh = db.mark_task(item["key"], state, who)
-        state = tasklist.state(db, item["key"])  # a second tap: what the first one said
+        before = db.mark_task(key, state, who)
         label = t("task_marked_done" if state == tasklist.DONE else "task_marked_not_done")
         await self.toast(client, query, label)
         rows = []
         for row in (message.get("reply_markup") or {}).get("inline_keyboard") or []:
             ours = any(str(b.get("callback_data", "")).startswith(f"d:{sid}:") for b in row)
             if ours:
-                pre = re.match(r"\d+\. ", row[0].get("text", "")) if row else None
-                rows.append([((pre.group(0) if pre else "") + label, "x")])
+                found = re.match(r"\d+\. ", row[0].get("text", "")) if row else None
+                pre = found.group(0) if found else ""
+                done = state == tasklist.DONE
+                rows.append(
+                    [
+                        (pre + t("task_marked_done" if done else "task_done"), f"d:{sid}:y"),
+                        (
+                            pre + t("task_not_done" if done else "task_marked_not_done"),
+                            f"d:{sid}:n",
+                        ),
+                    ]
+                )
             else:
                 rows.append([(b.get("text", ""), b.get("callback_data", "x")) for b in row])
         await self.rekey(client, chat_id, message.get("message_id"), rows)
-        if not fresh:
+        if before == state:
             return
         db.add_chat(chat_id, "user", who, f"{label}: {item['what']}", asked=True)
-        if state == tasklist.NOT_DONE and item.get("kind") != "note":
-            day = dt.date.fromisoformat(item["day"])
-            text = t(
-                "task_not_done_turn",
-                name=self.data.household.person(who).name,
-                task=item["what"],
-                step=item["key"],
-                date=t.date(day),
-            )
-            self.reorganise(client, chat_id, who, text, item["key"])
+        if item.get("kind") == "note":
+            return
+        words = {
+            "name": self.data.household.person(who).name,
+            "task": item["what"],
+            "step": key,
+            "date": t.date(dt.date.fromisoformat(item["day"])),
+        }
+        if state == tasklist.NOT_DONE:
+            self.reorganise(client, chat_id, who, t("task_not_done_turn", **words))
+        elif before == tasklist.NOT_DONE:
+            self.reorganise(client, chat_id, who, t("task_done_after_all_turn", **words))
 
 
 def _for_handle(msg: dict) -> bool:

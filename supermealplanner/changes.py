@@ -17,6 +17,8 @@ The AI ends an answer with one fenced block:
       - set: {date: 2026-01-14, meal: dinner, recipe: tuna-salad}
     ingredients:    # new ones only, so a recipe can use them and they land on the shopping list
       basmati: {name: Basmati rice, section: pantry, store: corner-shop, unit: g}
+    tasks:          # what someone said in words of a step (tasks.py): done, not_done, unknown
+      cook:2026-01-10:pm: done
     ```
 
 Only the paths in ALLOWED can change; pills, calorie and protein targets and goals never can. Avoided
@@ -32,6 +34,7 @@ shows the change for a person to make.
 
 from __future__ import annotations
 
+import datetime as dt
 import difflib
 import io
 import json
@@ -109,6 +112,9 @@ INSTRUCTIONS_MAX = 4000  # characters of the assistant's own instructions a chat
 LISTS_BY_ID = {"people", "reminders"}  # lists whose items are addressed by their id
 BLOCK = re.compile(r"```change[ \t]*\n(.*?)```", re.DOTALL)
 RECIPE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+# tasks.py keys: cook:<date>:pm, r:<id>, ...
+TASK_KEY = re.compile(r"[a-z-]{1,16}:[A-Za-z0-9:._-]{1,120}")
+TASK_STATES = ("done", "not_done", "unknown")
 SEGMENT = re.compile(r"[A-Za-z0-9_-]{1,64}")
 GIT_LOCK = threading.Lock()  # one git command sequence at a time in the data folder
 
@@ -135,6 +141,7 @@ class Proposal:
     plan: list[menu.Op] = field(default_factory=list)  # menu changes, written under state/
     pantry: dict[str, float] = field(default_factory=dict)  # ingredient -> amount at home now
     ingredients: dict[str, dict] = field(default_factory=dict)  # new ingredient id -> its fields
+    tasks: dict[str, str] = field(default_factory=dict)  # task key -> done, not_done or unknown
     asked: bool = False  # the person asked for exactly this: no yes/no round
     raw: dict = field(default_factory=dict)  # JSON-safe, kept while the bot waits for a yes
 
@@ -173,7 +180,7 @@ OWN = {"avoid", "swaps", "training_days"}
 def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
     """Check a proposed change against the allow-list, for the household member who asked. Raises
     ChangeError with the reason."""
-    known = {"set", "recipe", "recipes", "notes", "plan", "pantry", "ingredients", "asked"}
+    known = {"set", "recipe", "recipes", "notes", "plan", "pantry", "ingredients", "tasks", "asked"}
     if set(raw) - known:
         raise ChangeError(
             f"unknown keys {sorted(set(raw) - known)}; use {', '.join(sorted(known))}"
@@ -278,6 +285,7 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
             raise ChangeError(str(e)) from None
     out.ingredients = _ingredients(raw.get("ingredients"), data)
     out.pantry = _pantry(raw.get("pantry"), data, out.ingredients)
+    out.tasks = _tasks(raw.get("tasks"))
     if not (
         out.edits
         or out.recipe is not None
@@ -286,6 +294,7 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
         or out.plan
         or out.pantry
         or out.ingredients
+        or out.tasks
     ):
         raise ChangeError("the change is empty")
     return out
@@ -342,6 +351,25 @@ def _pantry(raw, data: Data, new: dict | None = None) -> dict[str, float]:
             unit = data.ingredients[iid].unit if iid in data.ingredients else new[iid].get("unit")
             raise ChangeError(f"pantry.{iid} is an amount in {unit}, 0 to {PANTRY_MAX}")
         out[str(iid)] = float(qty)
+    return out
+
+
+def _tasks(raw) -> dict[str, str]:
+    """`tasks: {<task key>: done|not_done|unknown}`: what someone said in words of a step, as its
+    buttons would store it. The keys are the ones the facts list under Tasks; the bot checks the
+    task exists when it applies the change."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        raise ChangeError("tasks must map a task key to done, not_done or unknown")
+    out = {}
+    for key, state in raw.items():
+        key = str(key)
+        if not TASK_KEY.fullmatch(key):
+            raise ChangeError(f"{key} is not a task key; use one of the keys under Tasks")
+        if state not in TASK_STATES:
+            raise ChangeError(f"tasks.{key} is done, not_done or unknown")
+        out[key] = str(state)
     return out
 
 
@@ -523,7 +551,22 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
         else:
             line = t("change_pantry_out", name=ing.name)
         lines.append(f"• {line}")
+    for key, state in p.tasks.items():
+        lines.append("• " + task_line(key, state, t))
     return lines
+
+
+def task_line(key: str, state: str, t) -> str:
+    """A task's answer in plain words: what kind of step, its day, and what was said."""
+    kind, _, rest = key.partition(":")
+    day = next((x for x in rest.split(":") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", x)), None)
+    kind = kind if kind in ("cook", "soak", "thaw", "defrost", "shop") else "other"
+    what = t(f"change_task_{kind}")
+    try:
+        what += " " + t.date(dt.date.fromisoformat(day)) if day else ""
+    except ValueError:  # not a real day: the key alone says it
+        what += f" {key}"
+    return t("change_task", task=what, state=t(f"change_task_{state}"))
 
 
 def summary(p: Proposal, data: Data, t) -> str:
@@ -555,6 +598,8 @@ def summary(p: Proposal, data: Data, t) -> str:
         parts.append(t("change_part_ingredient", name=fields["name"]))
     if p.pantry:
         parts.append(t("change_part_pantry"))
+    if p.tasks:
+        parts.append(t("change_part_tasks"))
     return t("change_done", what=", ".join(dict.fromkeys(parts)))
 
 
@@ -633,6 +678,7 @@ def touches(p: Proposal) -> set[tuple]:
             out.add(("plan", op.kind, *sorted(f"{k}={v}" for k, v in op.args.items())))
     out |= {("pantry", iid) for iid in p.pantry}
     out |= {("ingredient", iid) for iid in p.ingredients}
+    out |= {("task", key) for key in p.tasks}
     return out
 
 
