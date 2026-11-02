@@ -39,7 +39,10 @@ by their step kind (a reminder that says no step counts as none):
   reminder of kind soak-fridge, in the fridge).
 - thaw_long: a thaw (the app's, a container out of the freezer, a reminder of kind thaw) whose
   cook comes more than THAW_MAX_H after it: the session that cooks the dish, a reminder of kind
-  cook, or the meal.
+  cook, or the meal. The app's own thaw is food marked `frozen`, served with the meal (bread), so
+  its meal is what uses it, also for a lunch a session cooked days before.
+- thaw_uncooked: a thaw of kind thaw from the chat after the last cook of its dish (a lunch a
+  session cooked before the thaw), or with nothing to cook it: what comes out waits uncooked.
 - avoided: a recipe on some meal that uses a food someone avoids. The planner never picks it, so
   it never reaches the menu and nothing else ever looks at it again: swap the food or retire it.
 - going_off: food in the pantry (pantry.py) that goes off before any planned dish uses it up,
@@ -409,7 +412,8 @@ def _chains(
         return f"{_day(t.date())} {t:%H:%M}"
 
     def hours(a: dt.datetime, b: dt.datetime) -> float:
-        return (b - a).total_seconds() / 3600
+        # in real time: the same zone on both sides subtracts clock faces, an hour off across DST
+        return (b.astimezone(dt.UTC) - a.astimezone(dt.UTC)).total_seconds() / 3600
 
     start = at(today)
     first = today - dt.timedelta(days=3)  # a soak or thaw a few days back still counts
@@ -574,8 +578,10 @@ def _thaws(data, plans, today, found, sessions, steps, at, when, hm, hours) -> l
             continue  # the menu dropped the dish: the stale reminder check says so
         eat = at(x.eat, MEAL_HOURS[meal][0])
         counts = meal == "lunch" and day.lunch_cook < x.eat
-        if x.kind == "defrost":
-            cooks = [eat]  # a cooked container: it is warmed up for the meal
+        if x.kind == "defrost" or x.source == "auto":
+            # a cooked container is warmed up for the meal; the app's own thaw is food marked
+            # `frozen`, served with the meal (bread), so the meal is what uses it
+            cooks = [eat]
         else:
             cooks = [c for c in sessions.get((x.recipe, x.eat), []) if c < eat]
             cooks += [
@@ -585,16 +591,34 @@ def _thaws(data, plans, today, found, sessions, steps, at, when, hm, hours) -> l
             ]
             if not counts:
                 cooks.append(eat)
+        r = data.recipes[x.recipe]
+        which = f" (reminder {x.reminder})" if x.reminder else ""
         after = [c for c in cooks if c >= t0]
-        if not after:
-            continue  # cooked before this thaw: it is not the thaw of that cook
+        if not after:  # the dish is cooked before this thaw: what comes out of the freezer waits
+            key = f"thaw_uncooked:{x.recipe}:{x.eat.isoformat()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            done = max(cooks) if cooks else None
+            out.append(
+                Problem(
+                    "thaw_uncooked",
+                    key,
+                    f"{r.name} [{r.id}], {meal} on {_day(x.eat)}, is thawed on {hm(t0)}{which}, "
+                    + (f"after it is cooked on {hm(done)}" if done else "and nothing cooks it")
+                    + ", so nothing cooks what comes out of the freezer. Fix: move the thaw to "
+                    f"the {THAW_MAX_H} h before the cook (cancel its reminder and list it again), "
+                    "or cancel it if nothing raw is thawed (food marked frozen that is served "
+                    "with the meal, like bread, the app already says the evening before).",
+                    {"dish": r.name, "date": x.eat, "thaw": t0.date()},
+                )
+            )
+            continue
         cook = min(after)
         key = f"thaw_long:{x.recipe}:{x.eat.isoformat()}"
         if hours(t0, cook) <= THAW_MAX_H or key in seen:
             continue
         seen.add(key)
-        r = data.recipes[x.recipe]
-        which = f" (reminder {x.reminder})" if x.reminder else ""
         out.append(
             Problem(
                 "thaw_long",

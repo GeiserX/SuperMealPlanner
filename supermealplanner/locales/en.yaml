@@ -388,6 +388,7 @@ problem_no_cook: "{dish} on {date} has {food}, dried, and nothing cooks it befor
 problem_no_soak: "{dish} on {date} has {food} cooked on {cook}, and nothing has it soaked the day before"
 problem_soak_long: "{food} for {dish} on {date} soaks from {soak} to {cook}, longer than it may"
 problem_thaw_long: "{dish} on {date} is thawed on {thaw} but only cooked on {cook}, more than two days later"
+problem_thaw_uncooked: "{dish} on {date} is thawed on {thaw}, after it is already cooked, so nothing cooks what comes out of the freezer"
 problem_avoided: "{dish} uses {food}, which one of us does not eat, so it never reaches the menu"
 
 # the virtual pantry (pantry.py): the list page's section and changes from the chat

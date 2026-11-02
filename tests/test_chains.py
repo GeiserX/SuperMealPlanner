@@ -5,7 +5,10 @@ and a thaw whose session moved days later."""
 
 import datetime as dt
 
-from supermealplanner import doctor
+import yaml
+
+from supermealplanner import doctor, tasks
+from supermealplanner.model import load
 
 from .conftest import MONDAY
 from .test_doctor import D, edit_plan
@@ -116,3 +119,80 @@ def test_a_lunch_counting_on_a_session_that_does_not_cook_it_is_caught(data_dir,
     day = doctor.Plans(data).day(D(9))
     p = found(data, db)[f"no_session:{day.lunch}:{D(9)}"]
     assert "tuesday 2026-10-20" in p.text and day.lunch in p.text
+
+
+def test_a_thaw_after_the_session_that_already_cooked_the_dish_is_caught(data_dir, tmp_path):
+    """Tuesday's hake lunch is cooked in Saturday's session; a thaw set from the chat for Monday
+    night takes raw hake out for food cooked three days before, and nothing cooks it."""
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir)
+    tuesday = D(8)
+    change(
+        data,
+        {
+            "set": {
+                "date": str(tuesday),
+                "meal": "lunch",
+                "recipe": "pescado-batch",
+                "cook": str(D(5)),
+            }
+        },
+    )
+    rid = remind(db, D(7), "20:00", "pescado-batch", tuesday, "thaw")
+    p = found(data, db)[f"thaw_uncooked:pescado-batch:{tuesday}"]
+    assert "monday 2026-10-19 20:00" in p.text and f"(reminder {rid})" in p.text
+    assert "saturday 2026-10-17" in p.text and "pescado-batch" in p.text
+    # the same thaw on Friday night, before the session: the chain holds
+    db.settle_reminder(rid, "cancelled")
+    remind(db, D(4), "22:00", "pescado-batch", tuesday, "thaw")
+    assert not [k for k in found(data, db) if "pescado-batch" in k]
+
+
+def test_the_apps_own_thaw_of_frozen_food_is_used_by_the_meal(data_dir, tmp_path):
+    """Food marked frozen is served with the meal (bread): the app takes it out the evening before
+    the day it is eaten, also for a lunch a session cooked days before, and that is no problem."""
+    _b, db = setup(data_dir, tmp_path)
+    raw = yaml.safe_load((data_dir / "ingredients.yaml").read_text())
+    raw["merluza"]["frozen"] = True
+    (data_dir / "ingredients.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    soak(data_dir)
+    data = load(data_dir)
+    tuesday = D(8)
+    change(
+        data,
+        {
+            "set": {
+                "date": str(tuesday),
+                "meal": "lunch",
+                "recipe": "pescado-batch",
+                "cook": str(D(5)),
+            }
+        },
+    )
+    keys = [x.key for x in tasks.tasks_for(data, db, D(5), tuesday)]
+    assert f"thaw:{tuesday}:lunch:merluza" in keys  # the app's own thaw, on Monday evening
+    assert not [k for k in found(data, db) if "pescado-batch" in k]
+
+
+def test_a_soak_across_the_clock_change_is_counted_in_real_hours(data_dir, tmp_path):
+    """The clocks go back on Sunday 25 October: 18:30 on Saturday to 18:00 on Sunday reads 23.5 h
+    on the clock face, but the chickpeas are 24.5 h in water."""
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir)
+    sunday = D(13)
+    dinner(data, sunday)
+    remind(db, D(13), "18:00", SALAD, sunday, "cook")
+    remind(db, D(12), "18:30", SALAD, sunday, "soak")
+    p = found(data, db)[f"soak_long:{SALAD}:{sunday}"]
+    assert "24 h in water" in p.text or "25 h in water" in p.text
+
+
+def test_cancelling_the_only_cook_reminder_breaks_the_chain(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir)
+    dinner(data, D(2))
+    remind(db, D(1), "21:00", SALAD, D(2), "soak")
+    cook = remind(db, D(2), "12:00", SALAD, D(2), "cook")
+    assert not [k for k in found(data, db) if SALAD in k]
+    for cancel in (cook, str(cook)):
+        assert f"no_cook:{SALAD}:{D(2)}" in found(data, db, offered=[{"cancel": cancel}])
