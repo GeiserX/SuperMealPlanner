@@ -68,7 +68,7 @@ import time
 import unicodedata
 import uuid
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -209,7 +209,13 @@ REMIND_TTL = 1800  # an offer can be tapped this long; then nothing is done
 REMIND_WHAT = 20  # characters of a reminder's text on its buttons
 REMIND_DAYS = 60  # the furthest ahead a reminder may be
 LATE_S = 600  # a reminder posted this much after its time says so
-MERGE_S = 1800  # reminders of one chat this close go out as one message, at the earliest time
+MERGE_S = tasklist.MERGE_S  # reminders of one chat this close go out as one message, the earliest
+SLOTS = "bot.slots"  # {"id,id,...": the slot's rewrite}: one consistent message for a slot
+SLOT_AHEAD_S = 300  # a slot is rewritten this long before it goes out, so it still leaves on time
+SLOT_TIMEOUT_S = 90  # the rewrite's one AI call; past it the slot goes out as it was set
+SLOT_KEEP_S = 2 * 86400  # a rewrite is kept this long (a slot that changed never uses it)
+# the steps a later one counts on: one of them nobody marked done makes the slot say "if"
+SLOT_NEEDS = tasklist.STEPS
 TASK_BUTTONS = (
     "task.buttons"  # {short id: {"key", "what", "kind", "day"}}: the tasks under messages
 )
@@ -222,6 +228,24 @@ TASK_CHANGE_DAYS = 31  # how far back a change block may say a task was done (a 
 SPOKEN = "_spoken"
 SPOKEN_TTL = 3600
 SPOKEN_MAX = 2000  # the longest thing anyone says in one go, as characters
+SLOT_SYSTEM = """Reminders set in a household's chat at different times, by different answers, go
+out together as one message to the person who does them. They can repeat each other, contradict
+each other, or count on something that did not happen. Write them again as one consistent message
+from the state below, as it is now:
+- every step once: two reminders that say the same step become one step; where they disagree, the
+  state below wins, then the newest reminder (the highest id);
+- where one food serves several things, say the amounts apart (for example: keep 2 green peppers,
+  1 for X and 1 for Y, and cut the rest into strips);
+- leave out what the state contradicts: a dish no longer on that day's menu, food the pantry says
+  ran out, a thaw or a defrost of food nobody froze;
+- a step that counts on another (a soak, a thaw, a cooking session) nobody marked done is said
+  with an if: "if you soaked the chickpeas last night, cook them; if not, ...";
+- short and plain, written to the person who does it, in the household's language ({locale}); no
+  greeting and no links (the app adds the recipe links).
+Answer with JSON only: {{"steps": [{{"text": "...", "ids": [the ids of the reminders this step
+says]}}], "dropped": [the ids of reminders none of whose step still holds]}}. One step per thing
+to do, in the order they are done. Every id goes in a step or in dropped, never both."""
+
 # (chat id, list) pairs: each list collects what the bot says in that chat while a spoken turn
 # listens. A context variable, so only the task running that turn (and what it starts) is heard,
 # never a typed command answered in the same chat at the same moment.
@@ -322,6 +346,8 @@ class Bot:
         self.planned_at: float | None = None  # clock() of the last plan check started
         self.checking = False  # a plan check runs
         self.announce_since: dict[str, float] = {}  # a new plan -> clock() its announcement waits
+        self.slot_tried: set[str] = set()  # slots (_slot_key) a rewrite was tried for, once each
+        self.preparing = False  # prepare_slots runs
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -779,6 +805,7 @@ class Bot:
                 await self.tick_once(client)
             except Exception as e:  # noqa: BLE001
                 log.warning("one-off reminder tick failed: %s", safe(e))
+            self.start_prepare()
             try:
                 await self.tick_checkup(client)
             except Exception as e:  # noqa: BLE001
@@ -2926,10 +2953,14 @@ class Bot:
         text = " ".join(_LINK.sub(r"\1", text).split())
         return text if len(text) <= TASK_WHAT else text[: TASK_WHAT - 1].rstrip() + "…"
 
-    def task_buttons(self, found: list[tasklist.Task]) -> tuple[list[str], list]:
+    def task_buttons(
+        self, found: list[tasklist.Task], together: dict[str, list[str]] | None = None
+    ) -> tuple[list[str], list]:
         """One row of done / not done per task, and each task's line ("n. what" when there are
         several, so the numbers on the buttons say which is which). Each task is kept under a short
-        id (TASK_BUTTONS): callback data holds 64 bytes, a key may not fit."""
+        id (TASK_BUTTONS): callback data holds 64 bytes, a key may not fit. together: a step of a
+        rewritten slot (once_steps) that says several reminders' steps at once, by its key: its
+        buttons mark every one of them."""
         if not found:
             return [], []
         t, db = self.t, self.state.db
@@ -2941,6 +2972,9 @@ class Bot:
             what = self.task_what(x)
             kept.pop(sid, None)  # the newest last, so the oldest go first
             kept[sid] = {"key": x.key, "what": what, "kind": x.kind, "day": x.day.isoformat()}
+            keys = (together or {}).get(x.key) or []
+            if len(keys) > 1:
+                kept[sid]["keys"] = keys
             pre = f"{n}. " if many else ""
             lines.append(pre + what)
             rows.append(
@@ -3089,7 +3123,8 @@ class Bot:
             # the morning's day message asks about what nobody marked in the last days
             fresh = self.unanswered(day) if any(r.kind == "day" for r in rs) else []
             ask = [x for x in fresh if x.key not in {y.key for y in own}]
-            lines, rows = self.task_buttons(own + self.once_tasks(once) + ask)
+            steps, texts, together, dropped = self.once_steps(once, now.timestamp())
+            lines, rows = self.task_buttons(own + steps + ask, together)
             if own and len(lines) > 1:
                 said.append("\n".join(lines[: len(own)]))
             if once:
@@ -3099,13 +3134,12 @@ class Bot:
                 many = len(lines) > 1
                 said.append(
                     "\n".join(
-                        (f"{n}. " if many else "" if names else "⏰ ")
-                        + self.once_line(r, now.timestamp())
-                        for n, r in enumerate(once, len(own) + 1)
+                        (f"{n}. " if many else "" if names else "⏰ ") + x
+                        for n, x in enumerate(texts, len(own) + 1)
                     )
                 )
             if ask:
-                start = len(own) + len(once)
+                start = len(own) + len(steps)
                 said.append(self.t("task_ask_title") + "\n" + "\n".join(lines[start:]))
             if said:
                 more = {"buttons": rows} if rows else {}
@@ -3116,8 +3150,7 @@ class Bot:
                         for r in once:
                             self.state.db.settle_reminder(r["id"], "failed")
                     raise
-            for r in once:  # only after Telegram took it
-                self.state.db.settle_reminder(r["id"], "sent")
+            self.settle_slot(once, dropped)  # only after Telegram took it
             for r in rs:
                 self.state.db.mark_sent(r.id, day, at)
             if fresh:
@@ -3532,30 +3565,22 @@ class Bot:
     async def tick_once(self, client) -> None:
         """Post every one-off reminder whose time has come, naming the person it is for, then mark
         it sent. The chat's others due within MERGE_S go in the same message, early, each on its
-        own numbered line with its own buttons. One Telegram refuses for good (the chat is gone) is
+        own numbered line with its own buttons, or as the slot's rewrite (once_steps) when one was
+        made for exactly these reminders. One Telegram refuses for good (the chat is gone) is
         marked failed, with every reminder it carried."""
-        now, seen = time.time(), set()
-        for first in self.state.db.due_reminders(now):
-            if first["id"] in seen:
-                continue
-            near = [
-                r
-                for r in self.state.db.reminders(first["chat"])
-                if r["at"] <= first["at"] + MERGE_S and r["id"] not in seen
-            ]
-            seen |= {r["id"] for r in near} | {first["id"]}
+        now = time.time()
+        for first, near in self.slot_groups(self.state.db.due_reminders(now)):
             rs = await self.live_once(client, near)
             if not rs:
                 continue
-            _, rows = self.task_buttons(self.once_tasks(rs))
+            found, texts, together, dropped = self.once_steps(rs, now)
+            _, rows = self.task_buttons(found, together)
             names = self.once_names(rs)
-            if len(rs) == 1:
-                line = self.once_line(rs[0], now)
-                text = f"⏰ {names}: {line}" if names else f"⏰ {line}"
+            if len(texts) == 1:
+                text = f"⏰ {names}: {texts[0]}" if names else f"⏰ {texts[0]}"
             else:  # each person named once, at the top
                 text = "\n".join(
-                    [f"⏰ {names}".rstrip()]
-                    + [f"{n}. {self.once_line(r, now)}" for n, r in enumerate(rs, 1)]
+                    [f"⏰ {names}".rstrip()] + [f"{n}. {x}" for n, x in enumerate(texts, 1)]
                 )
             try:
                 await self.send(client, first["chat"], text, buttons=rows)
@@ -3566,8 +3591,225 @@ class Bot:
                         self.state.db.settle_reminder(r["id"], "failed")
                     continue
                 raise
-            for r in rs:  # only after Telegram took it
-                self.state.db.settle_reminder(r["id"], "sent")
+            self.settle_slot(rs, dropped)
+
+    def slot_groups(self, due: list[dict]) -> list[tuple[dict, list[dict]]]:
+        """The slots of these due reminders: each chat's first, with every pending reminder of
+        that chat due within MERGE_S of it (they go out as one message)."""
+        seen, out = set(), []
+        for first in due:
+            if first["id"] in seen:
+                continue
+            near = [
+                r
+                for r in self.state.db.reminders(first["chat"])
+                if r["at"] <= first["at"] + MERGE_S and r["id"] not in seen
+            ]
+            seen |= {r["id"] for r in near} | {first["id"]}
+            out.append((first, near))
+        return out
+
+    def settle_slot(self, rs: list[dict], dropped: list[dict]) -> None:
+        """A slot Telegram took: its reminders sent, the ones its rewrite dropped (the state says
+        their step no longer holds) cancelled, so no check counts on them."""
+        gone = {r["id"] for r in dropped}
+        for r in rs:
+            self.state.db.settle_reminder(r["id"], "cancelled" if r["id"] in gone else "sent")
+
+    def once_steps(
+        self, rs: list[dict], now: float
+    ) -> tuple[list[tasklist.Task], list[str], dict[str, list[str]], list[dict]]:
+        """What a slot of the chat's reminders says: its steps as tasks (for the buttons), each
+        step's line, the reminders each step marks (task_buttons' together) and the ones it drops.
+        Without a rewrite for exactly these reminders (SLOTS, prepare_slots), one step each, as
+        they were set."""
+        kept = (self.state.db.get_kv(SLOTS) or {}).get(_slot_key(rs))
+        if not kept:
+            return self.once_tasks(rs), [self.once_line(r, now) for r in rs], {}, []
+        byid = {r["id"]: r for r in rs}
+        found, texts, together = [], [], {}
+        for step in kept["steps"]:
+            mine = [byid[i] for i in step["ids"] if i in byid]
+            if not mine:
+                continue
+            x = replace(self.once_tasks(mine[:1])[0], text="⏰ " + step["text"])
+            found.append(x)
+            together[x.key] = [f"r:{r['id']}" for r in mine]
+            text = step["text"]
+            first = min(r["at"] for r in mine)
+            if now - first > LATE_S:
+                text += "\n" + self.t("reminder_late", when=self._when(first))
+            dishes = list(
+                dict.fromkeys(
+                    (r["recipe"], r["date"])
+                    for r in mine
+                    if r.get("recipe") in self.data.recipes and r.get("date")
+                )
+            )
+            for rid, day in dishes:  # by name when the step is about more than one
+                name = self.data.recipes[rid].name if len(dishes) > 1 else None
+                text += "\n" + self.recipe_url(rid, day, name)
+            texts.append(text)
+        if not found:  # a rewrite that says nothing of them: as they were set
+            return self.once_tasks(rs), [self.once_line(r, now) for r in rs], {}, []
+        dropped = [byid[i] for i in kept.get("dropped") or [] if i in byid]
+        return found, texts, together, dropped
+
+    def start_prepare(self) -> None:
+        """prepare_slots in its own task, one at a time: its AI call never holds a reminder up."""
+        if self.preparing or self.data.settings.llm.provider == "none":
+            return
+        self.preparing = True
+
+        async def work():
+            try:
+                await self.prepare_slots()
+            except Exception as e:  # noqa: BLE001  the slots go out as they were set
+                log.warning("preparing the reminders failed: %s", safe(e))
+            finally:
+                self.preparing = False
+
+        self.spawn(work())
+
+    async def prepare_slots(self) -> None:
+        """Each slot of the chat's reminders due within SLOT_AHEAD_S, rewritten as one consistent
+        message from the state as it is now (rewrite_slot), when it needs it: more than one
+        reminder (different answers wrote them, so they can repeat and contradict each other), or
+        one the state puts in doubt (slot_doubts). Kept in SLOTS for exactly those reminders, so a
+        slot that changed since goes out as it was set; tried once per slot."""
+        if self.data.settings.llm.provider == "none":
+            return
+        db = self.state.db
+        for _, near in self.slot_groups(db.due_reminders(time.time() + SLOT_AHEAD_S)):
+            rs = [r for r in near if not self._stale(r)]
+            key = _slot_key(rs)
+            if not rs or key in (db.get_kv(SLOTS) or {}) or key in self.slot_tried:
+                continue
+            doubts = await asyncio.to_thread(self.slot_doubts, rs)
+            if len(rs) < 2 and not doubts:
+                continue
+            self.slot_tried.add(key)
+            made = await self.rewrite_slot(rs, doubts)
+            if made is None:
+                continue
+            now = time.time()
+            kept = {
+                k: v
+                for k, v in (db.get_kv(SLOTS) or {}).items()
+                if now - v.get("ts", 0) <= SLOT_KEEP_S
+            }
+            db.set_kv(SLOTS, kept | {key: made | {"ts": now}})
+
+    def _stale(self, r: dict) -> bool:
+        try:
+            return bool(doctor.stale(self.data, r))
+        except Exception:  # noqa: BLE001  live_once decides at the time
+            return False
+
+    def slot_doubts(self, rs: list[dict]) -> list[str]:
+        """What the state says against a slot's reminders, for the rewrite: a dish whose food the
+        pantry says ran out, and a step it counts on (a soak, a thaw, a session of the same dish,
+        whose time has passed) that nobody marked done."""
+        data, db, zone = self.data, self.state.db, self._zone()
+        linked = [r for r in rs if r.get("recipe") in data.recipes and r.get("date")]
+        if not linked:
+            return []
+        now = dt.datetime.now(zone)
+        out = []
+        try:
+            empty = {x.ingredient for x in pantry.now(data, db, now.date()) if x.qty <= pantry.EPS}
+        except Exception as e:  # noqa: BLE001  the rest still counts
+            log.info("could not read the pantry for a slot: %s", safe(e))
+            empty = set()
+        days = [dt.datetime.fromtimestamp(r["at"], zone).date() for r in linked]
+        steps = tasklist.tracked(
+            data, db, min(days) - dt.timedelta(days=doctor.REMINDER_LEAD_DAYS), max(days)
+        )
+        said = db.task_states([x.key for x in steps])
+        for r in linked:
+            rec, dish = data.recipes[r["recipe"]], (r["recipe"], str(r["date"]))
+            out_of = [
+                data.ingredients[i.id].name
+                for i in rec.ingredients
+                if i.id in empty and i.id in data.ingredients
+            ]
+            if out_of:
+                out.append(
+                    f"Reminder {r['id']} is about {rec.name} [{rec.id}] for {r['date']}: the "
+                    f"pantry says this ran out: {', '.join(out_of)}."
+                )
+            for x in steps:
+                h, m = (int(v) for v in x.at.split(":"))
+                when = dt.datetime.combine(x.day, dt.time(h, m), zone)
+                mine = (x.recipe, x.eat and x.eat.isoformat()) == dish or any(
+                    (rid, e.isoformat()) == dish for rid, e in x.dishes
+                )
+                if (
+                    mine
+                    and x.kind in SLOT_NEEDS
+                    and x.key != f"r:{r['id']}"
+                    and when < now
+                    and when.timestamp() < r["at"]
+                    and said.get(x.key) != tasklist.DONE
+                ):
+                    what = x.text.removeprefix("⏰ ") or x.ingredient or rec.name
+                    out.append(
+                        f"Reminder {r['id']} counts on step {x.key} ({x.kind}, "
+                        f"{WEEKDAYS[x.day.weekday()]} {x.day.isoformat()} {x.at}: {what}), and "
+                        "nobody marked it done: it may not have happened."
+                    )
+        return out
+
+    async def rewrite_slot(self, rs: list[dict], doubts: list[str]) -> dict | None:
+        """One AI pass (llm.complete, SLOT_TIMEOUT_S) that writes a slot again as one consistent
+        message from the state now: {"steps": [{"text", "ids"}], "dropped": [ids]}, every
+        reminder in a step or dropped. None when it fails, takes too long or answers anything
+        else: the slot then goes out as it was set."""
+        try:
+            facts = await asyncio.to_thread(self.slot_facts, rs, doubts)
+            raw = await asyncio.wait_for(
+                llm.complete(
+                    self.data,
+                    SLOT_SYSTEM.format(locale=self.data.locale),
+                    [{"role": "user", "content": facts}],
+                ),
+                SLOT_TIMEOUT_S,
+            )
+        except Exception as e:  # noqa: BLE001  TimeoutError too
+            log.warning("rewriting a slot of reminders failed: %s", type(e).__name__)
+            return None
+        made = _slot_answer(raw, {r["id"] for r in rs})
+        if made is None:
+            log.warning("a slot's rewrite was not usable; it goes out as it was set")
+        else:
+            log.info("a slot of %d reminders rewritten as %d steps", len(rs), len(made["steps"]))
+        return made
+
+    def slot_facts(self, rs: list[dict], doubts: list[str]) -> str:
+        """The slot and the state the rewrite reads: the reminders, what the app found against
+        them, the menu, every task around it with its state, and the pantry."""
+        data, db, zone = self.data, self.state.db, self._zone()
+        today = self.state.today()
+        day = dt.datetime.fromtimestamp(rs[0]["at"], zone).date()
+        now = dt.datetime.now(zone)
+        out = [
+            f"Now: {WEEKDAYS[now.weekday()]} {now:%Y-%m-%d %H:%M}.",
+            "\n## The reminders that go out together (id, when, step, dish: text)",
+        ]
+        for r in rs:
+            local = dt.datetime.fromtimestamp(r["at"], zone)
+            step = f", {r['kind']}" if r.get("kind") else ""
+            dish = f", {r['recipe']} for {r['date']}" if r.get("recipe") else ""
+            out.append(f"- {r['id']}: {local:%Y-%m-%d %H:%M}{step}{dish}: {r['text']}")
+        if doubts:
+            out.append("\n## What the app found against them (certain)")
+            out += [f"- {x}" for x in doubts]
+        out += verifier.doctor_menu(data, self.t, today)
+        out += tasklist.tasks_now(
+            data, db, day - dt.timedelta(days=doctor.REMINDER_LEAD_DAYS), day + dt.timedelta(1)
+        )
+        out += context.pantry_now(data, db, today)
+        return "\n".join(out)
 
     async def live_once(self, client, rs: list[dict]) -> list[dict]:
         """The one-off reminders whose dish the menu still serves; one it dropped since the last
@@ -3857,9 +4099,17 @@ class Bot:
         db, t = self.state.db, self.t
         item = (db.get_kv(TASK_BUTTONS) or {}).get(sid)
         message = query.get("message") or {}
-        key = (item or {}).get("key", "")
-        r = db.reminder(int(key[2:])) if key.startswith("r:") and key[2:].isdigit() else None
-        if item is None or choice not in ("y", "n") or (r and r["state"] == "cancelled"):
+        # a step of a rewritten slot marks every reminder it says; one cancelled since is left out
+        keys = [
+            k
+            for k in (item or {}).get("keys") or [(item or {}).get("key", "")]
+            if not (
+                k.startswith("r:")
+                and k[2:].isdigit()
+                and (db.reminder(int(k[2:])) or {}).get("state") == "cancelled"
+            )
+        ]
+        if item is None or choice not in ("y", "n") or not keys:
             await self.toast(client, query, t("tap_gone"))
             return
         uid = (query.get("from") or {}).get("id")
@@ -3868,7 +4118,8 @@ class Bot:
             await self.toast(client, query, t("task_not_yours"))
             return
         state = tasklist.DONE if choice == "y" else tasklist.NOT_DONE
-        before = db.mark_task(key, state, who)
+        marks = [db.mark_task(k, state, who) for k in keys]  # every reminder the step says
+        before = marks[0]
         label = t("task_marked_done" if state == tasklist.DONE else "task_marked_not_done")
         await self.toast(client, query, label)
         rows = []
@@ -3898,7 +4149,7 @@ class Bot:
         words = {
             "name": self.data.household.person(who).name,
             "task": item["what"],
-            "step": key,
+            "step": ", ".join(keys),
             "date": t.date(dt.date.fromisoformat(item["day"])),
         }
         # in the group the bot's own turn, in a private chat the tapper's (reorganise)
@@ -4013,6 +4264,36 @@ UNSENT = (
 def _unsent(fresh: list[dict]) -> dict:
     """The line that tells a turn it rewrites an answer the chat never saw."""
     return {"role": "user", "content": UNSENT, "ids": [], "ts": fresh[-1]["ts"] if fresh else None}
+
+
+def _slot_key(rs: list[dict]) -> str:
+    """A slot by its reminders: a rewrite is used only for exactly the reminders it was made for."""
+    return ",".join(str(r["id"]) for r in sorted(rs, key=lambda r: r["id"]))
+
+
+def _slot_answer(raw: str, ids: set[int]) -> dict | None:
+    """The rewrite's JSON, when it is one: steps with text, each naming reminders of the slot,
+    and every reminder in a step or dropped (never both)."""
+    found = re.search(r"\{.*\}", str(raw or ""), re.DOTALL)
+    try:
+        got = json.loads(found.group(0)) if found else None
+    except ValueError:
+        return None
+    if not isinstance(got, dict) or not isinstance(got.get("steps"), list):
+        return None
+    steps, said = [], set()
+    for x in got["steps"]:
+        if not isinstance(x, dict) or not str(x.get("text") or "").strip():
+            return None
+        mine = [i for i in x.get("ids") or [] if isinstance(i, int) and i in ids]
+        if not mine:
+            return None
+        steps.append({"text": str(x["text"]).strip(), "ids": mine})
+        said |= set(mine)
+    dropped = [i for i in got.get("dropped") or [] if isinstance(i, int) and i in ids]
+    if not steps or said & set(dropped) or said | set(dropped) != ids:
+        return None
+    return {"steps": steps, "dropped": dropped}
 
 
 def _same_words(text: str) -> str:
