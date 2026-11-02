@@ -18,7 +18,7 @@ from .test_menu import committed
 from .test_reminders import ahead, is_offer
 from .test_reminders import block as reminders
 from .test_settings_stores_bot import msg, run
-from .test_turns import buttons, sends, tap
+from .test_turns import buttons, drain, sends, tap
 
 ANSWER = (
     "Ana, noted: on Sunday you are 6 🍛 I change the chicken dish like this:\n"
@@ -229,10 +229,15 @@ def test_reminders_set_with_the_ones_an_answer_cancels_are_put_back_to_the_ai(da
     with db.conn() as c:  # set by another answer, a day before
         c.execute("UPDATE reminder SET created='2020-01-01T00:00:00+00:00' WHERE id=?", (later,))
     reply(data_dir, text="Moved to 13:00.\n" + reminders(("cancel", str(gone))))
-    run(b.handle(None, msg("@chefbot I am out on Saturday mornings", user=8)))
+
+    async def go():
+        await b.handle(None, msg("@chefbot I am out on Saturday mornings", user=8))
+        await drain(b)  # the review once the answer is sent, and its follow-up
+
+    run(go())
     path = data_dir / "plugins" / "turns.jsonl"
     turns = [json.loads(x) for x in path.read_text().splitlines()]
-    # said once: the revision keeps them (the same text) and is not sent back for it again
+    # said in the follow-up, which is not reviewed again
     assert len(turns) == 2
     note = turns[1]["new"][0]["content"]
     assert f"Reminders {kept} were set together with the ones this answer cancels ({gone})" in note

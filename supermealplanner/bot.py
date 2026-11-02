@@ -16,10 +16,14 @@ whose download fails, gets a short note under it.
 One answer per burst: a chat's messages wait DEBOUNCE_S after the newest one, and for each voice
 note of the chat still being transcribed (as long as transcription takes, VOICE_WAIT_S), and go to
 the AI together. What arrives while it writes is handed to the running answer (llm.py,
-turn["incoming"]). An answer that did not take one of those is never sent: the turn runs again at
-once with all of them, told its last answer did not go out (AGAIN, once in a row), so the chat gets
-one answer and no proposal it already outdated. Only what arrives after that makes the next turn. An
-answer that covers one message replies to it; one that covers several is sent plainly. An edited
+turn["incoming"]). An answer that did not take one of those is still sent, and the next turn answers
+the rest at once: an answer the chat waits for is worth more than one that covers everything. Only
+a correction of a message the answer answers (an edit made while it was written) means the answer
+cannot stand: then it is not sent, and the turn runs again at once with all of them, told its last
+answer did not go out (AGAIN, once in a row). An answer that covers one message replies to it; one
+that covers several is sent plainly. An answer that changes anything goes out at once and is
+reviewed afterwards (verifier.after); what the review finds, the bot fixes in one follow-up turn of
+its own. A change that waits for a yes waits for the person whose request it answers. An edited
 message is handled by where it is: still waiting, its new text goes; in the running answer, a
 correction joins it; already answered, the correction starts a new answer; an edit that adds the
 mention is a new message. Changes, proposals and the provider's asks come with inline buttons; a
@@ -248,6 +252,11 @@ class Item:
     # a turn the bot asked itself to review the week (the weekly review, the plan check's turn):
     # its answer is reviewed even when it changes nothing (verifier.in_scope), like an auto one
     review: bool = False
+    # the bot's own turn that fixes what the review of a sent answer found: what it changes waits
+    # for a tap, like an auto one, and its answer is never reviewed again (one follow-up at most)
+    followup: bool = False
+    # an edit of a message of the running turn: the answer written before it cannot stand (AGAIN)
+    corrects: bool = False
 
 
 @dataclass
@@ -322,6 +331,11 @@ class Bot:
         self.planned_at: float | None = None  # clock() of the last plan check started
         self.checking = False  # a plan check runs
         self.announce_since: dict[str, float] = {}  # a new plan -> clock() its announcement waits
+        # per chat: answers sent and not reviewed yet (verify_later), and chats a review runs for
+        self.unchecked: dict[int, list[dict]] = {}
+        self.verifying: set[int] = set()
+        # a change's key -> whether its yes made it (False: a no, or it failed), for the review
+        self.settled: dict[str, bool] = {}
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -992,19 +1006,22 @@ class Bot:
         file: dict | None = None,
         auto: bool = False,
         review: bool = False,
+        followup: bool = False,
+        corrects: bool = False,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
         log_mid False: the answer replies to msg, but the log row is not that message (an edit's
         correction), so an edit of msg still finds msg's own row. A spoken turn from the app is
-        marked "[voice]" for the AI, which then answers for the ear (context.WHO)."""
+        marked "[voice]" for the AI, which then answers for the ear (context.WHO). A follow-up is
+        logged under its own name (user's first_name), never as the person it acts for."""
         spoken = self.spoken.get((msg or {}).get(SPOKEN) or "")
         if spoken is not None:
             text = f"[voice] {text}"
         row = self.state.db.add_chat(
             chat_id,
             "user",
-            who or user.get("first_name"),
+            (None if followup else who) or user.get("first_name"),
             text,
             mid=(msg or {}).get("message_id") if log_mid else None,
             asked=asked,
@@ -1014,7 +1031,10 @@ class Bot:
                 spoken.row = row
                 self.spoken_rows[row] = spoken.id
             mid = (msg or {}).get("message_id")
-            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file, auto, review)
+            item = Item(
+                row, mid, user.get("id"), who, self.clock(), grant, file, auto, review, followup
+            )
+            item.corrects = corrects
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
@@ -1071,6 +1091,7 @@ class Bot:
                         self.queued(chat_id)
         finally:
             self.driving.discard(chat_id)
+            self.review_soon(client, chat_id)  # the answers sent meanwhile (verify_after)
 
     # ------------------------------------------------------------- spoken turns (the app)
     def voice_chat(self, uid: int) -> int:
@@ -1215,9 +1236,11 @@ class Bot:
         """One AI answer for the queued messages `items`. A provider that keeps the conversation
         gets only what it has not seen; the household's data goes with every message, fresh.
         Messages that arrive meanwhile are handed to it; the ones its answer does not take go back
-        to the queue for the next turn, unless the answer missed one of them: then nothing of it is
-        sent and AGAIN is returned, so the next turn, at once, answers all of them (once in a row).
-        Returns the messages the answer covered, None when there was no answer."""
+        to the queue, at its head, for the next turn. Only when one of them corrects a message of
+        this turn (an edit) is nothing of the answer sent: AGAIN is returned, so the next turn, at
+        once, answers all of them (once in a row). An answer that changes anything is sent at once
+        and reviewed afterwards (verify_later). Returns the messages the answer covered, None when
+        there was no answer."""
         data, db = self.data, self.state.db
         if data.settings.llm.provider == "none":
             await self.send(client, chat_id, self.t("bot_no_llm"), _reply_to(items))
@@ -1238,14 +1261,13 @@ class Bot:
         reply, deferred, again = None, False, False
         rewrite = chat_id in self.again  # this turn rewrites an answer that was not sent
         self.again.discard(chat_id)
-        reviewed = True
         typer = None
         try:
             try:
                 await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
             except TelegramError as e:  # only a courtesy: the answer still goes
                 log.info("typing indicator failed: %s", e)
-            # kept on until the answer is written and reviewed: nothing is sent before
+            # kept on until the answer is written
             typer = asyncio.create_task(self.typing(client, chat_id))
             attachments = await self.fetch_files(client, chat_id, items)
             private = chat_id > 0
@@ -1275,12 +1297,6 @@ class Bot:
                 reply = await asyncio.wait_for(
                     llm.converse(data, turn), timeout=data.settings.llm.timeout_s
                 )
-                # an answer that changes anything is reviewed, and revised, before anyone sees it
-                reply, reviewed = await verifier.review(
-                    data, db, self.state.today(), turn, reply, viewer, last_item.who
-                )
-                if not reviewed:  # said in the answer, and the plan check goes at the next tick
-                    db.set_kv(verifier.PLAN_RETRY, True)
             except Exception as e:  # noqa: BLE001
                 log.warning("AI call failed: %s", safe(e))
                 later = _retry_after(e)
@@ -1301,7 +1317,8 @@ class Bot:
                 missed = [
                     i for i in turn_state.pulled if reply is None or i.row not in reply.covers
                 ]
-                again = reply is not None and bool(missed) and not rewrite
+                # a correction of a message this answer answers: the answer cannot stand
+                again = reply is not None and any(i.corrects for i in missed) and not rewrite
                 if deferred:  # the whole turn waits for the provider, in its order
                     self.queues[chat_id] = [*items, *missed, *self.queues.get(chat_id, [])]
                 elif again:  # nothing of this answer goes out: the next turn takes all of it
@@ -1322,20 +1339,26 @@ class Bot:
                 db.set_kv(key, {"id": reply.conversation, "seen": seen, "done": sorted(done)})
             else:
                 db.set_kv(key, None)
-            log.info("an answer missed messages that came while it was written: writing it again")
+            log.info("a message of the turn was corrected while it was written: writing it again")
             return AGAIN
         self.told_busy.discard(chat_id)  # answered: a later busy spell is told again
         covered = [*items, *(i for i in turn_state.pulled if i.row in reply.covers)]
         reply_to = _reply_to(covered)
-        anchor = covered[-1]  # changes and proposals act for the newest message's sender
+        anchor = covered[-1]  # gestures act on the newest message
         text, change = changes.extract(reply.text)
+        whose = change.pop("for", None) if isinstance(change, dict) else None
+        # a change and a proposal wait for the person whose request they answer
+        decider, clear = self.decider(covered, whose)
         text, acts = gestures.extract(text, data.settings.bot.photo_hosts, self.t("file_name"))
         text, offered = llm.extract_options(text)
         offered = reply.options or offered
         text, listed = llm.extract_reminders(text)
         listed = reply.reminders or listed
         acted = acts["react"] or acts["sticker"] or acts["photos"] or acts["documents"]
+        followup = all(i.followup for i in covered)
         if not text and change is None and not reply.proposals and not listed and not acted:
+            if followup:  # the follow-up found nothing to say after all: nothing to send
+                return covered
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return None
         if reply.conversation:
@@ -1355,23 +1378,32 @@ class Bot:
         made = True  # a reminder made wrong by a change goes only once the change is made
         # a turn the bot asked itself, alone or with messages that came in beside it: nobody asked
         # for its change as it stands, so it waits for a tap
-        if any(i.auto for i in covered) and isinstance(change, dict):
+        if any(i.auto or i.followup for i in covered) and isinstance(change, dict):
             change = {k: v for k, v in change.items() if k != "asked"}
-        own = anchor.who is None and anchor.uid is None  # the bot's own turn: nobody asked
+        if not clear and isinstance(change, dict):
+            decider, change = self.only_theirs(covered, decider, change)
+        own = decider.who is None and decider.uid is None  # the bot's own turn: nobody asked
         now = not own and (
             isinstance(change, str) or (isinstance(change, dict) and change.get("asked") is True)
         )
+        # reviewed once sent, against the problems there before it changed anything; a follow-up
+        # is never reviewed again
+        check = not followup and verifier.in_scope(change, listed, turn)
+        before = await self.problem_keys() if check else set()
         if change is not None and now:
             made = await self.propose(
-                client, chat_id, anchor.mid, anchor.who, anchor.uid, change, tail
+                client, chat_id, decider.mid, decider.who, decider.uid, change, tail
             )
         items: list[dict] = []
+        cancels: list = []  # what a change that waits for a yes cancels, once it is made
         if listed:
             if not made or (change is not None and not now):
+                if change is not None and not now:
+                    cancels = [r["cancel"] for r in listed if "cancel" in r]
                 listed = [r for r in listed if "cancel" not in r]
-            items = await self.settle_reminders(client, chat_id, listed, covered, reply_to, tail)
-        if not reviewed:  # the last line of the answer: what it says was not checked
-            tail.append(self.t("review_failed"))
+            items = await self.settle_reminders(
+                client, chat_id, listed, covered, reply_to, tail, fixes=followup
+            )
         joined = "\n\n".join(x for x in [render.brief(text) if text else "", *tail] if x)
         if joined:
             offer = None
@@ -1390,17 +1422,27 @@ class Bot:
                 options=not offer,
             )
             if offer:
-                await self.keep_offer(client, chat_id, offer[2], sent, items, covered, alone=False)
+                await self.keep_offer(
+                    client, chat_id, offer[2], sent, items, covered, False, followup
+                )
                 items = []
         if acted:
             said = joined or change is not None or reply.proposals or listed  # each says something
             await self.gesture(client, chat_id, acts, anchor.mid, bool(said), reply_to)
+        key = None
         if change is not None and not now:
-            made = await self.propose(client, chat_id, anchor.mid, anchor.who, anchor.uid, change)
+            made = await self.propose(
+                client, chat_id, decider.mid, decider.who, decider.uid, change, cancels=cancels
+            )
+            # the yes it waits for: the review looks it up when it runs (settled_change)
+            key = next(
+                (i["key"] for i in reversed(self.pending(chat_id)) if i.get("change") == change),
+                None,
+            )
         for proposal in reply.proposals:
-            await self.offer(client, chat_id, anchor.mid, anchor.who, anchor.uid, proposal)
+            await self.offer(client, chat_id, decider.mid, decider.who, decider.uid, proposal)
         if items:
-            text_, rows, key = self.remind_offer(items)
+            text_, rows, key_ = self.remind_offer(items)
             sent = await self.send(
                 client,
                 chat_id,
@@ -1410,8 +1452,144 @@ class Bot:
                 buttons=rows,
                 spoken=self.t("voice_reminders"),
             )
-            await self.keep_offer(client, chat_id, key, sent, items, covered, alone=True)
+            await self.keep_offer(client, chat_id, key_, sent, items, covered, True, followup)
+        if check:
+            answer = {
+                "text": reply.text,
+                "change": change if isinstance(change, dict) else None,
+                "made": bool(now and made),
+                "key": key,
+                "offered": listed,
+                "turn": turn,
+                "viewer": viewer,
+                "asker": decider.who,
+                "uid": decider.uid,
+                "before": before,
+            }
+            self.verify_later(client, chat_id, answer)
         return covered
+
+    def decider(self, covered: list[Item], whose: str | None = None) -> tuple[Item, bool]:
+        """Whose yes a change or a proposal waits for: the person whose request it answers, and
+        whether that is clear. One person in the turn: theirs. Several: the one the change block
+        names (`for`); else, unclear, the cook (bot.reminders_for) when they wrote, else the first
+        who wrote. Always someone who wrote. None of the household (the bot's own turn): its newest
+        message, which any member confirms."""
+        people = [i for i in covered if i.who is not None]
+        if not people:
+            return covered[-1], True
+        senders = list(dict.fromkeys(i.who for i in people))
+        cook = self.data.settings.bot.reminders_for
+        if len(senders) == 1:
+            pick, clear = senders[0], True
+        elif whose in senders:
+            pick, clear = whose, True
+        else:
+            pick, clear = (cook if cook in senders else senders[0]), False
+        return [i for i in people if i.who == pick][-1], clear
+
+    def only_theirs(self, covered: list[Item], decider: Item, change: dict) -> tuple[Item, dict]:
+        """An unclear turn's change that only a person themselves may make (their avoided foods,
+        swaps, training days, their pills reminder) is never made in a guessed name: it waits for
+        the yes of the one who wrote and may make it. Nobody who wrote may: it stays as it is, and
+        the app refuses it with the reason."""
+        try:
+            changes.parse(change, self.data, None)
+            return decider, change  # nobody's own: the guess only says whose yes it waits for
+        except changes.ChangeError:
+            pass
+        last = {i.who: i for i in covered if i.who is not None}
+        able = []
+        for who, item in last.items():
+            try:
+                changes.parse(change, self.data, who)
+                able.append(item)
+            except changes.ChangeError:
+                continue
+        if not able:
+            return decider, change
+        pick = decider if decider in able else able[0]
+        return pick, {k: v for k, v in change.items() if k != "asked"}
+
+    def verify_later(self, client, chat_id: int, answer: dict) -> None:
+        """Review an answer that went out (verifier.after), in the background, once the chat's
+        turns are done (review_soon). One review per chat at a time: an answer sent while one runs
+        waits, and the next review covers it and every other one sent since."""
+        self.unchecked.setdefault(chat_id, []).append(answer)
+        self.review_soon(client, chat_id)
+
+    def review_soon(self, client, chat_id: int) -> None:
+        """Start the chat's reviews unless one runs, or a turn is queued or written (busy): then
+        drive starts them when it ends, so a review always reads what the last answer left."""
+        if self.unchecked.get(chat_id) and chat_id not in self.verifying and not self.busy(chat_id):
+            self.verifying.add(chat_id)
+            self.spawn(self.verify_after(client, chat_id))
+
+    async def verify_after(self, client, chat_id: int) -> None:
+        """The chat's reviews, until no answer waits for one. A review an answer overtook while it
+        ran is not acted on: the next one covers both, on the latest state. So is one that ends
+        while a turn of the chat is queued or being written (busy): its answer may change what the
+        review found, so the review runs again once that turn ended (drive starts it), with that
+        answer when it changes anything. A change that waited for a yes is read as it is when the
+        review starts (settled_change); one settled while it ran sends the review round again too.
+        What a review finds becomes one follow-up turn; one that could not run says nothing and
+        the plan check goes at the next tick."""
+        db = self.state.db
+        try:
+            while answers := self.unchecked.pop(chat_id, []):
+                answers = [self.settled_change(chat_id, a) for a in answers]
+                waited = [a["key"] for a in answers if a.get("change") and not a["made"]]
+                last = answers[-1]
+                found = await verifier.after(
+                    self.data,
+                    db,
+                    self.state.today(),
+                    last["turn"],
+                    answers,
+                    last["viewer"],
+                    last["asker"],
+                    answers[0]["before"],
+                )
+                moved = any(k in self.settled for k in waited if k)
+                if self.unchecked.get(chat_id) or moved or self.busy(chat_id):
+                    self.unchecked[chat_id] = [*answers, *self.unchecked.get(chat_id, [])]
+                    if self.busy(chat_id):
+                        return  # drive starts it again when the chat's turns are done
+                    continue
+                if found is None:
+                    db.set_kv(verifier.PLAN_RETRY, True)
+                elif found:
+                    self.follow_up(client, chat_id, last, found)
+        finally:
+            self.verifying.discard(chat_id)
+
+    def busy(self, chat_id: int) -> bool:
+        """A turn of the chat is queued or being written."""
+        return chat_id in self.driving or bool(self.queues.get(chat_id))
+
+    def settled_change(self, chat_id: int, answer: dict) -> dict:
+        """The answer as its change stands now: still waiting for a yes, as it was; made by a yes,
+        made; refused, replaced or expired, gone, so the review neither checks a change nobody
+        made nor makes one twice."""
+        key = answer.get("key")
+        if not answer.get("change") or answer.get("made") or not key:
+            return answer
+        if any(i.get("key") == key for i in self.pending(chat_id)):
+            return answer
+        if self.settled.pop(key, False):
+            return {**answer, "made": True, "key": None}
+        return {**answer, "change": None, "key": None}
+
+    def follow_up(self, client, chat_id: int, answer: dict, found: list[str]) -> None:
+        """The bot's own turn that fixes what the review found in an answer it sent, for the person
+        whose request it answered: their private chat's view, their yes."""
+        problems = "\n".join(f"- {p}" for p in found)
+        user = {"first_name": self.t("verify_who")}
+        if answer.get("uid") is not None:
+            user["id"] = answer["uid"]
+        text = self.t("verify_turn", problems=problems)
+        self.take(chat_id, user, answer.get("asker"), None, text, True, followup=True)
+        self.spawn(self.drive(client, chat_id))
 
     async def rest(self, client, chat_id: int, items: list[Item], seconds: float) -> None:
         """The provider is out of capacity for `seconds`: say so once, with the wait, and answer
@@ -1569,12 +1747,21 @@ class Bot:
 
     # ------------------------------------------------------------- settings changes
     async def propose(
-        self, client, chat_id, reply_to, asker, user_id, change, tail: list[str] | None = None
+        self,
+        client,
+        chat_id,
+        reply_to,
+        asker,
+        user_id,
+        change,
+        tail: list[str] | None = None,
+        cancels: list | None = None,
     ) -> bool:
         """Make a change the person asked for at once; show one the AI came up with on its own and
         wait for a yes from the person it answered. In the bot's own turn (the morning plan check:
         no person and no user) the change waits for a yes from anyone in the household. tail: where
         what a made change says goes, so it joins the answer's message instead of following it.
+        cancels: the reminders the answer cancels with a change that waits: they go with its yes.
         True when the change is made now."""
         t = self.t
         own = asker is None and user_id is None and chat_id < 0
@@ -1640,6 +1827,8 @@ class Bot:
             "msg": sent,
             "msgs": msgs,
         }
+        if cancels:
+            item["cancels"] = list(cancels)
         # a newer change from the same person replaces their earlier one ("no, better at 15:00"),
         # and so does one on the same things from anyone
         outdated = self.outdates(proposal)
@@ -1757,6 +1946,11 @@ class Bot:
             return
         before = await self.problem_keys() if yes else set()
         reply = await self.apply(pending) if yes else self.t("change_cancelled")
+        if pending.get("key"):  # what the review of the answer that offered it reads
+            self.settled[pending["key"]] = bool(pending.get("applied"))
+        if pending.get("applied") and pending.get("cancels"):  # what the change made wrong
+            gone = self.cancel_reminders(chat_id, pending["cancels"], None, True)
+            reply = "\n".join([reply, *gone])
         await self.send(client, chat_id, reply, reply_to)
         if pending.get("applied"):
             await self.checkup(client, chat_id, before, reply_to)
@@ -2089,7 +2283,7 @@ class Bot:
                 f"wording.]\nBefore: {before}\nNow: {now}"
             )
             # queued before any await: the running turn takes it, or the chat's loop runs it next
-            self.take(chat_id, user, who, None, note, asked=True)
+            self.take(chat_id, user, who, None, note, asked=True, corrects=True)
             await self.close_asks(client, turn_state, note=f"editado: {now}")
             await self.drive(client, chat_id)  # the turn may have ended meanwhile
             return
@@ -3329,22 +3523,27 @@ class Bot:
             await self.keep_offer(client, chat_id, key, sent, items, covered, alone=True)
 
     async def settle_reminders(
-        self, client, chat_id, listed, covered, reply_to, tail: list[str] | None = None
+        self,
+        client,
+        chat_id,
+        listed,
+        covered,
+        reply_to,
+        tail: list[str] | None = None,
+        fixes: bool = False,
     ) -> list[dict]:
         """Cancel the ones the answer cancels (only this chat's) and set the ones the person asked
         for ("set") at once, saying both in one message, or in `tail` (the answer's message).
+        fixes: the bot's follow-up, which cancels any of the chat's reminders its answer made wrong.
         Returns the reminders still to offer."""
         t, db = self.t, self.state.db
         done: list[str] = []
         before = await self.problem_keys()
         uid = covered[-1].uid if covered else None
-        member = self.person_of(uid or 0) is not None
-        for r in listed:
-            old = db.reminder(r["cancel"]) if "cancel" in r else None
-            # the /reminders rule: a stranger let in by group_open cancels only their own
-            mine = old is not None and (member or uid == old["by"])
-            if mine and old["chat"] == chat_id and db.settle_reminder(old["id"], "cancelled"):
-                done.append(t("remind_cancelled", when=self._when(old["at"]), text=old["text"]))
+        member = fixes or self.person_of(uid or 0) is not None
+        done += self.cancel_reminders(
+            chat_id, [r["cancel"] for r in listed if "cancel" in r], uid, member
+        )
         items = self._offered(
             [r for r in listed if "cancel" not in r], covered[-1].who if covered else None
         )
@@ -3374,6 +3573,17 @@ class Bot:
             await self.checkup(client, chat_id, before, reply_to)
         return [r for r in items if not (uid and r.get("set"))]
 
+    def cancel_reminders(self, chat_id: int, ids: list, uid, member: bool) -> list[str]:
+        """Cancel these reminders of this chat; what it says of each one cancelled. The /reminders
+        rule: a stranger let in by group_open (not a member) cancels only their own."""
+        db, out = self.state.db, []
+        for rid in ids:
+            old = db.reminder(rid)
+            mine = old is not None and (member or uid == old["by"])
+            if mine and old["chat"] == chat_id and db.settle_reminder(old["id"], "cancelled"):
+                out.append(self.t("remind_cancelled", when=self._when(old["at"]), text=old["text"]))
+        return out
+
     def remind_offer(self, items: list[dict]) -> tuple[str, list, str]:
         """The offer's text (Markdown: with several reminders their full texts go in a fold, the
         buttons already name each one), its buttons and its key."""
@@ -3392,10 +3602,15 @@ class Bot:
         text = t("remind_offer" if names else "remind_offer_nobody", name=names, lines=body)
         return text, self._remind_rows(key, items), key
 
-    async def keep_offer(self, client, chat_id, key, sent, items, covered, alone) -> None:
+    async def keep_offer(
+        self, client, chat_id, key, sent, items, covered, alone, correction=False
+    ) -> None:
         """Store an offer that went out in message `sent`. It is the chat's only live one: an
         older offer's buttons go (its message too when it was a message of its own), so two offers
-        never say different things at once; the new answer lists again what still holds."""
+        never say different things at once; the new answer lists again what still holds.
+        correction: the offer of a follow-up, which lists only what it corrects. The older offers
+        keep what nobody tapped yet; only a step it lists again gives way (_same_step), and an
+        older offer left with nothing open goes."""
         people = self.data.settings.bot.people
         persons = list(dict.fromkeys(r["person"] for r in items if r["person"]))
         users = [i.uid for i in covered if i.uid] + [people[p] for p in persons if p in people]
@@ -3410,9 +3625,40 @@ class Bot:
         }
         live = [o for o in self._offers() if time.time() - o.get("ts", 0) <= REMIND_TTL]
         old = [o for o in live if o.get("chat") == chat_id]
+        stay, edited = [], []
+        if correction:
+            for o in old:
+                gone = [
+                    r
+                    for r in o.get("items") or []
+                    if not r.get("done") and any(self._same_step(r, n) for n in items)
+                ]
+                for r in gone:
+                    r["done"] = "replaced"
+                if any(not r.get("done") for r in o.get("items") or []):
+                    stay.append(o)
+                    if gone:
+                        edited.append(o)
+        old = [o for o in old if o not in stay]
         self.state.db.set_kv(REMIND, [*(o for o in live if o not in old), offer])
         for o in old:
             await self.retire_offer(client, o)
+        for o in edited:
+            await self.rekey(
+                client, o["chat"], o.get("msg"), self._remind_rows(o["key"], o["items"])
+            )
+
+    @staticmethod
+    def _same_step(a: dict, b: dict) -> bool:
+        """Two offered reminders for one step: the same dish, day and kind, or the same words."""
+        if a.get("recipe") and a.get("kind") and b.get("recipe") and b.get("kind"):
+            step = ("recipe", "date", "kind")
+            return [a.get(k) for k in step] == [b.get(k) for k in step]
+
+        def words(r: dict) -> str:
+            return " ".join(str(r.get("text") or "").lower().split())
+
+        return words(a) == words(b)
 
     async def retire_offer(self, client, offer: dict) -> None:
         """A replaced offer leaves the chat: a message of its own is deleted, an answer that
