@@ -1,0 +1,118 @@
+"""The chains the consistency check follows step by step (doctor.py): a dried pulse soaked, then
+cooked, before its meal; thawed food cooked soon after the thaw; a lunch cooked by the session it
+counts on. The first two tests are the two times the household was let down: a soak with no cook,
+and a thaw whose session moved days later."""
+
+import datetime as dt
+
+from supermealplanner import doctor
+
+from .conftest import MONDAY
+from .test_doctor import D, edit_plan
+from .test_menu import change
+from .test_reminders import ZONE, setup
+from .test_verifier import dinner, soak
+
+SALAD = "ensalada-garbanzos"  # an assembled dinner with dried chickpeas (test_verifier.SALAD)
+
+
+def at(day, hm):
+    h, m = (int(x) for x in hm.split(":"))
+    return dt.datetime(day.year, day.month, day.day, h, m, tzinfo=ZONE).timestamp()
+
+
+def found(data, db, today=MONDAY, offered=()):
+    return {p.key: p for p in doctor.problems(data, db, today, offered) if p.kind != "avoided"}
+
+
+def remind(db, day, hm, recipe, eat, kind=None):
+    return db.add_reminder(-100, "ana", at(day, hm), "x", 7, recipe, str(eat), kind)
+
+
+def test_a_soak_with_no_cook_is_caught_and_so_is_one_left_too_long(data_dir, tmp_path):
+    """The dried beans for Monday's salad: only a soak was set, on Friday night, and nothing said
+    to cook them, so nobody did."""
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir)
+    monday = D(7)
+    dinner(data, monday)
+    soaking = remind(db, D(4), "21:30", SALAD, monday, "soak")
+    p = found(data, db)[f"no_cook:{SALAD}:{monday}"]
+    assert "2026-10-19" in p.text and SALAD in p.text and "only assembled" in p.text
+    assert f"`dish {SALAD} {monday} cook`" in p.text
+    # the cook on Saturday afternoon, 18.5 h after the soak: the chain holds
+    remind(db, D(5), "16:00", SALAD, monday, "cook")
+    assert not [k for k in found(data, db) if SALAD in k]
+    # the soak on Thursday night instead: 42.5 h in water, too long out of the fridge
+    db.settle_reminder(soaking, "cancelled")
+    remind(db, D(3), "21:30", SALAD, monday, "soak")
+    p = found(data, db)[f"soak_long:{SALAD}:{monday}"]
+    assert "thursday 2026-10-15 21:30" in p.text and "saturday 2026-10-17 16:00" in p.text
+    assert "soak-fridge" in p.text
+    # in the fridge it may soak that long
+    remind(db, D(3), "21:00", SALAD, monday, "soak-fridge")
+    assert not [k for k in found(data, db) if SALAD in k]
+
+
+def test_a_thaw_whose_session_moves_days_later_is_caught(data_dir, tmp_path):
+    """The hake thawed on Friday night for the Saturday session that cooks Tuesday's lunch; the
+    session moved to Monday and the fish would have sat thawed for three days."""
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir)
+    tuesday = D(8)
+    lunch = {"date": str(tuesday), "meal": "lunch", "recipe": "pescado-batch"}
+    change(data, {"set": {**lunch, "cook": str(D(5))}})
+    remind(db, D(4), "22:00", "pescado-batch", tuesday, "thaw")
+    assert f"thaw_long:pescado-batch:{tuesday}" not in found(data, db)
+    change(data, {"set": {**lunch, "cook": str(D(7))}})
+    p = found(data, db)[f"thaw_long:pescado-batch:{tuesday}"]
+    assert "friday 2026-10-16 22:00" in p.text and "monday 2026-10-19" in p.text
+    assert "pescado-batch" in p.text and "48 h" in p.text
+
+
+def test_a_reminder_that_says_no_step_is_no_cook(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir)
+    dinner(data, D(2))
+    rid = remind(db, D(1), "20:00", SALAD, D(2))  # set before reminders said their step
+    p = found(data, db)[f"no_cook:{SALAD}:{D(2)}"]
+    assert f"Reminders [{rid}]" in p.text and "list it again with the step" in p.text
+    # the same steps with their kinds, offered by an answer: the chain holds
+    dish = {"text": "x", "recipe": SALAD, "date": str(D(2))}
+    offered = [
+        {**dish, "when": "2026-10-13 20:00", "kind": "soak"},
+        {**dish, "when": "2026-10-14 12:00", "kind": "cook"},
+    ]
+    assert not [k for k in found(data, db, offered=offered) if SALAD in k]
+    p = found(data, db, offered=offered[1:])[f"no_soak:{SALAD}:{D(2)}"]
+    assert "wednesday 2026-10-14 12:00" in p.text
+
+
+def test_a_cooked_dinner_is_its_own_cook_and_lentils_need_no_soak(data_dir, tmp_path):
+    """Negative controls: lentils are not marked to soak, so they start no chain; a cooked dinner
+    with chickpeas needs only its soak the evening before."""
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir, kind="quick")
+    dinner(data, D(2), "crema-legumbre-0")  # lentils
+    assert not [k for k in found(data, db) if "crema-legumbre-0" in k]
+    dinner(data, D(2))
+    assert f"no_soak:{SALAD}:{D(2)}" in found(data, db)
+    remind(db, D(1), "21:00", SALAD, D(2), "soak")  # 22 h before the dinner is cooked
+    assert not [k for k in found(data, db) if SALAD in k]
+
+
+def test_a_lunch_counting_on_a_session_that_does_not_cook_it_is_caught(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir)
+
+    def move(plan):
+        """By hand, as a person editing the file: the lunch says Tuesday, no session cooks it."""
+        plan.day(D(9)).lunch_cook = D(8)
+        for s in plan.sessions:
+            for x in s.dishes:
+                x.eat = [e for e in x.eat if e != D(9)]
+
+    edit_plan(data, move)
+    day = doctor.Plans(data).day(D(9))
+    p = found(data, db)[f"no_session:{day.lunch}:{D(9)}"]
+    assert "tuesday 2026-10-20" in p.text and day.lunch in p.text

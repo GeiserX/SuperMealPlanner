@@ -22,9 +22,24 @@ What it looks at, from today to the end of next week (the menu the AI sees):
 - prep_late: a dish whose recipe counts on a cooking session before its day (`ahead` steps with
   `session: true`) when no session comes in the AHEAD_KEEPS_DAYS before that day (a session on the
   day itself is after the meal), and no reminder has someone do it at home instead.
-- prep: a dish that needs something done before its day (a dried pulse to soak the night before,
-  an `ahead` step) and no reminder linked to that dish and day comes in time. Lunches cooked in a
-  batch session are left out: the session's sheet and the batch reminder carry them.
+- prep: a dish with an `ahead` step and no reminder linked to that dish and day comes in time.
+  Lunches cooked in a batch session are left out: the session's sheet and the batch reminder carry
+  them.
+
+The chains, from the task list (tasks.py), each step a task with its time, the chat's reminders
+by their step kind (a reminder that says no step counts as none):
+- no_session: a lunch counting on a session before its day (its cook date still to come) when no
+  session cooks it for that day.
+- no_cook: a dish with a dried pulse (an ingredient marked `soak`) that nothing cooks before the
+  meal: a session that cooks it for that day, a reminder of kind cook, or the meal itself when the
+  recipe is cooked (not only assembled) and has no `ahead` steps.
+- no_soak: that pulse with no soak in the SOAK_MAX_H before its cook (the app's own soak the
+  evening before the session that cooks it, or a reminder of kind soak).
+- soak_long: a soak before the cook, but longer than SOAK_MAX_H before it (SOAK_FRIDGE_MAX_H for a
+  reminder of kind soak-fridge, in the fridge).
+- thaw_long: a thaw (the app's, a container out of the freezer, a reminder of kind thaw) whose
+  cook comes more than THAW_MAX_H after it: the session that cooks the dish, a reminder of kind
+  cook, or the meal.
 - avoided: a recipe on some meal that uses a food someone avoids. The planner never picks it, so
   it never reaches the menu and nothing else ever looks at it again: swap the food or retire it.
 - going_off: food in the pantry (pantry.py) that goes off before any planned dish uses it up,
@@ -39,6 +54,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
+from . import tasks
 from .db import DB
 from .model import WEEKDAYS, Data
 from .planner import (
@@ -57,6 +73,11 @@ KINDS = (
     "uncooked",
     "prep_late",
     "prep",
+    "no_session",
+    "no_cook",
+    "no_soak",
+    "soak_long",
+    "thaw_long",
     "avoided",
     "stale_reminder",
     "going_off",
@@ -66,6 +87,10 @@ AHEAD_KEEPS_DAYS = (
     3  # what a session cooks for a later dish (pulses, a roast pepper) keeps this long
 )
 REMINDER_LEAD_DAYS = 3  # a reminder further ahead than this of its step is not about that dish
+SOAK_MAX_H = 24  # a dried pulse soaks at most this long before it is cooked, out of the fridge
+SOAK_FRIDGE_MAX_H = 48  # in the fridge (a reminder of kind soak-fridge)
+THAW_MAX_H = 48  # thawed food is cooked within this long of the thaw (fish within 24 to 48 h)
+SOAKS = ("soak", "soak-fridge")
 
 
 @dataclass(frozen=True)
@@ -92,6 +117,7 @@ def problems(data: Data, db: DB, today: dt.date, offered: list[dict] | tuple = (
     out = _off_days(data, plans, today, end)
     out += _lunches(data, plans, today, dates)
     out += _prep(data, db, plans, dates, offered)
+    out += _chains(data, db, plans, today, dates, offered)
     out += _avoided(data)
     out += [p for r in db.reminders() if (p := _stale(data, plans, r))]
     off = _going_off(data, db, plans, today, end)
@@ -294,15 +320,8 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
             continue
         for meal in MEALS:
             r = data.recipes.get(getattr(day, meal) or "")
-            if r is None or (meal == "lunch" and _cooked(plans, day)):
-                continue
-            soak = [
-                data.ingredients[i.id].name
-                for i in r.ingredients
-                if i.id in data.ingredients and data.ingredients[i.id].soak
-            ]
-            if not soak and not r.ahead:
-                continue
+            if r is None or not r.ahead or (meal == "lunch" and _cooked(plans, day)):
+                continue  # a dried pulse's soak and cook are the chain checks' (_chains)
             session = [a.step for a in r.ahead if a.session]
             before = _sessions_before(plans, d) if session else []
             # a step `days` ahead is due by the end of that day, one on the day before the meal
@@ -311,11 +330,9 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
                 for a in r.ahead
                 if not a.session
             ]
-            # a dried pulse soaks the night before it is cooked: in the session, on the earliest
-            # step's day, else on the day itself
             first = max((a.days for a in r.ahead if not a.session), default=0)
             cooked = before[-1] if before else d - dt.timedelta(days=first)
-            deadline = min([at(cooked)] if soak else [at(d, MEAL_HOURS[meal][0]), *due])
+            deadline = min([at(d, MEAL_HOURS[meal][0]), *due])
             times = linked.get((r.id, d.isoformat()), [])
             if any(
                 at(cooked - dt.timedelta(days=REMINDER_LEAD_DAYS)) <= t <= deadline for t in times
@@ -343,10 +360,7 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
                     )
                 )
                 continue
-            steps = (
-                [f"soak {', '.join(soak)} the night before {cooked.isoformat()}"] if soak else []
-            )
-            steps += [
+            steps = [
                 a.step
                 + (
                     f" (in the session of {before[-1].isoformat()})"
@@ -373,6 +387,227 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
                     {"dish": r.name, "date": d},
                 )
             )
+    return out
+
+
+def _chains(
+    data: Data, db: DB, plans: Plans, today: dt.date, dates: list[dt.date], offered
+) -> list[Problem]:
+    """The steps that hang on each other, from the task list (tasks.py): a dried pulse soaked and
+    then cooked before its meal, thawed food cooked soon after the thaw, a lunch cooked by the
+    session it counts on. Each link that is missing or too far apart is one problem."""
+    zone = ZoneInfo(data.household.timezone)
+
+    def at(d: dt.date, hm: str = "00:00") -> dt.datetime:
+        h, m = (int(x) for x in hm.split(":"))
+        return dt.datetime(d.year, d.month, d.day, h, m, tzinfo=zone)
+
+    def when(x: tasks.Task) -> dt.datetime:
+        return at(x.day, x.at)
+
+    def hm(t: dt.datetime) -> str:
+        return f"{_day(t.date())} {t:%H:%M}"
+
+    def hours(a: dt.datetime, b: dt.datetime) -> float:
+        return (b - a).total_seconds() / 3600
+
+    start = at(today)
+    first = today - dt.timedelta(days=3)  # a soak or thaw a few days back still counts
+    auto = [x for x in tasks.tasks_for(data, db, first, dates[-1]) if x.source == "auto"]
+    gone = {f"r:{int(r['cancel'])}" for r in offered if str(r.get("cancel", "")).isdigit()}
+    chat = [x for x in tasks.chat_tasks(data, db) if x.key not in gone]
+    chat += tasks.offered_tasks(data, [r for r in offered if "cancel" not in r])
+    steps: dict[tuple[str, dt.date], list[tasks.Task]] = {}
+    for x in chat:
+        if x.recipe and x.eat:
+            steps.setdefault((x.recipe, x.eat), []).append(x)
+    sessions: dict[tuple[str, dt.date], list[dt.datetime]] = {}
+    for x in auto:
+        if x.kind == "cook":
+            for rid, eat in x.dishes:
+                sessions.setdefault((rid, eat), []).append(when(x))
+    # the app's own soak, the evening before the session that cooks the dish
+    soaked = {(x.recipe, x.key.split(":")[1]) for x in auto if x.kind == "soak"}
+
+    out: list[Problem] = []
+    for d in dates:
+        day = plans.day(d)
+        if day is None:
+            continue
+        for meal in MEALS:
+            r = data.recipes.get(getattr(day, meal) or "")
+            if r is None:
+                continue
+            eat = at(d, MEAL_HOURS[meal][0])
+            what = f"{r.name} [{r.id}], {meal} on {_day(d)}"
+            link = f"`dish {r.id} {d.isoformat()}"
+            mine = steps.get((r.id, d), [])
+            by_session = [c for c in sessions.get((r.id, d), []) if c < eat]
+            counts = meal == "lunch" and day.lunch_cook < d  # cooked in a session before its day
+            if counts and day.lunch_cook < today:
+                continue  # already past: the uncooked check says when no session cooked it
+            if counts and not by_session:
+                out.append(
+                    Problem(
+                        "no_session",
+                        f"no_session:{r.id}:{d.isoformat()}",
+                        f"Lunch on {_day(d)}, {r.name} [{r.id}], counts on being cooked on "
+                        f"{_day(day.lunch_cook)}, but no session cooks it for that day, "
+                        "so nobody will. Fix: `set` it again with `cook:` a day a session comes, "
+                        "or without cook (cooked that morning).",
+                        {"dish": r.name, "date": d, "cook": day.lunch_cook},
+                    )
+                )
+                continue
+            pulses = [
+                data.ingredients[i.id].name
+                for i in r.ingredients
+                if i.id in data.ingredients and data.ingredients[i.id].soak
+            ]
+            if not pulses:
+                continue
+            food = ", ".join(pulses)
+            cooks = by_session + [when(x) for x in mine if x.kind == "cook" and when(x) < eat]
+            if not counts and not r.ahead and r.kind != "assemble":
+                cooks.append(eat)  # cooked for the meal itself
+            untyped = sorted(x.reminder for x in mine if x.kind == "note" and x.reminder)
+            legacy = (
+                f" Reminders {untyped} about this dish say no step, so they count as neither a "
+                "soak nor a cook: cancel each and list it again with the step at the end of its "
+                "dish field."
+                if untyped
+                else ""
+            )
+            if not cooks:
+                out.append(
+                    Problem(
+                        "no_cook",
+                        f"no_cook:{r.id}:{d.isoformat()}",
+                        f"{what}, uses {food}, a dried pulse, and nothing cooks it before the meal: "
+                        "no session cooks it for that day and no reminder of kind cook comes "
+                        f"before {hm(eat)}"
+                        + (", and the recipe is only assembled" if r.kind == "assemble" else "")
+                        + f". Fix: a reminders line to cook it ahead with {link} cook` and one to "
+                        f"soak it in the {SOAK_MAX_H} h before that cook with {link} soak`, or "
+                        f"`set` another dish.{legacy}",
+                        {"dish": r.name, "date": d, "food": food},
+                    )
+                )
+                continue
+            cook = max(cooks)
+            if cook < start:
+                continue  # cooked already, or it was to be: what is past is not checked again
+            soaks = [(when(x), x.kind) for x in mine if x.kind in SOAKS]
+
+            if any(
+                (c in by_session and (r.id, c.date().isoformat()) in soaked)  # the app's own soak
+                or any(0 < hours(s, c) <= _soak_max(k) for s, k in soaks)
+                for c in cooks
+            ):
+                continue
+            early = [(s, k) for s, k in soaks if s < cook]
+            if not early:
+                out.append(
+                    Problem(
+                        "no_soak",
+                        f"no_soak:{r.id}:{d.isoformat()}",
+                        f"{what}, uses {food}, a dried pulse cooked on {hm(cook)}, and no soak "
+                        f"comes in the {SOAK_MAX_H} h before that cook. Fix: a reminders line to "
+                        f"soak it then with {link} soak`, or up to {SOAK_FRIDGE_MAX_H} h before "
+                        f"in the fridge with {link} soak-fridge` (and say fridge in its text), or "
+                        f"`set` another dish.{legacy}",
+                        {"dish": r.name, "date": d, "food": food, "cook": cook.date()},
+                    )
+                )
+                continue
+            s, k = max(early)
+            fridge = k == "soak-fridge"
+            out.append(
+                Problem(
+                    "soak_long",
+                    f"soak_long:{r.id}:{d.isoformat()}",
+                    f"{what}: {food} soaks from {hm(s)} and is cooked on {hm(cook)}, "
+                    f"{hours(s, cook):.0f} h in water, more than the {_soak_max(k)} h it may soak"
+                    + (" in the fridge" if fridge else " out of the fridge")
+                    + ". Fix: move the soak (cancel its reminder and list it again) to at most "
+                    f"{SOAK_MAX_H} h before the cook"
+                    + (
+                        ""
+                        if fridge
+                        else f", or say to soak it in the fridge, up to {SOAK_FRIDGE_MAX_H} h, "
+                        f"with {link} soak-fridge`"
+                    )
+                    + ", or move the cook earlier.",
+                    {
+                        "dish": r.name,
+                        "date": d,
+                        "food": food,
+                        "soak": s.date(),
+                        "cook": cook.date(),
+                    },
+                )
+            )
+    out += _thaws(data, plans, today, auto + chat, sessions, steps, at, when, hm, hours)
+    return out
+
+
+def _soak_max(kind: str) -> int:
+    return SOAK_FRIDGE_MAX_H if kind == "soak-fridge" else SOAK_MAX_H
+
+
+def _thaws(data, plans, today, found, sessions, steps, at, when, hm, hours) -> list[Problem]:
+    """Every thaw (the app's own, a container out of the freezer, a reminder of kind thaw) needs
+    its cooking within THAW_MAX_H of it: a session that cooks the dish, a reminder of kind cook, or
+    the meal. A move to the fridge or the freezer is not looked at: a move to the freezer has no
+    clock."""
+    out: list[Problem] = []
+    seen: set[str] = set()
+    for x in sorted(found, key=lambda x: (when(x), x.key)):
+        if x.kind not in ("thaw", "defrost") or not x.recipe or not x.eat or x.eat < today:
+            continue
+        t0 = when(x)
+        if t0 < at(today - dt.timedelta(days=3)):
+            continue
+        day = plans.day(x.eat)
+        meal = next((m for m in MEALS if day and getattr(day, m) == x.recipe), None)
+        if meal is None:
+            continue  # the menu dropped the dish: the stale reminder check says so
+        eat = at(x.eat, MEAL_HOURS[meal][0])
+        counts = meal == "lunch" and day.lunch_cook < x.eat
+        if x.kind == "defrost":
+            cooks = [eat]  # a cooked container: it is warmed up for the meal
+        else:
+            cooks = [c for c in sessions.get((x.recipe, x.eat), []) if c < eat]
+            cooks += [
+                when(y)
+                for y in steps.get((x.recipe, x.eat), [])
+                if y.kind == "cook" and when(y) < eat
+            ]
+            if not counts:
+                cooks.append(eat)
+        after = [c for c in cooks if c >= t0]
+        if not after:
+            continue  # cooked before this thaw: it is not the thaw of that cook
+        cook = min(after)
+        key = f"thaw_long:{x.recipe}:{x.eat.isoformat()}"
+        if hours(t0, cook) <= THAW_MAX_H or key in seen:
+            continue
+        seen.add(key)
+        r = data.recipes[x.recipe]
+        which = f" (reminder {x.reminder})" if x.reminder else ""
+        out.append(
+            Problem(
+                "thaw_long",
+                key,
+                f"{r.name} [{r.id}], {meal} on {_day(x.eat)}, is thawed on {hm(t0)}{which} and "
+                f"cooked on {hm(cook)}, {hours(t0, cook):.0f} h later: thawed food is cooked "
+                f"within {THAW_MAX_H} h (fish within 24 to 48 h). Fix: move the thaw to at most "
+                f"{THAW_MAX_H} h before the cook (cancel its reminder and list it again), or move "
+                "the cook earlier; if it is already out of the freezer, cook it now or `set` the "
+                "dish on an earlier day.",
+                {"dish": r.name, "date": x.eat, "thaw": t0.date(), "cook": cook.date()},
+            )
+        )
     return out
 
 

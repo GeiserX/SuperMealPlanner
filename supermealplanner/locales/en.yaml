@@ -383,6 +383,11 @@ problem_too_old: "lunch on {date} ({dish}) is cooked on {cook} and does not keep
 problem_uncooked: "lunch on {date} ({dish}) says it was cooked on {cook}, but nobody cooked it"
 problem_prep_late: "{dish} on {date} counts on a cooking session before that day, and none comes before"
 problem_prep: "{dish} on {date} needs something done ahead and no reminder for it is set"
+problem_no_session: "lunch on {date} ({dish}) counts on a cooking session on {cook} that does not cook it"
+problem_no_cook: "{dish} on {date} has {food}, dried, and nothing cooks it before the meal"
+problem_no_soak: "{dish} on {date} has {food} cooked on {cook}, and nothing has it soaked the day before"
+problem_soak_long: "{food} for {dish} on {date} soaks from {soak} to {cook}, longer than it may"
+problem_thaw_long: "{dish} on {date} is thawed on {thaw} but only cooked on {cook}, more than two days later"
 problem_avoided: "{dish} uses {food}, which one of us does not eat, so it never reaches the menu"
 
 # the virtual pantry (pantry.py): the list page's section and changes from the chat

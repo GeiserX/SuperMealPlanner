@@ -64,18 +64,37 @@ def tasks_for(data: Data, db: DB, first: dt.date, last: dt.date, bot=None) -> li
     """Every task done from `first` to `last` (both included), in time order. bot: the words each task is said in (a running bot.Bot); without it the texts are
     empty, which is all the plain-code checks need."""
     plans = Plans(data)
-    zone = ZoneInfo(data.household.timezone)
     out: list[Task] = []
     day = first
     while day <= last:
         out += _day(data, db, plans, day, bot)
         day += dt.timedelta(days=1)
+    out += [x for x in chat_tasks(data, db) if first <= x.day <= last]
+    return sorted(out, key=lambda x: (x.day, x.at, x.key))
+
+
+def chat_tasks(data: Data, db: DB) -> list[Task]:
+    """Every reminder set from a chat, still to come or already sent, as a task."""
+    zone = ZoneInfo(data.household.timezone)
+    out = []
     for st in ("pending", "sent"):
         for r in db.reminders(state=st):
-            when = dt.datetime.fromtimestamp(r["at"], zone)
-            if first <= when.date() <= last:
-                out.append(_chat(f"r:{r['id']}", when, r, r["id"]))
-    return sorted(out, key=lambda x: (x.day, x.at, x.key))
+            out.append(_chat(f"r:{r['id']}", dt.datetime.fromtimestamp(r["at"], zone), r, r["id"]))
+    return out
+
+
+def offered_tasks(data: Data, offered) -> list[Task]:
+    """The reminders an answer offers ({"when": "YYYY-MM-DD HH:MM", "text", "recipe", "date",
+    "kind"}, as llm.reminders gives them) as the tasks they become once set (`offer:<n>`)."""
+    zone = ZoneInfo(data.household.timezone)
+    out = []
+    for n, r in enumerate(offered):
+        try:
+            when = dt.datetime.strptime(str(r.get("when")), "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        out.append(_chat(f"offer:{n}", when.replace(tzinfo=zone), r, None))
+    return out
 
 
 def _chat(key: str, when: dt.datetime, r: dict, rid: int | None) -> Task:

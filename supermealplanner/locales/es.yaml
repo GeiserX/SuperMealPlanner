@@ -382,6 +382,11 @@ problem_too_old: "la comida del {date} ({dish}) se cocina el {cook} y no aguanta
 problem_uncooked: "la comida del {date} ({dish}) figura como cocinada el {cook}, pero nadie la cocinó"
 problem_prep_late: "{dish} del {date} cuenta con una sesión de cocina antes de ese día, y no hay ninguna antes"
 problem_prep: "{dish} del {date} necesita algo hecho antes y no hay recordatorio para ello"
+problem_no_session: "la comida del {date} ({dish}) cuenta con una sesión de cocina el {cook} que no la cocina"
+problem_no_cook: "{dish} del {date} lleva {food} seco y nada lo cuece antes de esa comida"
+problem_no_soak: "{dish} del {date} lleva {food} que se cuece el {cook}, y nada lo deja a remojo el día antes"
+problem_soak_long: "{food} de {dish} del {date} está a remojo del {soak} al {cook}, más de lo que puede"
+problem_thaw_long: "{dish} del {date} se descongela el {thaw} pero no se cocina hasta el {cook}, más de dos días después"
 problem_avoided: "{dish} lleva {food}, que alguien de casa no come, así que nunca entra en el menú"
 
 # the virtual pantry (pantry.py): the list page's section and changes from the chat

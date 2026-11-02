@@ -61,21 +61,22 @@ def test_lunches_cooked_in_a_session_need_no_prep_reminder(data_dir, tmp_path):
     assert [p.kind for p in doctor.problems(data, db, MONDAY) if p.kind != "avoided"] == []
 
 
-def test_a_dinner_with_a_dried_pulse_and_no_soak_reminder_is_flagged_until_one_comes_in_time(
-    data_dir, tmp_path
-):
+def test_a_dinner_with_a_dried_pulse_needs_a_cook_and_a_soak_in_time(data_dir, tmp_path):
     _b, db = setup(data_dir, tmp_path)
     data = soak(data_dir)
-    dinner(data, D(2))  # Wednesday 14
-    (p,) = [p for p in doctor.problems(data, db, MONDAY) if p.kind == "prep"]
-    assert p.key == "prep:ensalada-garbanzos:2026-10-14"
-    assert "soak Garbanzo the night before 2026-10-14" in p.text
-    assert "`dish ensalada-garbanzos 2026-10-14`" in p.text
-    # a reminder on the day itself is too late to soak
-    db.add_reminder(-100, "ana", at(D(2), 10), "Remojo", 7, "ensalada-garbanzos", str(D(2)))
-    assert "prep:ensalada-garbanzos:2026-10-14" in keys(data, db)
-    db.add_reminder(-100, "ana", at(D(1), 20), "Remojo", 7, "ensalada-garbanzos", str(D(2)))
-    assert "prep:ensalada-garbanzos:2026-10-14" not in keys(data, db)
+    dinner(data, D(2))  # Wednesday 14, an assembled salad: the chickpeas are cooked ahead
+    assert "prep:ensalada-garbanzos:2026-10-14" not in keys(data, db)  # the chains say it
+    p = {p.kind: p for p in doctor.problems(data, db, MONDAY)}["no_cook"]
+    assert p.key == "no_cook:ensalada-garbanzos:2026-10-14"
+    assert "`dish ensalada-garbanzos 2026-10-14 cook`" in p.text
+    cook = ("ensalada-garbanzos", str(D(2)), "cook")
+    db.add_reminder(-100, "ana", at(D(2), 10), "Cocer", 7, *cook)
+    assert "no_soak:ensalada-garbanzos:2026-10-14" in keys(data, db)
+    # a soak after the cook does not count; one the evening before does
+    db.add_reminder(-100, "ana", at(D(2), 11), "Remojo", 7, *cook[:2], "soak")
+    assert "no_soak:ensalada-garbanzos:2026-10-14" in keys(data, db)
+    db.add_reminder(-100, "ana", at(D(1), 20), "Remojo", 7, *cook[:2], "soak")
+    assert not [k for k in keys(data, db) if "ensalada-garbanzos" in k]
 
 
 def test_a_dish_counting_on_a_session_held_the_same_evening_is_flagged(data_dir, tmp_path):
@@ -90,8 +91,13 @@ def test_a_dish_counting_on_a_session_held_the_same_evening_is_flagged(data_dir,
     p = found["prep_late:ensalada-garbanzos:2026-10-16"]
     assert "Asar el pimiento" in p.text and "the session that day comes after the meal" in p.text
     assert "prep:ensalada-garbanzos:2026-10-16" not in found  # said once
-    # someone told to roast it at home the day before: nothing left to fix
-    db.add_reminder(-100, "ana", at(D(3), 20), "Asar", 7, "ensalada-garbanzos", str(friday))
+    assert "no_cook:ensalada-garbanzos:2026-10-16" in found  # and nothing cooks the chickpeas
+    # someone told to roast and cook it at home the day before, the chickpeas soaked the night
+    # before that: nothing left to fix
+    db.add_reminder(-100, "ana", at(D(3), 20), "Asar", 7, "ensalada-garbanzos", str(friday), "cook")
+    db.add_reminder(
+        -100, "ana", at(D(2), 21), "Remojo", 7, "ensalada-garbanzos", str(friday), "soak"
+    )
     assert not [k for k in keys(data, db) if "ensalada-garbanzos" in k]
 
 
@@ -99,29 +105,28 @@ def test_a_session_step_after_a_session_still_needs_its_reminder(data_dir, tmp_p
     _b, db = setup(data_dir, tmp_path)
     data = soak(data_dir, ahead=[{"step": "Asar el pimiento", "session": True}])
     dinner(data, D(1))  # Tuesday 13: Monday's session comes before
-    (p,) = [p for p in doctor.problems(data, db, MONDAY) if "ensalada" in p.key]
-    assert p.kind == "prep"
-    assert "the night before 2026-10-12" in p.text  # the pulse soaks before the session cooks it
+    (p,) = [p for p in doctor.problems(data, db, MONDAY) if p.kind == "prep"]
     assert "Asar el pimiento (in the session of 2026-10-12)" in p.text
+    assert "no_cook:ensalada-garbanzos:2026-10-13" in keys(data, db)  # a dinner is not in it
 
 
 def test_an_offered_reminder_counts_and_one_without_the_dish_link_does_not(data_dir, tmp_path):
     _b, db = setup(data_dir, tmp_path)
-    data = soak(data_dir)
+    data = soak(data_dir, kind="quick")  # cooked for the dinner: only the soak is missing
     dinner(data, D(2))
     plain = [{"when": "2026-10-13 20:00", "text": "Remojo", "person": None}]
-    linked = [{**plain[0], "recipe": "ensalada-garbanzos", "date": "2026-10-14"}]
-    assert "prep:ensalada-garbanzos:2026-10-14" in [
+    linked = [{**plain[0], "recipe": "ensalada-garbanzos", "date": "2026-10-14", "kind": "soak"}]
+    assert "no_soak:ensalada-garbanzos:2026-10-14" in [
         p.key for p in doctor.problems(data, db, MONDAY, plain)
     ]
-    assert "prep:ensalada-garbanzos:2026-10-14" not in [
+    assert "no_soak:ensalada-garbanzos:2026-10-14" not in [
         p.key for p in doctor.problems(data, db, MONDAY, linked)
     ]
 
 
-def test_too_late_to_soak_says_to_move_the_dish(data_dir, tmp_path):
+def test_too_late_for_a_step_ahead_says_to_move_the_dish(data_dir, tmp_path):
     _b, db = setup(data_dir, tmp_path)
-    data = soak(data_dir)
+    data = soak(data_dir, ahead=[{"step": "Cocer los garbanzos", "days": 1}])
     dinner(data, D(2))
     (p,) = [p for p in doctor.problems(data, db, D(2)) if p.kind == "prep"]
     assert "It is too late for that day" in p.text
@@ -181,7 +186,8 @@ def test_the_28_10_case_is_caught_before_it_is_made_and_the_files_stay_as_they_w
     problems, after = verifier.structural(
         b.data, db, MONDAY, yaml.safe_load(bad_dinner()[10:-3]), "ana", []
     )
-    assert len(problems) == 1 and "the session that day comes after the meal" in problems[0]
+    assert len(problems) == 2 and "the session that day comes after the meal" in problems[0]
+    assert "nothing cooks it before the meal" in problems[1]
     assert plan_file.read_text() == before  # only the copy changed
     assert any("ensalada-garbanzos" in x for x in after["menu"])
     assert after["recipes"][0].startswith("### ensalada-garbanzos")
@@ -280,18 +286,19 @@ def test_a_broken_provider_hands_the_first_answer_on(data_dir, tmp_path):
     assert out is reply
 
 
-def test_a_step_done_the_night_before_moves_the_soak_a_day_earlier(data_dir, tmp_path):
+def test_a_pulse_cooked_the_night_before_is_soaked_the_night_before_that(data_dir, tmp_path):
     _b, db = setup(data_dir, tmp_path)
     data = soak(data_dir, ahead=[{"step": "Cocer los garbanzos", "days": 1}])
     dinner(data, D(3))  # Thursday 15: cooked on Wednesday night, so soaked on Tuesday
     (p,) = [p for p in doctor.problems(data, db, MONDAY) if p.kind == "prep"]
-    assert (
-        "the night before 2026-10-14" in p.text and "Cocer los garbanzos (by 2026-10-14)" in p.text
-    )
-    db.add_reminder(-100, "ana", at(D(2), 21), "Remojo", 7, "ensalada-garbanzos", str(D(3)))
-    assert "prep:ensalada-garbanzos:2026-10-15" in keys(data, db)  # Wednesday night is too late
-    db.add_reminder(-100, "ana", at(D(1), 21), "Remojo", 7, "ensalada-garbanzos", str(D(3)))
-    assert "prep:ensalada-garbanzos:2026-10-15" not in keys(data, db)
+    assert "Cocer los garbanzos (by 2026-10-14)" in p.text
+    dish = ("ensalada-garbanzos", str(D(3)))
+    db.add_reminder(-100, "ana", at(D(2), 18), "Cocer", 7, *dish, "cook")
+    assert keys(data, db) == ["no_soak:ensalada-garbanzos:2026-10-15"]
+    db.add_reminder(-100, "ana", at(D(1), 8), "Remojo", 7, *dish, "soak")  # 34 h before
+    assert keys(data, db) == ["soak_long:ensalada-garbanzos:2026-10-15"]
+    db.add_reminder(-100, "ana", at(D(1), 21), "Remojo", 7, *dish, "soak")
+    assert keys(data, db) == []
 
 
 def test_the_check_knows_the_swaps_the_app_already_makes(data_dir, tmp_path):
