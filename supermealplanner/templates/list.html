@@ -52,7 +52,7 @@
   <ul class="check">
   {% for x in pantry %}
     <li><span class="name">{{ x.name }}{% if x.ingredient in stocked %}<br><small>{{ t('pantry_off_list') }}</small>{% endif %}</span>
-      <span class="qty">{{ x.amount }}{% if x.expires %}<br><small>{{ t('pantry_until', date=t.date(x.expires - one_day)) }}</small>{% endif %}</span></li>
+      <span class="qty">{{ x.amount }}{% if x.expires %}<br><small>{{ t('pantry_until', date=t.date(x.expires - one_day)) }}</small>{% endif %}{% if x.frozen_amount %}<br><small>{{ t('pantry_frozen', amount=x.frozen_amount) }}</small>{% endif %}</span></li>
   {% endfor %}
   </ul>
   {% else %}<p class="empty">{{ t('pantry_empty') }}</p>{% endif %}

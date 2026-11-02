@@ -790,7 +790,8 @@ def _going_off(data: Data, db: DB, plans: Plans, today: dt.date, end: dt.date) -
                 f"going_off:{lot.ingredient}:{d.isoformat()}",
                 f"{ing.name} [{ing.id}] in the pantry ({fmt_qty(ing, lot.qty, data.locale)} left "
                 f"by then) is good until {_day(last)} and no planned dish uses it up before. Fix: "
-                f"`set` a dish with it on or before {last.isoformat()}, or say to freeze it.",
+                f"`set` a dish with it on or before {last.isoformat()}, or say to freeze it; "
+                f"once it is frozen, or its label gives a later day, `pantry` says so.",
                 {"food": ing.name, "date": last},
             )
         )

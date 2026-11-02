@@ -554,6 +554,7 @@ def router(state) -> APIRouter:
                     "amount": x.amount,
                     "since": x.since.isoformat(),
                     "expires": x.expires.isoformat() if x.expires else None,
+                    "frozen": round(x.frozen, 1),
                 }
                 for x in items
             ],

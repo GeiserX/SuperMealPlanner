@@ -51,10 +51,11 @@ CREATE TABLE IF NOT EXISTS rating (
 );
 -- What came into the pantry: a tick on a week's list (week set; unticking deletes it) or the amount
 -- the chat said is at home (source 'set', which replaces what was there). pantry.py works out what
--- is left from these, the plan and each ingredient's keeps_days; nothing else is stored.
+-- is left from these, the plan and each ingredient's keeps_days; nothing else is stored. A 'set'
+-- entry may carry its own last good day (use_by, from a label) and frozen (1: in the freezer).
 CREATE TABLE IF NOT EXISTS pantry (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ingredient TEXT NOT NULL, qty REAL NOT NULL,
-  at TEXT NOT NULL, source TEXT NOT NULL, week TEXT
+  at TEXT NOT NULL, source TEXT NOT NULL, week TEXT, use_by TEXT, frozen INTEGER
 );
 -- What someone said of a task (tasks.py), with its buttons or in words: done or not_done, by whom,
 -- when. A task with no row is unknown: nothing counts it as done. A later answer replaces it.
@@ -78,7 +79,8 @@ HAVE = "shop.have"  # «I have it»: ingredient id -> the day it was marked (pan
 TICKED = "shop.ticked"  # {monday: [ingredient ids]} ticked that week, in tick order, on every phone
 TICKED_AT = "shop.ticked_at"  # {monday: {ingredient id: when it was ticked}}, beside TICKED
 TICKED_WEEKS = 8
-PANTRY_DAYS = 120  # pantry entries older than this are forgotten
+PANTRY_DAYS = 120  # pantry entries older than this are forgotten, unless still good (add_lot)
+FROZEN_DAYS = 180  # a frozen entry without its own use_by keeps this long (pantry.py)
 TASK_KEEP_DAYS = 60  # task answers older than this are forgotten
 
 
@@ -100,6 +102,10 @@ class DB:
             for col in ("recipe", "date", "kind"):
                 if col not in cols:
                     c.execute(f"ALTER TABLE reminder ADD COLUMN {col} TEXT")
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(pantry)")}
+            for col, kind in (("use_by", "TEXT"), ("frozen", "INTEGER")):  # before 0.42
+                if col not in cols:
+                    c.execute(f"ALTER TABLE pantry ADD COLUMN {col} {kind}")
 
     @contextmanager
     def conn(self):
@@ -508,10 +514,19 @@ class DB:
 
     # the pantry's entries (pantry.py decides what they mean)
     def add_lot(
-        self, ingredient: str, qty: float, at: dt.datetime, source: str, week: dt.date | None = None
+        self,
+        ingredient: str,
+        qty: float,
+        at: dt.datetime,
+        source: str,
+        week: dt.date | None = None,
+        use_by: dt.date | None = None,
+        frozen: bool = False,
     ) -> None:
-        """A tick's entry replaces that week's earlier one for the ingredient; entries older than
-        PANTRY_DAYS are dropped, so the table never grows."""
+        """A tick's entry replaces that week's earlier one for the ingredient. use_by: the last day
+        it is good, from its label; frozen: it is in the freezer. Entries older than PANTRY_DAYS
+        are dropped, so the table never grows, except one still good: a frozen one within
+        FROZEN_DAYS, or one whose use_by has not passed."""
         with self.conn() as c:
             if week is not None:
                 c.execute(
@@ -519,17 +534,29 @@ class DB:
                     (week.isoformat(), ingredient),
                 )
             c.execute(
-                "INSERT INTO pantry(ingredient, qty, at, source, week) VALUES (?,?,?,?,?)",
+                "INSERT INTO pantry(ingredient, qty, at, source, week, use_by, frozen) "
+                "VALUES (?,?,?,?,?,?,?)",
                 (
                     ingredient,
                     qty,
                     at.astimezone(dt.UTC).isoformat(timespec="seconds"),
                     source,
                     week.isoformat() if week else None,
+                    use_by.isoformat() if use_by else None,
+                    1 if frozen else None,
                 ),
             )
             old = (at - dt.timedelta(days=PANTRY_DAYS)).astimezone(dt.UTC)
-            c.execute("DELETE FROM pantry WHERE at < ?", (old.isoformat(timespec="seconds"),))
+            cold = (at - dt.timedelta(days=FROZEN_DAYS)).astimezone(dt.UTC)
+            c.execute(
+                "DELETE FROM pantry WHERE at < ? AND (frozen IS NULL OR at < ?) "
+                "AND (use_by IS NULL OR use_by < ?)",
+                (
+                    old.isoformat(timespec="seconds"),
+                    cold.isoformat(timespec="seconds"),
+                    at.astimezone(dt.UTC).date().isoformat(),
+                ),
+            )
 
     def drop_tick_lot(self, week: dt.date, ingredient: str) -> None:
         with self.conn() as c:

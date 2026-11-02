@@ -254,7 +254,12 @@ asked: true
 pantry:
   rice: 1000      # there is a kilo of rice
   olive-oil: 0    # the oil ran out
+  beef-mince: {qty: 500, use_by: 2026-01-17}                # the label's last good day
+  green-beans: {qty: 800, frozen: true}                     # blanched and frozen
+  chicken: [{qty: 600, frozen: true}, {qty: 400}]           # its parts: frozen, and in the fridge
 ```
+
+Instead of the amount, an ingredient takes `{qty, use_by, frozen}`, or a list of those for the parts of it kept apart. `use_by` is the last day it is good, from its label: it replaces `keeps_days` for that part. `frozen: true` keeps it until its `use_by`, or 180 days without one. There is no separate thaw: food taken out of the freezer is set again without `frozen`, and its `keeps_days` run from that day. Every part of one ingredient is given together, since the line replaces all of it.
 
 What someone says in words of a step (a cooking session, a soak, a thaw) is stored with `tasks`, the same as its Done and Not done buttons ([how it works](how-it-works.md)): the task's key, as the AI's facts list it, and `done`, `not_done`, or `unknown` to take an answer back. It is written to the database; a key the task list does not have is refused.
 

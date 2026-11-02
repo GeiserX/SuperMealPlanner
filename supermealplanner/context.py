@@ -113,6 +113,12 @@ of it there is ("the oil is finished", "there is a kilo of rice"), set it with `
 at home now, in the ingredient's unit (g, ml or units), 0 when it ran out. The app keeps the rest
 true by itself: a tick on the list adds what it bought, the days the plan cooks take their
 ingredients out, and fresh food goes off; the list does not ask for what the pantry has enough of.
+Fresh food goes off its usual days after it came in. When someone says the date on its label ("the
+meat says the 9th"), give that day as `use_by`, the last day it is good. When someone says they
+froze it ("lo he congelado", "I put the fish in the freezer"), set it with `frozen: true`: it keeps
+for months. When it comes out of the freezer to thaw, set it again without `frozen`: from that day
+it keeps its usual days. Food kept apart (half frozen, half in the fridge) is a list of its parts;
+each `pantry` line replaces everything the pantry had of that food, so give every part.
 
 An ingredient the list does not know yet (a rice, a fruit) you add with `ingredients`: its id, name,
 section and store (ones the data already uses) and unit. A recipe in the same change can then use
@@ -158,6 +164,8 @@ recipes:
   <existing recipe id>: {meals: [snack], tags: [light]}   # only the fields that change, each one whole
 pantry:
   <ingredient id>: 1000   # what is at home now, in the ingredient's unit; 0: it ran out
+  <ingredient id>: {qty: 600, use_by: 2026-01-17}   # the label's last good day
+  <ingredient id>: [{qty: 400, frozen: true}, {qty: 300}]   # its parts: frozen, and in the fridge
 ingredients:
   <new ingredient id>: {name: ..., section: <section id>, store: <store id>, unit: g}   # new ones only
 tasks:
@@ -551,7 +559,8 @@ def pantry_now(data: Data, db: DB, today: dt.date) -> list[str]:
     ]
     for x in items:
         good = f", good until {x.expires - dt.timedelta(days=1)}" if x.expires else ""
-        out.append(f"- {x.name} [{x.ingredient}]: {x.amount}, since {x.since}{good}")
+        cold = f"; {x.frozen_amount} of it in the freezer" if x.frozen_amount else ""
+        out.append(f"- {x.name} [{x.ingredient}]: {x.amount}, since {x.since}{good}{cold}")
     if have:
         out.append("- at home in an amount nobody counted («I have it»): " + ", ".join(have))
     out.append(

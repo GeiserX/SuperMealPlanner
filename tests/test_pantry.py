@@ -12,7 +12,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from supermealplanner import context, doctor, pantry
-from supermealplanner.db import DB
+from supermealplanner.db import DB, FROZEN_DAYS, PANTRY_DAYS
 from supermealplanner.model import load
 from supermealplanner.planner import plan_for
 from supermealplanner.portions import ingredients_of, needs, servings_on, shopping_list
@@ -320,3 +320,161 @@ def test_the_list_asks_again_for_fresh_food_marked_long_ago(data_dir, tmp_path):
     shop = shopping_list(data, db, plan, MONDAY, today=MONDAY)
     lines = {line.ingredient.id for sl in shop.stores for line in sl.lines}
     assert "pollo" in lines and "pollo" not in {i.id for i in shop.have}
+
+
+# ---------------------------------------------------------------- a label's date, the freezer
+
+
+def chicken_days(data, db):
+    """The days of the plan's first week that cook chicken."""
+    return [D(n) for n in range(7) if used(data, db, "pollo", D(n))]
+
+
+def test_a_label_date_keeps_fresh_food_until_that_day(data_dir, tmp_path):
+    """Tray meat bought on Monday carries a label a week later; by keeps_days alone the app had it
+    gone by Wednesday. A use-by said in the chat is the last good day."""
+    _b, db = setup(data_dir, tmp_path)
+    data = keeps(data_dir, espinaca=2)
+    pantry.correct(data, db, {"espinaca": [pantry.Part(300, use_by=D(5))]}, at(0))
+    assert qty(data, db, D(5), "espinaca") == 300
+    assert next(x for x in pantry.now(data, db, D(5))).expires == D(6)
+    assert qty(data, db, D(6), "espinaca") == 0
+
+
+def test_frozen_food_keeps_for_months_and_a_thaw_starts_its_days_again(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = keeps(data_dir, espinaca=3)
+    pantry.correct(data, db, {"espinaca": [pantry.Part(300, frozen=True)]}, at(0))
+    (x,) = pantry.now(data, db, D(60))
+    assert x.qty == 300 and x.frozen == 300 and x.expires == D(FROZEN_DAYS)
+    assert qty(data, db, D(FROZEN_DAYS), "espinaca") == 0  # the cap
+    pantry.correct(data, db, {"espinaca": 300}, at(60))  # out of the freezer to thaw
+    (x,) = pantry.now(data, db, D(61))
+    assert x.frozen == 0 and x.expires == D(63)
+
+
+def test_the_cooking_takes_what_goes_off_first_and_the_freezer_waits(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    day, _ = lentils_week(b.data, db)
+    gone = used(b.data, db, "lenteja", day)
+    assert gone < 1000
+    parts = [pantry.Part(1000, frozen=True), pantry.Part(1000)]
+    pantry.correct(b.data, db, {"lenteja": parts}, at(0, 7))
+    (x,) = [
+        x for x in pantry.now(b.data, db, day + dt.timedelta(days=1)) if x.ingredient == "lenteja"
+    ]
+    assert math.isclose(x.qty, 2000 - gone) and x.frozen == 1000  # both parts, set together
+    assert x.frozen_amount
+
+
+def test_a_frozen_or_labelled_entry_outlives_the_pantrys_forgetting(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    db.add_lot("espinaca", 100, at(0), "set")
+    db.add_lot("salmon", 100, at(0), "set", frozen=True)
+    db.add_lot("merluza", 100, at(0), "set", use_by=D(PANTRY_DAYS + 30))
+    db.add_lot("lenteja", 100, at(PANTRY_DAYS + 1), "set")  # the add that forgets the old ones
+    assert {r["ingredient"] for r in db.lots()} == {"salmon", "merluza", "lenteja"}
+    db.add_lot("lenteja", 100, at(FROZEN_DAYS + 1), "set")
+    assert {r["ingredient"] for r in db.lots()} == {"lenteja"}
+
+
+def test_the_list_does_not_ask_again_for_meat_its_label_or_the_freezer_keeps(data_dir, tmp_path):
+    """From Wednesday the list asked again for Saturday's meat, gone by keeps_days; blanched
+    frozen food came back on the list three days after it went into the freezer."""
+    _b, db = setup(data_dir, tmp_path)
+    data = keeps(data_dir, pollo=2)
+    plan = plan_for(data, MONDAY)
+    days = chicken_days(data, db)
+    assert days[-1] >= D(3), "the fixture week must cook chicken late in the week"
+    week = used(data, db, "pollo", *days) + 50
+
+    def asked(today):
+        shop = shopping_list(data, db, plan, MONDAY, today=today)
+        return "pollo" in {x.ingredient.id for s in shop.stores for x in s.lines}
+
+    pantry.correct(data, db, {"pollo": week}, at(0, 7))
+    assert asked(D(0))  # keeps 2 days: gone before the last chicken day
+    pantry.correct(data, db, {"pollo": [pantry.Part(week, use_by=days[-1])]}, at(0, 8))
+    assert not asked(D(0)) and not asked(D(2))
+    pantry.correct(data, db, {"pollo": [pantry.Part(week, frozen=True)]}, at(0, 9))
+    assert not asked(D(0)) and not asked(D(2))
+
+
+def test_the_day_message_does_not_call_labelled_meat_missing(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = keeps(data_dir, pollo=2)
+    days = [d for d in chicken_days(data, db) if d > D(2)]
+    assert days, "the fixture week must cook chicken after Wednesday"
+    day = days[0]
+    plan = plan_for(data, day)
+    week = used(data, db, "pollo", *chicken_days(data, db)) + 50
+    pantry.correct(data, db, {"pollo": week}, at(0, 7))
+    assert "pollo" in {i.id for i, _ in pantry.unbought(data, db, plan, day)}
+    pantry.correct(data, db, {"pollo": [pantry.Part(week, use_by=day)]}, at(0, 8))
+    assert "pollo" not in {i.id for i, _ in pantry.unbought(data, db, plan, day)}
+
+
+def test_a_pantry_change_takes_a_use_by_frozen_and_parts(data):
+    from supermealplanner import changes
+
+    p = changes.parse(
+        {
+            "pantry": {
+                "pollo": {"qty": 500, "use_by": "2026-01-17"},
+                "lenteja": [{"qty": 400, "frozen": True}, {"qty": 300}],
+                "aceite": 0,
+            }
+        },
+        data,
+    )
+    assert p.pantry == {
+        "pollo": [pantry.Part(500, dt.date(2026, 1, 17))],
+        "lenteja": [pantry.Part(400, frozen=True), pantry.Part(300)],
+        "aceite": [pantry.Part(0)],
+    }
+    for bad in (
+        {"pollo": {"qty": 5, "use_by": "soon"}},
+        {"pollo": {"qty": 5, "frozen": "yes"}},
+        {"pollo": {"qty": 5, "colour": "red"}},
+        {"pollo": {"use_by": "2026-01-17"}},
+        {"pollo": []},
+    ):
+        with pytest.raises(changes.ChangeError):
+            changes.parse({"pantry": bad}, data)
+
+
+def test_the_chat_says_it_froze_the_food_and_the_pantry_keeps_it(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    said = {"asked": True, "pantry": {"pollo": {"qty": 500, "frozen": True}}}
+    cfg(data_dir, text=change(said))
+    run(b.handle(None, msg("@chefbot I froze the chicken")))
+    (lot,) = db.lots()
+    assert lot["frozen"] == 1 and lot["use_by"] is None and lot["qty"] == 500
+    from supermealplanner import changes
+    from supermealplanner.i18n import Translator
+
+    p = changes.parse({"pantry": {"pollo": {"qty": 500, "use_by": "2026-01-17"}}}, b.data)
+    (line,) = changes.describe(p, b.data, Translator("en"))
+    assert line.startswith("• In the pantry: Pollo, 500 g")
+    assert line.endswith(", good until " + Translator("en").date(dt.date(2026, 1, 17)))
+    p = changes.parse({"pantry": {"pollo": {"qty": 500, "frozen": True}}}, b.data)
+    assert changes.describe(p, b.data, Translator("es"))[0].endswith(" en el congelador")
+
+
+def test_the_ai_is_told_when_to_give_a_use_by_or_frozen_and_sees_the_freezer(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    assert "`use_by`" in context.CHANGES and "frozen: true" in context.CHANGES
+    assert "lo he congelado" in context.CHANGES
+    pantry.correct(b.data, db, {"lenteja": [pantry.Part(400, frozen=True)]}, at(0, 7))
+    assert "of it in the freezer" in context.facts(b.data, db, MONDAY)
+
+
+def test_the_page_and_the_phone_show_what_is_in_the_freezer(app, data_dir):
+    client = app
+    h = auth(pair(client, data_dir)["token"])
+    data = load(data_dir)
+    pantry.correct(data, db_of(data_dir), {"lenteja": [pantry.Part(400, frozen=True)]})
+    got = client.get("/api/v1/pantry", headers=h).json()
+    (x,) = got["items"]
+    assert x["frozen"] == 400 and x["expires"]
+    assert "in the freezer" in client.get(f"/list?d={MONDAY}").text.split("In the pantry")[1]
