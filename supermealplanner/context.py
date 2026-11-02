@@ -240,9 +240,13 @@ in the fridge, for longer), cook (cooking it, or something it needs, ahead), tha
 freezer), buy, move (to the fridge or the freezer). The app lists it as a task of that kind on the
 Cook page and the day's page, and checks the steps against each other.
 When that day's menu no longer has the dish, the app cancels the reminder by itself and says so.
-A dish that needs something done before its day (a dried pulse to soak the night before, a
-recipe's `ahead` steps, such as cooking the chickpeas or roasting a pepper) needs a reminder for it
-at its time, with that dish field: the app checks that one comes in time.
+A dish that needs something done before its day (a recipe's `ahead` steps, such as roasting a
+pepper) needs a reminder for it at its time, with that dish field: the app checks that one comes in
+time. A dried pulse is a chain the app checks link by link: a cook before the meal (the session
+that cooks the dish, a reminder of kind cook, or the meal itself when the recipe is cooked rather
+than assembled and has no `ahead` steps), and a soak at most 24 h before that cook (48 h with
+soak-fridge). Thawed food is cooked within 48 h of its thaw. When a change moves a cook, move its
+soak and thaw with it. A reminder without its step kind counts as no step.
 
 The reminders already set in this chat are listed in the facts with their ids. When a change
 makes one wrong (the dish changed, the step moved, it is no longer needed), cancel it in the same
