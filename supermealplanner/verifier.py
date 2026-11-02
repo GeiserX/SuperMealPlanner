@@ -184,7 +184,8 @@ async def after(
     taken just before the first of them changed anything."""
     text = "\n\n---\n\n".join(a["text"] for a in answers)
     offered = [r for a in answers for r in a.get("offered") or []]
-    # a change already made is in the data; one that waits for a yes is made on a copy
+    # a change already made is in the data; the ones still waiting for a yes are made on a copy,
+    # in the order they were offered
     waiting = [a["change"] for a in answers if isinstance(a.get("change"), dict) and not a["made"]]
     try:
         items = await findings(
@@ -193,7 +194,7 @@ async def after(
             today,
             turn,
             text,
-            waiting[-1] if waiting else None,
+            waiting,
             offered,
             viewer,
             asker,
@@ -213,21 +214,26 @@ async def findings(
     today: dt.date,
     turn: dict,
     text: str,
-    change: dict | None,
+    waiting: list[dict] | dict | None,
     offered: list[dict],
     viewer=None,
     asker=None,
     before: set[str] | None = None,
     timeout: float | None = None,
 ) -> list[str]:
-    """One review: what the structural check and the judgment found. change: a block still waiting
-    for a yes, made on a copy; without one (or when the app would refuse it, which it said), the
-    week as it stands, with `before` the problems there before the answer."""
+    """One review: what the structural check and the judgment found. waiting: the blocks still
+    waiting for a yes, made on a copy; without one (or when the app would refuse them, which it
+    said), the week as it stands. before: the problems there before the answers."""
     chat = (turn.get("chat") or {}).get("id")
     behind = left_behind(db, chat, offered) if chat is not None else []
+    if isinstance(waiting, dict):
+        waiting = [waiting]
+    waiting = [c for c in waiting or [] if isinstance(c, dict) and any(k != "asked" for k in c)]
     found = None
-    if isinstance(change, dict) and any(k != "asked" for k in change):
-        found = await asyncio.to_thread(structural, data, db, today, change, asker, offered)
+    if waiting:
+        found = await asyncio.to_thread(
+            structural, data, db, today, waiting, asker, offered, before
+        )
     if found is not None:
         problems, after = found
     else:
@@ -283,16 +289,25 @@ def left_behind(db: DB, chat: int, offered: list[dict]) -> list[str]:
 
 
 def structural(
-    data: Data, db: DB, today: dt.date, change: dict, asker, offered
+    data: Data,
+    db: DB,
+    today: dt.date,
+    change: dict | list[dict],
+    asker,
+    offered,
+    before: set[str] | None = None,
 ) -> tuple[list[str], dict] | None:
-    """The consistency check's problems this change adds, on a copy, and what the judgment needs of
-    the copy (the menu after the change, the recipes it touches). None when the block would be
-    refused before anything is made."""
+    """The consistency check's problems these changes add, made on a copy one after the other, and
+    what the judgment needs of the copy (the menu after them, the recipes they touch). before: the
+    problems there before the answers (an answer already made counts as theirs too); taken here
+    when not given. None when a block would be refused before anything is made."""
+    blocks = change if isinstance(change, list) else [change]
     try:
-        proposal = changes.parse(change, data, asker)
+        changes.parse(blocks[0], data, asker)
     except changes.ChangeError:
         return None
-    before = {p.key for p in doctor.problems(data, db, today)}
+    if before is None:
+        before = {p.key for p in doctor.problems(data, db, today)}
     with tempfile.TemporaryDirectory() as tmp:
         copy = Path(tmp) / "data"
         shutil.copytree(data.root, copy, ignore=shutil.ignore_patterns(".git", "state"))
@@ -303,32 +318,45 @@ def structural(
             elif src.exists():
                 (copy / "state").mkdir(exist_ok=True)
                 shutil.copy2(src, copy / "state" / name)
-        try:
-            texts = changes.render(data.root, proposal)
-        except changes.ChangeError:
-            return None
-        for name, text in texts.items():
-            (copy / name).parent.mkdir(parents=True, exist_ok=True)
-            (copy / name).write_text(text, encoding="utf-8")
-        try:
-            sim = load(copy, health=False)
-        except DataError as e:
-            return [f"The app refuses this change: {str(e)[:300]}"], as_is(
-                data, db, today, offered, before
-            )
-        retired = changes.retired(proposal, data)
-        if retired:
-            menu.retire(sim, retired, today + dt.timedelta(days=1))
-        if proposal.plan:
+        sim = data
+        for n, block in enumerate(blocks):
             try:
-                menu.apply(sim, proposal.plan, today)
-            except menu.MenuError as e:
-                return [f"The app refuses this menu change: {e}"], as_is(
+                proposal = changes.parse(block, sim, asker)
+                texts = changes.render(copy, proposal)
+            except changes.ChangeError:
+                if n == 0:
+                    return None
+                continue  # a later block the app would refuse: the ones before it still count
+            for name, text in texts.items():
+                (copy / name).parent.mkdir(parents=True, exist_ok=True)
+                (copy / name).write_text(text, encoding="utf-8")
+            prev = sim
+            try:
+                sim = load(copy, health=False)
+            except DataError as e:
+                return [f"The app refuses this change: {str(e)[:300]}"], as_is(
                     data, db, today, offered, before
                 )
+            retired = changes.retired(proposal, prev)
+            if retired:
+                menu.retire(sim, retired, today + dt.timedelta(days=1))
+            if proposal.plan:
+                try:
+                    menu.apply(sim, proposal.plan, today)
+                except menu.MenuError as e:
+                    return [f"The app refuses this menu change: {e}"], as_is(
+                        data, db, today, offered, before
+                    )
         found = doctor.problems(sim, db, today, offered)
         new = [p.text for p in found if p.kind not in SKIP and p.key not in before]
-        after = week(data, sim, db, today, change, offered, found, before)
+        merged: dict = {}
+        for block in blocks:
+            for k, v in block.items():
+                if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                    merged[k] = {**merged[k], **v}
+                else:
+                    merged.setdefault(k, v)
+        after = week(data, sim, db, today, merged, offered, found, before)
         after.pop("new", None)  # the structural problems: said apart, as this change's doing
         return new, after
 
