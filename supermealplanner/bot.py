@@ -179,6 +179,10 @@ VOICE_PER_S = 3
 PLAN_RAISED = "verifier.plan_raised"  # {"key", "on"}: the plan last raised in the chat, and the day
 PLAN_RAISE_H = 2  # hours after bot.checkup_at a finished plan check may still raise its problems
 PLAN_EVERY_S = 600  # how often the plan as it stands is checked again (judged only when it changed)
+# a new plan's announcement waits for the plan check of the plan as it stands, at most this long;
+# then it goes, saying the review could not run
+ANNOUNCE_WAIT_S = 1800
+TYPING_S = 4  # Telegram shows "typing" for about 5 s: sent again this often while an answer is made
 # A provider that is out of capacity raises an error with `retry_after` (seconds): the chat's messages
 # wait that long, at least BUSY_MIN_S, and are answered then, with nobody writing again.
 BUSY_MIN_S = 60
@@ -240,6 +244,9 @@ class Item:
     # the bot asked itself (a task not done): what the turn changes waits for a tap, even when it
     # runs as a private chat's person so that it sees only what they may see
     auto: bool = False
+    # a turn the bot asked itself to review the week (the weekly review, the plan check's turn):
+    # its answer is reviewed even when it changes nothing (verifier.in_scope), like an auto one
+    review: bool = False
 
 
 @dataclass
@@ -312,6 +319,8 @@ class Bot:
         self.spoken_rows: dict[int, str] = {}  # chat log row -> the spoken turn it is
         self.stickers: dict = {}  # the settings' sticker set, read once ({"name", "set"})
         self.planned_at: float | None = None  # clock() of the last plan check started
+        self.checking = False  # a plan check runs
+        self.announce_since: dict[str, float] = {}  # a new plan -> clock() its announcement waits
 
     # ------------------------------------------------------------- plumbing
     @property
@@ -685,6 +694,7 @@ class Bot:
                         x.get("grant"),
                         x.get("file"),
                         bool(x.get("auto")),
+                        bool(x.get("review")),
                     )
                     for x in kept
                 ]
@@ -735,6 +745,7 @@ class Bot:
                     "grant": add.grant,
                     "file": add.file,
                     "auto": add.auto,
+                    "review": add.review,
                 }
             )
         else:
@@ -979,6 +990,7 @@ class Bot:
         grant: dict | None = None,
         file: dict | None = None,
         auto: bool = False,
+        review: bool = False,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
@@ -1001,7 +1013,7 @@ class Bot:
                 spoken.row = row
                 self.spoken_rows[row] = spoken.id
             mid = (msg or {}).get("message_id")
-            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file, auto)
+            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file, auto, review)
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
@@ -1187,6 +1199,15 @@ class Bot:
             )
         return out
 
+    async def typing(self, client, chat_id: int) -> None:
+        """The chat shows the bot typing, again every TYPING_S, until this task is cancelled."""
+        while True:
+            await asyncio.sleep(TYPING_S)
+            try:
+                await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
+            except Exception as e:  # noqa: BLE001  only a courtesy
+                log.info("typing indicator failed: %s", safe(e))
+
     async def ask(
         self, client, chat_id: int, items: list[Item], rows: list[dict]
     ) -> list[Item] | None:
@@ -1216,11 +1237,15 @@ class Bot:
         reply, deferred, again = None, False, False
         rewrite = chat_id in self.again  # this turn rewrites an answer that was not sent
         self.again.discard(chat_id)
+        reviewed = True
+        typer = None
         try:
             try:
                 await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
             except TelegramError as e:  # only a courtesy: the answer still goes
                 log.info("typing indicator failed: %s", e)
+            # kept on until the answer is written and reviewed: nothing is sent before
+            typer = asyncio.create_task(self.typing(client, chat_id))
             attachments = await self.fetch_files(client, chat_id, items)
             private = chat_id > 0
             last_item = items[-1]
@@ -1240,6 +1265,8 @@ class Bot:
                 # the chat and the person whose message started the turn
                 "chat": {"id": chat_id, "user": items[0].uid},
                 "incoming": self._incoming(turn_state),
+                # a turn the bot asked itself about the week: reviewed even with no change
+                "review": any(i.auto or i.review for i in items),
             }
             if llm.asks(data):
                 turn["ask"] = self._asker(client, turn_state)
@@ -1247,11 +1274,12 @@ class Bot:
                 reply = await asyncio.wait_for(
                     llm.converse(data, turn), timeout=data.settings.llm.timeout_s
                 )
-                # a change to the menu, a recipe or the batch days is checked, and fixed once,
-                # before anyone sees it
-                reply = await verifier.review(
+                # an answer that changes anything is reviewed, and revised, before anyone sees it
+                reply, reviewed = await verifier.review(
                     data, db, self.state.today(), turn, reply, viewer, last_item.who
                 )
+                if not reviewed:  # said in the answer, and the plan check goes at the next tick
+                    db.set_kv(verifier.PLAN_RETRY, True)
             except Exception as e:  # noqa: BLE001
                 log.warning("AI call failed: %s", safe(e))
                 later = _retry_after(e)
@@ -1265,6 +1293,8 @@ class Bot:
                 )
                 return None
         finally:
+            if typer is not None:
+                typer.cancel()
             with self.qlock:
                 turn_state.closed = True  # a provider thread that outlives the turn takes nothing
                 missed = [
@@ -1339,6 +1369,8 @@ class Bot:
             if not made or (change is not None and not now):
                 listed = [r for r in listed if "cancel" not in r]
             items = await self.settle_reminders(client, chat_id, listed, covered, reply_to, tail)
+        if not reviewed:  # the last line of the answer: what it says was not checked
+            tail.append(self.t("review_failed"))
         joined = "\n\n".join(x for x in [render.brief(text) if text else "", *tail] if x)
         if joined:
             offer = None
@@ -2739,7 +2771,7 @@ class Bot:
         the same changes and reminders; nobody has to ask."""
         monday = day + dt.timedelta(days=(7 - day.weekday()) % 7)
         text = self.t("review_turn", week=self.t.date(monday), d=monday.isoformat())
-        self.take(chat, {"first_name": self.t("review_who")}, None, None, text, True)
+        self.take(chat, {"first_name": self.t("review_who")}, None, None, text, True, review=True)
 
     def reminder_text(self, r, day: dt.date) -> str | None:
         t, data, db = self.t, self.data, self.state.db
@@ -3097,16 +3129,33 @@ class Bot:
         return "\n".join(lines)
 
     async def tick_announce(self, client) -> None:
+        """A plan the app drew is told to the chat once the plan check has judged the plan as it
+        stands (tick_plan runs it at once); what it found is raised in the chat right after. A
+        check that does not end within ANNOUNCE_WAIT_S lets the announcement go, saying so."""
         from .scheduler import ANNOUNCE
 
-        chat, db = self.chat_id, self.state.db
+        chat, db, data = self.chat_id, self.state.db, self.data
         raw = db.get_kv(ANNOUNCE)
         if chat is None or not raw:
             return
+        late = checked = False
+        if data.settings.llm.provider != "none":
+            kept = db.get_kv(verifier.PLAN_KEY) or {}
+            _, key = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
+            checked = kept.get("key") == key
+            if not checked:
+                since = self.announce_since.setdefault(raw, self.clock())
+                if self.clock() - since < ANNOUNCE_WAIT_S:
+                    db.set_kv(verifier.PLAN_RETRY, True)  # the check goes at this tick
+                    return
+                late = True
         text = self.announcement(dt.date.fromisoformat(raw))
         if text:
-            await self.send(client, chat, text)
+            await self.send(client, chat, text + (f"\n\n{self.t('review_failed')}" if late else ""))
         db.set_kv(ANNOUNCE, None)  # only after Telegram took it
+        self.announce_since.pop(raw, None)
+        if checked:
+            await self.raise_plan(client, at_once=True)
 
     # ------------------------------------------------------------- one-off reminders
     def _zone(self) -> ZoneInfo:
@@ -3542,12 +3591,28 @@ class Bot:
     def tick_plan(self) -> None:
         """Every PLAN_EVERY_S, the checks of the plan as it stands (verifier.check_plan) in the
         background, never while a turn runs; the judgment runs only for a plan it has not seen."""
-        if self.data.settings.llm.provider == "none" or self.running:
+        if self.data.settings.llm.provider == "none" or self.running or self.checking:
             return
-        if self.planned_at is not None and self.clock() - self.planned_at < PLAN_EVERY_S:
+        db = self.state.db
+        # a review that could not run, or a new plan waiting for its check: no ten-minute wait
+        retry = db.get_kv(verifier.PLAN_RETRY)
+        if (
+            not retry
+            and self.planned_at is not None
+            and self.clock() - self.planned_at < PLAN_EVERY_S
+        ):
             return
+        if retry:
+            db.set_kv(verifier.PLAN_RETRY, None)
         self.planned_at = self.clock()
-        self.spawn(self.check_plan())
+        self.checking = True
+        self.spawn(self._check_plan())
+
+    async def _check_plan(self) -> None:
+        try:
+            await self.check_plan()
+        finally:
+            self.checking = False
 
     async def check_plan(self) -> None:
         try:
@@ -3555,26 +3620,30 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             log.warning("plan check failed: %s", safe(e))
 
-    async def raise_plan(self, client) -> None:
+    async def raise_plan(self, client, at_once: bool = False) -> None:
         """Once a day, in the PLAN_RAISE_H after the morning checkup: when the plan check found
         problems in the plan as it is, a turn the bot asks itself in bot.checkup_chat, so the chef
         proposes the fixes in the chat like any change. A check that ends after the checkup still
-        gets its turn that morning; a plan raised once is not raised again."""
+        gets its turn that morning; a plan raised once is not raised again. at_once: a plan the
+        app just drew, raised now rather than the next morning."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
         chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
-        if data.settings.llm.provider == "none" or not cfg.checkup_at or chat is None:
+        if data.settings.llm.provider == "none" or chat is None:
+            return
+        if not at_once and not cfg.checkup_at:
             return
         now = dt.datetime.now(self._zone())
-        h, m = (int(x) for x in cfg.checkup_at.split(":"))
-        when = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if not when <= now < when + dt.timedelta(hours=PLAN_RAISE_H):
-            return
-        if not db.was_sent("checkup", now.date(), cfg.checkup_at):
-            return  # after the checkup's own line
         kept, raised = db.get_kv(verifier.PLAN_KEY) or {}, db.get_kv(PLAN_RAISED) or {}
-        if not kept.get("key") or raised.get("on") == now.date().isoformat():
-            return
-        if raised.get("key") == kept["key"]:
+        if not at_once:
+            h, m = (int(x) for x in cfg.checkup_at.split(":"))
+            when = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if not when <= now < when + dt.timedelta(hours=PLAN_RAISE_H):
+                return
+            if not db.was_sent("checkup", now.date(), cfg.checkup_at):
+                return  # after the checkup's own line
+            if raised.get("on") == now.date().isoformat():
+                return
+        if not kept.get("key") or raised.get("key") == kept["key"]:
             return
         if not await asyncio.to_thread(verifier.plan_findings, data, db, self.state.today()):
             return
@@ -3584,7 +3653,7 @@ class Bot:
             return  # a private chat of no one in the household
         db.set_kv(PLAN_RAISED, {"key": kept["key"], "on": now.date().isoformat()})
         user = {"first_name": self.t("plan_check_who")}
-        self.take(chat, user, who, None, self.t("plan_check_turn"), True)
+        self.take(chat, user, who, None, self.t("plan_check_turn"), True, review=True)
         self.spawn(self.drive(client, chat))
 
     async def cmd_reminders(self, who, arg, user, chat=None):

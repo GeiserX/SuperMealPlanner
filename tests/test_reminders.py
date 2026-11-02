@@ -45,6 +45,9 @@ def converse(turn, settings):
         out["reminders"] = cfg["reminders"]
     return out
 
+def complete(system, messages, settings):  # the reviewer: no problems
+    return "{}"
+
 def answer(request, decision, settings):
     with (HERE / "answers.jsonl").open("a") as f:
         f.write(json.dumps({"request": request["id"], **decision}) + "\\n")

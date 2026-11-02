@@ -373,6 +373,8 @@ class LLM(Loose):
     )
     max_tokens: int = 1200
     timeout_s: int = 600
+    # one review of an answer or of the plan (verifier.py); unset: timeout_s
+    review_timeout_s: int | None = Field(default=None, gt=0)
     instructions: str = ""  # extra system instructions for this household
 
 

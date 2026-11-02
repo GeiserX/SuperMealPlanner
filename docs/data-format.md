@@ -133,6 +133,7 @@ llm:
   api_key_env: LLM_API_KEY
   instructions: "Answer like a friendly home cook."
   timeout_s: 600
+  review_timeout_s: 1200      # one review of an answer or of the plan (complete()); unset: timeout_s; an answer's whole review, revisions included, gets twice this
 transcription:                # voice notes; optional
   provider: openai            # none | openai (any /audio/transcriptions endpoint) | plugin
   base_url: http://whisper:8000/v1
@@ -164,7 +165,7 @@ people:
       - {name: Sleep aid, dose: 5 mg, slot: as_needed}
 ```
 
-The verifier also reads `allergies`, `intolerances`, `diet` and `fasting` of each person, and each medicine's `food` rule, from the last good copy, to check a menu change against them ([how it works](how-it-works.md#the-verifier)). They go only to the AI provider, in a private chat only the asker's.
+The verifier also reads `allergies`, `intolerances`, `diet` and `fasting` of each person, and each medicine's `food` rule, from the last good copy, to check every answer that changes something, and the plan, against them ([how it works](how-it-works.md#the-verifier)). They go only to the AI provider, in a private chat only the asker's.
 
 `slot` is one of the pill slots (`waking`, `breakfast`, `lunch`, `dinner`, `bedtime`) or `as_needed`, which is taken when needed and so never shows as a daily pill. `days` is `daily` or a list of weekdays. `food` becomes the pill's note. A slot or a day the app cannot place stops the data from loading, with a clear error from `smp check`; the file is then not kept. A person listed with `meds` takes their pills from the export (an empty list means none), and household.yaml's pills stay the fallback for a person the export leaves out.
 

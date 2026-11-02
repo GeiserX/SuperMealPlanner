@@ -39,6 +39,9 @@ def converse(turn, settings):
             "kept": cfg.get("kept", True),
             "proposals": cfg.get("proposals", [])}
 
+def complete(system, messages, settings):  # the reviewer: no problems
+    return "{}"
+
 def forget(conversation, settings):
     (HERE / "forgot.txt").write_text(conversation)
 
