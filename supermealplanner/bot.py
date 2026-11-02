@@ -1322,7 +1322,9 @@ class Bot:
         # change that waits for a yes and a proposal still get their own message, with buttons.
         tail: list[str] = []
         made = True  # a reminder made wrong by a change goes only once the change is made
-        if anchor.auto and isinstance(change, dict):  # nobody asked for it: it waits for a tap
+        # a turn the bot asked itself, alone or with messages that came in beside it: nobody asked
+        # for its change as it stands, so it waits for a tap
+        if any(i.auto for i in covered) and isinstance(change, dict):
             change = {k: v for k, v in change.items() if k != "asked"}
         own = anchor.who is None and anchor.uid is None  # the bot's own turn: nobody asked
         now = not own and (

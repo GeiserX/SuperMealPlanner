@@ -408,3 +408,29 @@ def test_a_not_done_in_a_private_chat_is_that_persons_turn(data_dir, tmp_path, m
     assert yes  # marked asked, still it waits for a yes: nobody asked for it
     press(b, next(p for p in offered if any(x in buttons(p) for x in yes)), yes[0]["text"], 7)
     assert not (toasts(b)[-1] or "").startswith("Only ")
+
+
+def test_a_message_beside_the_not_done_turn_does_not_make_its_change_asked(data_dir, tmp_path):
+    """The not-done turn and a message someone sends while it waits run as one turn, answered to
+    the message: the change it proposes still waits for a tap."""
+    b, _db = setup(data_dir, tmp_path)
+    iid = next(iter(b.data.ingredients))
+    cfg(data_dir, text=f"Then this.\n```change\nasked: true\npantry:\n  {iid}: 0\n```")
+    b.spawn = lambda coro: coro.close()  # the turn waits in the queue
+    b.reorganise(None, -100, None, "[Task not done, automatic: nobody wrote this] x")
+    user = {"id": 8, "first_name": "Ana"}
+    b.take(-100, user, b.person_of(8), {"message_id": 5}, "@bot y la cena?", True)
+
+    async def go():
+        await b.drive(None, -100)
+        await drain(b)
+
+    run(go())
+    (turn,) = lines(data_dir, "turns.jsonl")
+    assert "Task not done" in turn["new"][-1] and "y la cena?" in turn["new"][-1]  # one turn
+    assert any(
+        x["callback_data"].startswith("c:")
+        for p in sends(b, -100)
+        if "reply_markup" in p
+        for x in buttons(p)
+    )
