@@ -524,8 +524,9 @@ class DB:
         frozen: bool = False,
     ) -> None:
         """A tick's entry replaces that week's earlier one for the ingredient. use_by: the last day
-        it is good, from its label; frozen: it is in the freezer. Entries older than PANTRY_DAYS
-        are dropped, so the table never grows, except one still good: a frozen one within
+        it is good, from its label; frozen: it is in the freezer. An entry a later 'set' of its
+        ingredient replaced is dropped, and so are entries older than PANTRY_DAYS, so the table
+        never grows, except those of an ingredient with one still good: a frozen one within
         FROZEN_DAYS, or one whose use_by has not passed."""
         with self.conn() as c:
             if week is not None:
@@ -546,11 +547,19 @@ class DB:
                     1 if frozen else None,
                 ),
             )
+            # a 'set' replaces everything of its ingredient before it: those entries are dead
+            c.execute(
+                "DELETE FROM pantry WHERE at < (SELECT MAX(s.at) FROM pantry s "
+                "WHERE s.ingredient = pantry.ingredient AND s.source = 'set')"
+            )
+            # an ingredient with an entry still good keeps all its entries, so the replayed
+            # cooking takes from the same ones; the others forget what is older than PANTRY_DAYS
             old = (at - dt.timedelta(days=PANTRY_DAYS)).astimezone(dt.UTC)
             cold = (at - dt.timedelta(days=FROZEN_DAYS)).astimezone(dt.UTC)
             c.execute(
-                "DELETE FROM pantry WHERE at < ? AND (frozen IS NULL OR at < ?) "
-                "AND (use_by IS NULL OR use_by < ?)",
+                "DELETE FROM pantry WHERE at < ? AND NOT EXISTS (SELECT 1 FROM pantry g "
+                "WHERE g.ingredient = pantry.ingredient "
+                "AND ((g.frozen = 1 AND g.at >= ?) OR g.use_by >= ?))",
                 (
                     old.isoformat(timespec="seconds"),
                     cold.isoformat(timespec="seconds"),

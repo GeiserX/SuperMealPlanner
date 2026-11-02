@@ -378,6 +378,47 @@ def test_a_frozen_or_labelled_entry_outlives_the_pantrys_forgetting(data_dir, tm
     assert {r["ingredient"] for r in db.lots()} == {"lenteja"}
 
 
+def forget(db):
+    """The add, long after, that makes the pantry forget its old entries."""
+    db.add_lot("merluza", 100, at(PANTRY_DAYS + 10), "set")
+
+
+@pytest.mark.parametrize(
+    "first",
+    [pantry.Part(300, frozen=True), pantry.Part(300, use_by=D(PANTRY_DAYS + 60))],
+    ids=["frozen", "labelled"],
+)
+@pytest.mark.parametrize("then", [0, 300], ids=["ran out", "thawed"])
+def test_forgetting_never_brings_back_what_a_later_amount_replaced(data_dir, tmp_path, first, then):
+    """A frozen or labelled entry outlived the forgetting, but the later amount that replaced it
+    did not, so food that ran out or was thawed long ago came back in the pantry."""
+    _b, db = setup(data_dir, tmp_path)
+    data = keeps(data_dir, espinaca=3)
+    pantry.correct(data, db, {"espinaca": [first]}, at(0))
+    pantry.correct(data, db, {"espinaca": then}, at(5))
+    day = D(PANTRY_DAYS + 11)
+    assert qty(data, db, day, "espinaca") == 0
+    forget(db)
+    assert qty(data, db, day, "espinaca") == 0
+
+
+def test_forgetting_keeps_the_ticks_beside_a_kept_frozen_entry(data_dir, tmp_path):
+    """The forgetting dropped a tick beside a frozen entry it kept, so the replayed cooking took
+    the tick's food out of the freezer instead."""
+    b, db = setup(data_dir, tmp_path)
+    day, _ = lentils_week(b.data, db)
+    gone = used(b.data, db, "lenteja", day)
+    assert 0 < gone < 2000
+    pantry.correct(b.data, db, {"lenteja": [pantry.Part(5000, frozen=True)]}, at(0, 7))
+    db.add_lot("lenteja", 2000, at(0, 8), "tick", week=MONDAY)
+    later = D(PANTRY_DAYS + 11)
+    before = next(x for x in pantry.now(b.data, db, later) if x.ingredient == "lenteja")
+    forget(db)
+    after = next(x for x in pantry.now(b.data, db, later) if x.ingredient == "lenteja")
+    assert (after.qty, after.frozen) == (before.qty, before.frozen)
+    assert len([r for r in db.lots() if r["ingredient"] == "lenteja"]) == 2
+
+
 def test_the_list_does_not_ask_again_for_meat_its_label_or_the_freezer_keeps(data_dir, tmp_path):
     """From Wednesday the list asked again for Saturday's meat, gone by keeps_days; blanched
     frozen food came back on the list three days after it went into the freezer."""
