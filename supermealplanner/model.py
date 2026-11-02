@@ -271,6 +271,17 @@ class Household(Loose):
     # the kitchen's devices and tools, in the household's words: recipes use only these
     equipment: list[str] = []
 
+    @model_validator(mode="after")
+    def _starts_before_lunch(self) -> Household:
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", self.lunch_time):
+            raise ValueError(f"lunch_time {self.lunch_time!r} is not HH:MM")
+        for day, at in self.batch.start.items():
+            if at >= self.lunch_time:  # the session cooks that day's lunch: it starts before it
+                raise ValueError(
+                    f"batch.start {day}: {at} is not before lunch_time {self.lunch_time}"
+                )
+        return self
+
     def person(self, pid: str) -> Person:
         for p in self.people:
             if p.id == pid:

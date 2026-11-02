@@ -259,7 +259,8 @@ def test_the_assistant_knows_the_three_fields(data_dir, tmp_path):
         assert needle in rules, needle
     facts = context.facts(data, DB(tmp_path / "x.db"), MONDAY)
     assert "never on tuesday" in facts
-    assert "Eats instead: yogur -> kefir." in facts
+    assert "Eats instead, except in batch recipes (one pot for everyone): yogur -> kefir." in facts
+    assert "Never in a batch recipe: it is one pot for everyone" in rules
     assert "Trains on monday, friday: +150 kcal those days." in facts
     assert "household.people.ana.swaps: {'yogur': 'kefir'}" in facts
 

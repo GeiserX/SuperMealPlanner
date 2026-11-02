@@ -207,3 +207,35 @@ def test_a_thaw_for_a_deleted_recipe_still_on_the_menu_does_not_stop_the_checks(
     remind(db, D(7), "20:00", "pescado-batch", tuesday, "thaw")
     del data.recipes["pescado-batch"]
     doctor.problems(data, db, MONDAY)
+
+
+def _start(data_dir, start, lunch_time="14:30"):
+    """The household's lunch time, and the time its same-day sessions start on some weekdays."""
+    hh = yaml.safe_load((data_dir / "household.yaml").read_text())
+    hh["lunch_time"] = lunch_time
+    hh.setdefault("batch", {})["start"] = start
+    (data_dir / "household.yaml").write_text(yaml.safe_dump(hh, allow_unicode=True))
+
+
+def test_a_pulse_lunch_cooked_in_a_session_that_starts_after_noon_is_soaked_by_the_app(
+    data_dir, tmp_path
+):
+    """Monday's chickpea lunch is cooked that day, in a session that starts at 13:00 for a lunch at
+    14:30: the app's own soak the evening before covers it, as it does for a session at 10:00."""
+    _b, db = setup(data_dir, tmp_path)
+    _start(data_dir, {"monday": "13:00"})
+    data = soak(data_dir)
+    change(data, {"set": {"date": str(MONDAY), "meal": "lunch", "recipe": "legumbre-0"}})
+    _plan, session = doctor.Plans(data).sessions_on(MONDAY)[0]
+    assert session.morning and "legumbre-0" in {x.recipe for x in session.dishes}
+    assert not [k for k in found(data, db) if k.startswith(("no_soak", "no_cook"))]
+
+
+def test_a_thaw_before_a_session_that_starts_after_noon_is_cooked_by_it(data_dir, tmp_path):
+    """Monday's hake lunch is cooked that day from 13:00: a thaw at 12:30 comes before the cook."""
+    _b, db = setup(data_dir, tmp_path)
+    _start(data_dir, {"monday": "13:00"})
+    data = soak(data_dir)
+    change(data, {"set": {"date": str(MONDAY), "meal": "lunch", "recipe": "pescado-batch"}})
+    remind(db, MONDAY, "12:30", "pescado-batch", MONDAY, "thaw")
+    assert not [k for k in found(data, db) if "pescado-batch" in k]

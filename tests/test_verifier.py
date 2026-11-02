@@ -307,12 +307,17 @@ def test_a_pulse_cooked_the_night_before_is_soaked_the_night_before_that(data_di
 
 
 def test_the_check_knows_the_swaps_the_app_already_makes(data_dir, tmp_path):
-    """A person's swap is on their plate already, though the recipe text keeps the original."""
+    """A person's swap is on their plate already, though the recipe text keeps the original; never
+    in a batch recipe, which is one pot for everyone."""
     raw = yaml.safe_load((data_dir / "household.yaml").read_text())
     raw["people"][0]["swaps"] = {"tomate": "lechuga"}
     (data_dir / "household.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
     brief = verifier.brief(load(data_dir), MONDAY, "x", [], {}, None)
-    assert "Ana (ana) gets instead, done by the app: tomate -> lechuga" in brief
+    assert (
+        "Ana (ana) gets instead, done by the app in the dishes plated per person, never in a "
+        in brief
+    )
+    assert "batch recipe (one pot for everyone, cooked as written): tomate -> lechuga" in brief
 
 
 # ---------------------------------------------------------------- the plan as it stands

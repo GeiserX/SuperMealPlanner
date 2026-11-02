@@ -75,6 +75,7 @@ from .db import DB
 from .i18n import Translator
 from .model import WEEKDAYS, Data, DataError, load
 from .planner import MEALS, Plans
+from .portions import MORNING, session_at
 
 log = logging.getLogger(__name__)
 
@@ -522,7 +523,13 @@ def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
             dishes = "; ".join(
                 f"{x.recipe} for {', '.join(e.isoformat() for e in x.eat)}" for x in s.dishes
             )
-            when = "in the morning, before lunch" if s.morning else evening(s.date)
+            if s.morning:  # the day of its lunch: at the household's start, else in the morning
+                at = session_at(data, s.date, True)
+                when = (
+                    f"from {at}, before lunch" if at != MORNING else "in the morning, before lunch"
+                )
+            else:
+                when = evening(s.date)
             out.append(f"- {s.date:%A} {s.date.isoformat()}, {when}: {dishes}")
     if not out:
         return []
@@ -664,7 +671,10 @@ def brief(data: Data, today: dt.date, answer: str, problems: list[str], after: d
             out.append(f"- {p.name} ({p.id}) never eats: {', '.join(p.avoid_ingredients)}")
         if p.swaps:  # already on their plate and the list: the recipe text stays as written
             swaps = ", ".join(f"{a} -> {b}" for a, b in p.swaps.items())
-            out.append(f"- {p.name} ({p.id}) gets instead, done by the app: {swaps}")
+            out.append(
+                f"- {p.name} ({p.id}) gets instead, done by the app in the dishes plated per "
+                f"person, never in a batch recipe (one pot for everyone, cooked as written): {swaps}"
+            )
     if data.settings.llm.instructions:
         out += ["", "### The household's own instructions", data.settings.llm.instructions]
     r = hh.rules
