@@ -188,6 +188,9 @@ question back. Leave `asked` out when the change is your own idea or goes furthe
 asked: the app then shows it and makes it only after their yes. Either way the app adds one line
 to your answer saying what it changed, with the page to see it, so say in a few words what you are
 changing, do not list the values, and do not ask them to confirm.
+
+When the messages you answer come from more than one person, add `for: <person id>`: the person
+whose request the change answers. A change waiting for a yes waits for theirs.
 """
 
 OPTIONS = """
@@ -542,7 +545,7 @@ def pantry_now(data: Data, db: DB, today: dt.date) -> list[str]:
     from . import pantry
 
     items = pantry.now(data, db, today)
-    have = sorted(data.ingredients[i].name for i in db.have() if i in data.ingredients)
+    have = sorted(data.ingredients[i].name for i in pantry.at_home(data, db, today))
     out = [
         (
             "\n## Pantry (at home now: what the list's ticks bought and what the chat said, less what "

@@ -225,34 +225,36 @@ def test_a_message_during_the_answer_joins_it(data_dir, tmp_path):
     assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["luis: @chefbot gracias"]
 
 
-def test_an_answer_that_missed_a_message_is_not_sent_and_is_written_again_with_it(
-    data_dir, tmp_path
-):
+def test_an_answer_that_missed_a_message_is_sent_and_the_next_turn_answers_it(data_dir, tmp_path):
+    """Throwing a written answer away to write it again with the late message cost minutes the
+    chat waited for nothing: the answer goes, and the next turn answers what it missed."""
     b, _ = setup(data_dir, tmp_path)
-    cfg(data_dir, listen=3, until=1, cover=False, text="first draft")
+    cfg(data_dir, listen=3, until=1, cover=False, text="first")
 
     async def go():
         first = asyncio.create_task(b.handle(None, msg("hola", chat=7, user=7, message_id=1)))
         await until(lambda: running(data_dir))
-        cfg(data_dir, text="both")  # the next turn listens to nothing
+        cfg(data_dir, text="second")  # the next turn listens to nothing
         await b.handle(None, msg("y mañana?", chat=7, user=7, message_id=2))
         await first
 
     run(go())
     first, second = lines(data_dir, "turns.jsonl")
     assert first["new"] == ["luis: hola"] and first["incoming"] == ["luis: y mañana?"]
-    *said, note = second["new"]
-    assert said == ["luis: hola\nluis: y mañana?"] and "never sent" in note
-    # one answer for both, plain; the draft never went out
-    (answer,) = sends(b, 7)
-    assert answer["text"] == "both" and "reply_parameters" not in answer
+    assert second["new"] == ["luis: y mañana?"]  # nothing says an answer was not sent
+    assert [(p["text"], p["reply_parameters"]["message_id"]) for p in sends(b, 7)] == [
+        ("first", 1),
+        ("second", 2),
+    ]
 
 
-def test_a_rewritten_answer_that_misses_again_is_sent_and_the_rest_makes_the_next_turn(
+def test_a_correction_while_the_answer_is_written_means_it_is_written_again_once_in_a_row(
     data_dir, tmp_path
 ):
+    """An edit of a message the answer answers: the answer cannot stand, so it is not sent. The
+    rewrite is sent even when it misses a later message, which makes the next turn."""
     b, _ = setup(data_dir, tmp_path)
-    cfg(data_dir, listen=3, until=1, cover=False)
+    cfg(data_dir, listen=3, until=1, cover=False, text="draft")
     started, ask = [], b.ask
 
     async def counted(*args):
@@ -264,18 +266,20 @@ def test_a_rewritten_answer_that_misses_again_is_sent_and_the_rest_makes_the_nex
     async def go():
         first = asyncio.create_task(b.handle(None, msg("hola", chat=7, user=7, message_id=1)))
         await until(lambda: running(data_dir))
-        await b.handle(None, msg("y mañana?", chat=7, user=7, message_id=2))
+        cfg(data_dir, listen=3, until=1, cover=False, text="rewrite")
+        await b.edited(None, msg("hola, para cenar", chat=7, user=7, message_id=1))
         await until(lambda: len(started) == 2 and running(data_dir))  # the rewrite runs
-        cfg(data_dir)
+        cfg(data_dir, text="last")
         await b.handle(None, msg("y pasado?", chat=7, user=7, message_id=3))
         await first
 
     run(go())
     turns = lines(data_dir, "turns.jsonl")
     assert len(turns) == 3  # the draft, its rewrite (sent, once in a row), the message it missed
-    assert turns[1]["incoming"] == ["luis: y pasado?"] and "never sent" in turns[1]["new"][-1]
+    assert "edited a message of this turn" in turns[0]["incoming"][0]
+    assert "never sent" in turns[1]["new"][-1] and turns[1]["incoming"] == ["luis: y pasado?"]
     assert turns[2]["new"] == ["luis: y pasado?"]
-    assert [p.get("reply_parameters", {}).get("message_id") for p in sends(b, 7)] == [None, 3]
+    assert [p["text"] for p in sends(b, 7)] == ["rewrite", "last"]  # the draft never went out
 
 
 def test_a_voice_note_still_transcribing_holds_the_turn(data_dir, tmp_path):

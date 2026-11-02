@@ -45,10 +45,10 @@ def test_an_answer_that_sets_a_reminder_next_to_another_is_not_sent_back_for_it(
         return {}
 
     monkeypatch.setattr(verifier, "judge", judged)
-    reply = llm.Reply(text="Done.")
-    reply.reminders = offered
     turn = {"chat": {"id": -100}}
-    assert run(verifier.findings(b.data, db, MONDAY, turn, reply, None, "ana")) == []
+    assert (
+        run(verifier.findings(b.data, db, MONDAY, turn, "Done.", None, offered, asker="ana")) == []
+    )
 
 
 # ---------------------------------------------------------------- when it goes out

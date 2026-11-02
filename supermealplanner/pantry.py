@@ -14,8 +14,10 @@ Everything else follows from the plan and the data, the same way every time:
 - an ingredient with `keeps_days` (ingredients.yaml) goes off that many days after it came in. One
   without keeps until it is used up.
 
-«I have it» (db.have) stays what it was: at home in an amount nobody counted, never used up, off
-every list until someone puts it back.
+«I have it» (db.have) is at home in an amount nobody counted, never used up, and off the lists
+while it holds (at_home): for good on an ingredient that keeps, for its `keeps_days` from the day
+it was marked on a fresh one. Fresh food marked once must not stay off every list after it was
+eaten: the list asks for it again, and marking it again keeps it off again.
 """
 
 from __future__ import annotations
@@ -55,6 +57,24 @@ class Item:
     amount: str
     since: dt.date
     expires: dt.date | None
+
+
+def at_home(data: Data, db: DB, today: dt.date) -> set[str]:
+    """What «I have it» keeps off the lists today. An ingredient without `keeps_days` stays until
+    someone puts it back; a fresh one, `keeps_days` from the day it was marked. A fresh mark with
+    no day (kept from before the day was stored) no longer holds."""
+    out = set()
+    for iid, day in db.have_marks().items():
+        ing = data.ingredients.get(iid)
+        if ing is None:
+            continue
+        if (
+            ing.keeps_days is None
+            or day
+            and today < dt.date.fromisoformat(day) + dt.timedelta(days=ing.keeps_days)
+        ):
+            out.add(iid)
+    return out
 
 
 def _lots(data: Data, db: DB, skip_from: dt.date | None = None) -> list[Lot]:
