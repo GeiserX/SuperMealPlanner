@@ -28,7 +28,9 @@ from .portions import (
     batch_split_text,
     person_days,
     plate,
+    session_at,
     session_sheets,
+    session_when,
     shopping_list,
     ticked_last,
     together,
@@ -105,6 +107,9 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             "reason_text": lambda raw: reason_text(t, raw),
             "batch_for_text": batch_for_text,
             "batch_split_text": batch_split_text,
+            "session_when": lambda s: session_when(
+                t, s.morning, session_at(data, s.date, s.morning)
+            ),
             **kw,
         }
 

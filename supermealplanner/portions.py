@@ -11,11 +11,51 @@ import math
 from dataclasses import dataclass, field, replace
 
 from .db import DB
-from .model import Data, Ingredient, Recipe
+from .model import WEEKDAYS, Data, Ingredient, Recipe
 from .planner import MEALS, Plan, Session
 from .targets import current_kcal, day_factor
 
 MEAL_ORDER = MEALS
+EVENING = "20:00"  # an evening step on a day without the reminder that says it
+MORNING = "10:00"  # a morning session, on a weekday without batch.start: cooked before lunch
+NIGHT = "20:00"  # a session starting at this time or later is said to be at night
+
+
+def times(data: Data, kind: str, day: dt.date) -> list[str]:
+    """The times the household's reminders of that kind go on that day, earliest first."""
+    out = []
+    for r in data.settings.reminders:
+        if (
+            r.enabled
+            and r.kind == kind
+            and (r.days == "daily" or WEEKDAYS[day.weekday()] in r.days)
+        ):
+            out += r.at
+    return sorted(out)
+
+
+def session_at(data: Data, day: dt.date, morning: bool) -> str:
+    """When a cooking session on `day` starts: a session cooked the day its lunch is eaten at
+    the household's batch.start for that weekday (MORNING without one), any other at the
+    first batch reminder of the day (EVENING without one)."""
+    if morning:
+        return data.household.batch.start.get(WEEKDAYS[day.weekday()], MORNING)
+    return (times(data, "batch", day) or [EVENING])[0]
+
+
+def session_when(t, morning: bool, at: str) -> str:
+    """A session's time in words: "in the morning" at the default MORNING, "from 13:00" at a
+    start the household set, "in the afternoon", or "at night" from NIGHT on."""
+    if morning:
+        return t("batch_morning") if at == MORNING else t("batch_from", time=at)
+    return t("batch_night" if at >= NIGHT else "batch_afternoon")
+
+
+def shared(r: Recipe) -> bool:
+    """A batch recipe is cooked once, in one pot, for everyone who eats it: nobody's swaps apply
+    to its ingredients (one bechamel cannot hold three milks). Swaps stay for the dishes plated
+    per person (a breakfast, a salad)."""
+    return r.kind == "batch"
 
 
 def factors(
@@ -94,9 +134,9 @@ class Plate:
 def amounts(data: Data, r: Recipe, servings: dict[str, float]) -> dict[str, float]:
     """Ingredient quantities of a recipe for some eaters (person id, or any other key such as
     "guests", who eat the recipe as written), each with their servings. A person's swaps replace
-    an ingredient in their share only. Ordered as the recipe lists them, a swap next to the
-    ingredient it replaces."""
-    people = {p.id: p.swaps for p in data.household.people}
+    an ingredient in their share only, never in a batch recipe (shared). Ordered as the recipe
+    lists them, a swap next to the ingredient it replaces."""
+    people = {} if shared(r) else {p.id: p.swaps for p in data.household.people}
     out: dict[str, float] = {}
     for item in r.ingredients:
         for eater, n in servings.items():
@@ -114,7 +154,10 @@ def _lines(data: Data, qty: dict[str, float]) -> list[str]:
 
 
 def plate(data: Data, r: Recipe, factor: float, swaps: dict[str, str] | None = None) -> Plate:
-    """One plate: the recipe at `factor` reference servings, with the eater's swaps."""
+    """One plate: the recipe at `factor` reference servings, with the eater's swaps (none in a
+    batch recipe: the plate comes out of the shared pot)."""
+    if shared(r):
+        swaps = None
     qty: dict[str, float] = {}
     for item in r.ingredients:
         iid = (swaps or {}).get(item.id, item.id)
@@ -425,11 +468,16 @@ class BatchDish:
     cook: dt.date | None = None
     morning: bool = False
     eaters: dict[str, float] = field(default_factory=dict)
+    at: str = MORNING  # when its session starts (session_at)
 
     @property
     def servings(self) -> int:
         """The dish's total as a whole number of servings (at least one)."""
         return max(1, math.floor(self.total + 0.5))
+
+    def when(self, t) -> str:
+        """When its session starts, in words (session_when)."""
+        return session_when(t, self.morning, self.at)
 
 
 def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[BatchDish]:
@@ -468,6 +516,7 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
                     cook=s.date,
                     morning=s.morning,
                     eaters=eaters,
+                    at=session_at(data, s.date, s.morning),
                 )
             )
     return out
@@ -545,11 +594,10 @@ def batch_dish_text(t, b: BatchDish, names: dict[str, str]) -> str:
     """A batch dish for the chat: whole servings, when it is cooked, which lunches it is for, and
     the split by person (the only place with decimals)."""
     total = t("servings_one") if b.servings == 1 else t("servings", n=b.servings)
-    when = t("batch_morning" if b.morning else "batch_afternoon")
     return "\n".join(
         [
             f"• {b.recipe.name}: {total}",
-            t("batch_cook", date=t.date(b.cook), when=when),
+            t("batch_cook", date=t.date(b.cook), when=b.when(t)),
             batch_for_text(t, [c.eat for c in b.containers]),
             t("batch_per_person", split=batch_split_text(b, names)),
         ]

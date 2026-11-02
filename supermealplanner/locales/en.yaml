@@ -57,6 +57,8 @@ batch_title: "Batch · week of {date}"
 batch_none: No batch sessions this week.
 batch_morning: in the morning
 batch_afternoon: in the afternoon
+batch_from: "from {time}"
+batch_night: at night
 batch_busy: "Heads up, the calendar has: {events}. No other free afternoon was left."
 servings: "{n} servings"
 servings_one: "1 serving"
@@ -159,6 +161,7 @@ bot_chat_id: "This chat's id is {id}."
 reminder_defrost: "🧊 Tonight: move {dish} from the freezer to the fridge for tomorrow's lunch."
 reminder_batch: "🍲 Batch cooking today:\n\n{dishes}\n\n{url}"
 reminder_batch_morning: "🍲 Batch cooking tomorrow morning:\n\n{dishes}\n\n{url}"
+reminder_batch_from: "🍲 Batch cooking tomorrow from {time}:\n\n{dishes}\n\n{url}"
 reminder_soak: "🫘 Tonight, leave to soak for tomorrow's batch cooking:\n{items}\n{url}"
 reminder_soak_item: "• {name}: {amount}, for {dish}"
 reminder_thaw: "🧊 Tonight, take out of the freezer for tomorrow and leave it to thaw in the fridge or on the counter (bread can also be toasted frozen just before eating):\n{items}\n{url}"

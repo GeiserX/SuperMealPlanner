@@ -11,7 +11,8 @@ stays the same while the step does (`cook:<date>:am|pm`, `soak:<session date>:<r
 
 A task sits on the day the step is done, so food cooked on a Saturday for the next plan's Tuesday
 is on Saturday (Plans.sessions_on). Its time is the reminder that says it, when the household has
-one set for that day, else EVENING (a morning session: MORNING).
+one set for that day, else EVENING (a session cooked the day its lunch is eaten: the household's
+batch.start for that weekday, else MORNING; portions.session_at).
 
 What is stored is only what someone said of a task (db.task_state, by key): done or not done, with
 its buttons or in words through a change block (changes.py `tasks`). A later answer replaces the
@@ -33,10 +34,8 @@ from zoneinfo import ZoneInfo
 from .db import DB
 from .model import WEEKDAYS, Data
 from .planner import Plans
-from .portions import session_sheets, soaks_in, thaw_for
+from .portions import EVENING, session_at, session_sheets, session_when, soaks_in, thaw_for, times
 
-EVENING = "20:00"  # an evening step on a day without the reminder that says it
-MORNING = "10:00"  # a morning session: cooked before lunch
 DONE, NOT_DONE, UNKNOWN = "done", "not_done", "unknown"
 # the steps something later hangs on: not done, or not answered by the next morning, the rest of
 # the week is reorganised around them
@@ -107,19 +106,6 @@ def unconfirmed_cook(db: DB, plans: Plans, day) -> bool:
     return DONE not in db.task_states(session_keys(plans, day)).values()
 
 
-def times(data: Data, kind: str, day: dt.date) -> list[str]:
-    """The times the household's reminders of that kind go on that day, earliest first."""
-    out = []
-    for r in data.settings.reminders:
-        if (
-            r.enabled
-            and r.kind == kind
-            and (r.days == "daily" or WEEKDAYS[day.weekday()] in r.days)
-        ):
-            out += r.at
-    return sorted(out)
-
-
 def tasks_for(data: Data, db: DB, first: dt.date, last: dt.date, bot=None) -> list[Task]:
     """Every task done from `first` to `last` (both included), in time order. bot: the words each task is said in (a running bot.Bot); without it the texts are
     empty, which is all the plain-code checks need."""
@@ -188,9 +174,10 @@ def _day(data: Data, db: DB, plans: Plans, day: dt.date, bot) -> list[Task]:
         if not sheet:  # every dish deleted: nothing to cook yet
             continue
         half = "am" if s.morning else "pm"
+        at = session_at(data, day, s.morning)
         text = line = ""
         if bot:
-            when = t("batch_morning" if s.morning else "batch_afternoon")
+            when = session_when(t, s.morning, at)
             text = t(
                 "task_cook",
                 when=when,
@@ -202,7 +189,7 @@ def _day(data: Data, db: DB, plans: Plans, day: dt.date, bot) -> list[Task]:
             Task(
                 key=f"cook:{day.isoformat()}:{half}",
                 day=day,
-                at=MORNING if s.morning else evening,
+                at=at,
                 kind="cook",
                 text=text,
                 line=line,

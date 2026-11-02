@@ -34,6 +34,7 @@ batch:
   preferred_days: [monday, friday, saturday]   # tried first
   sessions_per_week: 2
   avoid_days: [tuesday]       # never a batch session on these, even when every other afternoon is busy
+  start: {saturday: "13:00"}  # optional: when a session cooked the day its lunch is eaten starts, by weekday (10:00 when left out)
 people:
   - id: alex
     name: Alex
@@ -78,7 +79,7 @@ rules:                        # per 7 days; the plan validator enforces them
   max_repeats_per_4_weeks: 2
 ```
 
-`swaps` changes an ingredient for one person only: their plate and the shopping list use the other ingredient in the same quantity, the recipe text stays as written, and nobody else's plate changes. Both ids must be in `ingredients.yaml`, in the same unit, and the one eaten instead must not be among the person's avoided foods. On a day in `training_days` the person's energy target is their calorie target plus `training_extra_kcal` (0 to 600; 150, roughly what 45 to 60 minutes of strength training uses above resting, when left out), so every plate of that day grows a little. `batch.avoid_days` may not hold all seven days. A week whose Monday to Wednesday, or Thursday to Sunday, are all avoided gets one session; the morning cook on the first Monday of a new plan, for that day's lunch, is the one exception to the rule.
+`swaps` changes an ingredient for one person only: their plate and the shopping list use the other ingredient in the same quantity, the recipe text stays as written, and nobody else's plate changes. A `kind: batch` recipe is cooked once, in one pot, for everyone, so no swap applies to it: its plates, its batch sheet and the shopping list all use the recipe's own ingredients (write the recipe with the one the household cooks it with). Swaps apply to the dishes plated per person (breakfasts, snacks, salads). Both ids must be in `ingredients.yaml`, in the same unit, and the one eaten instead must not be among the person's avoided foods. On a day in `training_days` the person's energy target is their calorie target plus `training_extra_kcal` (0 to 600; 150, roughly what 45 to 60 minutes of strength training uses above resting, when left out), so every plate of that day grows a little. `batch.avoid_days` may not hold all seven days. `batch.start` sets, per weekday, the time a session cooked the same day its lunch is eaten starts (`HH:MM`): the Tasks and Cook pages show that time and the batch reminder the evening before says "tomorrow from 13:00" instead of "tomorrow morning". Any other session starts at the day's first `batch` reminder (20:00 without one), and one starting at 20:00 or later is said to be at night. A week whose Monday to Wednesday, or Thursday to Sunday, are all avoided gets one session; the morning cook on the first Monday of a new plan, for that day's lunch, is the one exception to the rule.
 
 A pill with `days` shows, and counts for the lunch pills reminder, only on those weekdays. With `settings.health_export` (below), a person the export lists takes their pills from it instead of from here.
 

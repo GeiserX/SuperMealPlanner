@@ -133,18 +133,29 @@ def _factor(data, db, pid, offset):
     return factors(data, db, MONDAY + dt.timedelta(days=offset))[pid]
 
 
-def test_the_batch_sheet_splits_the_pot_by_swap(data_dir, tmp_path):
+def test_a_batch_dish_is_one_pot_and_takes_no_swap(data_dir, tmp_path):
+    """A batch dish is cooked once for everyone: its sheet, the plates out of it and the
+    shopping list name the recipe's own ingredient, never a swap per person in the same pot."""
     data = swapping(data_dir)
     db = DB(tmp_path / "x.db")
     plan = generate(data, MONDAY, 4)
     hit = None
     for s in plan.sessions:
         for dish in batch_sheet(data, db, plan, s.date):
-            if any(i.id == "pollo" for i in dish.recipe.ingredients):
+            if dish.recipe.kind == "batch" and any(
+                i.id == "pollo" for i in dish.recipe.ingredients
+            ):
                 hit = dish
     assert hit is not None
     text = " ".join(hit.lines)
-    assert "Pollo" in text and "Pavo" in text
+    assert "Pollo" in text and "Pavo" not in text
+    day = next(c.eat for c in hit.containers if "ana" in c.servings)
+    ana = next(pd for pd in person_days(data, db, plan, day) if pd.person_id == "ana")
+    assert plan.day(day).lunch == hit.recipe.id
+    lunch = " ".join(ana.plates["lunch"].lines)
+    assert "Pollo" in lunch and "Pavo" not in lunch
+    # nothing but batch dishes uses pollo in the test household: no turkey is bought for them
+    assert "pavo" not in needs(data, db, plan, hit.cook - dt.timedelta(days=hit.cook.weekday()))
 
 
 @pytest.mark.parametrize(

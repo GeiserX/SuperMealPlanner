@@ -19,7 +19,7 @@ from .test_fields import swapping
 
 
 def test_the_total_adds_up_every_plate_with_each_persons_swaps(data_dir, tmp_path):
-    data = swapping(data_dir)  # Ana eats turkey where the recipe says chicken
+    data = swapping(data_dir)  # Ana eats turkey where the recipe says chicken, kefir for yogurt
     db = DB(tmp_path / "x.db")
     r = next(x for x in data.recipes.values() if x.ingredients[0].id == "pollo")
     f = {pd.person_id: pd.factor for pd in person_days(data, db, generate(data, MONDAY, 4), MONDAY)}
@@ -28,9 +28,14 @@ def test_the_total_adds_up_every_plate_with_each_persons_swaps(data_dir, tmp_pat
     assert all_.kcal == pytest.approx(
         sum(plate(data, r, f[p.id], p.swaps).kcal for p in data.household.people)
     )
-    pollo, pavo = data.ingredients["pollo"], data.ingredients["pavo"]
-    assert f"Pollo: {fmt_qty(pollo, 150 * f['luis'], data.locale)}" in all_.lines
-    assert f"Pavo: {fmt_qty(pavo, 150 * f['ana'], data.locale)}" in all_.lines
+    # a batch dish is one pot: the whole of it is chicken, Ana's swap does not split it
+    pollo = data.ingredients["pollo"]
+    assert f"Pollo: {fmt_qty(pollo, 150 * (f['luis'] + f['ana']), data.locale)}" in all_.lines
+    assert not any(x.startswith("Pavo") for x in all_.lines)
+    snack = data.recipes["merienda-a"]  # plated per person: each plate keeps its swap
+    split = together(data, snack, f)
+    assert any(x.startswith("Kéfir") for x in split.lines)
+    assert any(x.startswith("Yogur") for x in split.lines)
     both = together(data, r, {"luis": 2.0, "x": 1.0})  # 450 g of chicken: about four thighs
     assert "Pollo: 450 g (≈ 4 contramuslos)" in both.lines
 
