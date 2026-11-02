@@ -538,15 +538,21 @@ def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
 
 def thaw_now(data: Data, dishes: set[str]) -> list[str]:
     """What the app's own cooking reminder says every evening without a chat reminder: what to
-    take out of the freezer for the next day's meals. A thaw it says is not missing."""
-    at = sorted(
-        {
-            x
-            for r in data.settings.reminders
-            if r.kind == "batch" and r.enabled and r.days == "daily"
-            for x in r.at
-        }
-    )
+    take out of the freezer for the next day's meals. A thaw it says is not missing. A reminder
+    set for some weekdays only counts on those days (a later time on one day, none on another)."""
+    by_day = {
+        w: tuple(
+            sorted(
+                {
+                    x
+                    for r in data.settings.reminders
+                    if r.kind == "batch" and r.enabled and (r.days == "daily" or w in r.days)
+                    for x in r.at
+                }
+            )
+        )
+        for w in WEEKDAYS
+    }
     frozen = sorted(
         {
             data.ingredients[i.id].name
@@ -556,10 +562,19 @@ def thaw_now(data: Data, dishes: set[str]) -> list[str]:
             if data.ingredients[i.id].frozen
         }
     )
-    if not at or not frozen:
+    if not any(by_day.values()) or not frozen:
         return []
+    usual = max(set(by_day.values()), key=lambda t: (list(by_day.values()).count(t), bool(t)))
+    other = [
+        f"{w.capitalize()} {', '.join(t)}" if t else f"never on {w.capitalize()}"
+        for w, t in by_day.items()
+        if t != usual
+    ]
+    at = ", ".join(usual) if usual else "no time"
+    if other:
+        at += f" ({'; '.join(other)})"
     said = (
-        f"- The evening before, at {', '.join(at)}, the cooking reminder says what to take out of"
+        f"- The evening before, at {at}, the cooking reminder says what to take out of"
         f" the freezer for the next day's meals: {', '.join(frozen)}."
     )
     return ["", "## Said by the app itself", said]
