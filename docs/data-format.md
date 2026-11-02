@@ -110,6 +110,7 @@ bot:
   people: {alex: 111111111, sam: 222222222}   # person id -> Telegram user id
   handles: {sam: "@sam_cooks"}  # optional: how to @mention someone; looked up from Telegram when left out
   admins: [alex]              # optional: whose yes approves what only an admin may (a plugin's pull request)
+  reminders_for: alex         # optional: who every reminder set from the chat is for (the one who cooks), whoever asked or tapped it
   voice: true                 # transcribe voice notes; every one is answered, in the group too
   private_chats: true         # people in bot.people may also write to the bot privately
   voice_to_group: true        # what is said to the chef from the app happens in the group; false: in the person's private chat
