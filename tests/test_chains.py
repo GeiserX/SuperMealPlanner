@@ -196,3 +196,14 @@ def test_cancelling_the_only_cook_reminder_breaks_the_chain(data_dir, tmp_path):
     assert not [k for k in found(data, db) if SALAD in k]
     for cancel in (cook, str(cook)):
         assert f"no_cook:{SALAD}:{D(2)}" in found(data, db, offered=[{"cancel": cancel}])
+
+
+def test_a_thaw_for_a_deleted_recipe_still_on_the_menu_does_not_stop_the_checks(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = soak(data_dir)
+    tuesday = D(8)
+    lunch = {"date": str(tuesday), "meal": "lunch", "recipe": "pescado-batch"}
+    change(data, {"set": {**lunch, "cook": str(D(5))}})
+    remind(db, D(7), "20:00", "pescado-batch", tuesday, "thaw")
+    del data.recipes["pescado-batch"]
+    doctor.problems(data, db, MONDAY)

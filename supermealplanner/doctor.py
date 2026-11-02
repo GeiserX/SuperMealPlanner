@@ -591,7 +591,9 @@ def _thaws(data, plans, today, found, sessions, steps, at, when, hm, hours) -> l
             ]
             if not counts:
                 cooks.append(eat)
-        r = data.recipes[x.recipe]
+        r = data.recipes.get(x.recipe)
+        if r is None:
+            continue  # a recipe since deleted: a crash here would silence every check
         which = f" (reminder {x.reminder})" if x.reminder else ""
         after = [c for c in cooks if c >= t0]
         if not after:  # the dish is cooked before this thaw: what comes out of the freezer waits
