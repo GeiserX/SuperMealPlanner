@@ -327,6 +327,9 @@ class Bot(Loose):
     chat_id: int | None = None  # the household group; reminders go here
     people: dict[str, int] = {}  # person id -> Telegram user id
     admins: list[str] = []  # person ids whose yes approves what only an admin may (a pull request)
+    # the person every reminder set from the chat is for, whoever asked or tapped (the one who
+    # cooks); unset: the person the answer names, else the one who asked
+    reminders_for: str | None = None
     handles: dict[str, str] = {}  # person id -> @handle; looked up from Telegram when left out
     history: int = 20  # recent messages kept as context for the AI
     history_days: int = 0  # and every message of these last days (0: only `history`)
@@ -539,6 +542,9 @@ def load(root: str | Path, health: bool = True) -> Data:
     for pid in settings.bot.handles:
         if pid not in people:
             errors.append(f"settings.yaml bot.handles: unknown person {pid}")
+    rf = settings.bot.reminders_for
+    if rf and rf not in settings.bot.people:
+        errors.append(f"settings.yaml bot.reminders_for: {rf} is not in bot.people")
     for pid in settings.bot.admins:
         if pid not in settings.bot.people:
             errors.append(f"settings.yaml bot.admins: {pid} is not in bot.people")

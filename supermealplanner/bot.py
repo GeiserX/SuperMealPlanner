@@ -3210,6 +3210,10 @@ class Bot:
     def _person(self, pid) -> str | None:
         return pid if pid in {p.id for p in self.data.household.people} else None
 
+    def _remind_for(self, pid) -> str | None:
+        """Who a reminder set from the chat is for: bot.reminders_for when set, whoever asked."""
+        return self._person(self.data.settings.bot.reminders_for) or self._person(pid)
+
     def _offered(self, listed: list[dict], who) -> list[dict]:
         """The reminders an answer listed that can be kept: a time still to come, within
         REMIND_DAYS, for a person of the household (the person answered when it names nobody)."""
@@ -3221,7 +3225,7 @@ class Bot:
                 continue
             if not now + 60 <= at.timestamp() <= now + REMIND_DAYS * 86400:
                 continue
-            person = self._person(r.get("person")) or who
+            person = self._remind_for(self._person(r.get("person")) or who)
             item = {"at": at.timestamp(), "text": r["text"], "person": person, "done": None}
             if r.get("set"):
                 item["set"] = True
@@ -3488,7 +3492,7 @@ class Bot:
         if met and met[0] == "same":  # already set: not stored twice, and the AI hears it
             self.state.db.add_chat(chat["id"], "assistant", None, said)
         elif c == "h":
-            person = item["person"] or who
+            person = self._remind_for(item["person"] or who)
             line = t("remind_set_log", when=when, text=item["text"])
             if met:
                 line += " " + t("remind_joined", time=met[1])
@@ -3590,7 +3594,7 @@ class Bot:
         ]
 
     def once_names(self, rs: list[dict]) -> str:
-        pids = dict.fromkeys(p for r in rs if (p := self._person(r["person"])))
+        pids = dict.fromkeys(p for r in rs if (p := self._remind_for(r["person"])))
         return ", ".join(self.mention(p) for p in pids)
 
     def once_line(self, r: dict, now: float) -> str:
