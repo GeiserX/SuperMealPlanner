@@ -2,14 +2,12 @@
 
 A step is a task whoever thought of it: the planner's own (cook a session, leave a dried pulse to
 soak the evening before, take a frozen food out, move a container from the freezer to the fridge,
-go shopping), a reminder the chat set, and a reminder an answer offers and nobody tapped yet. The
-Cook page, the day's page, the Tasks page, the API and the chat's own reminders all read this list,
+go shopping) and a reminder the chat set. The Cook page, the day's page, the Tasks page, the API and the chat's own reminders all read this list,
 so what the chat says and what the pages show can never disagree.
 
 Nothing here is stored: the list is the same for the same plan and db. Each task has a key that
 stays the same while the step does (`cook:<date>:am|pm`, `soak:<session date>:<recipe>:<food>`,
-`thaw:<day>:<meal>:<food>`, `defrost:<day>:<recipe>`, `shop:<day>`, `r:<reminder id>`,
-`offer:<n>`).
+`thaw:<day>:<meal>:<food>`, `defrost:<day>:<recipe>`, `shop:<day>`, `r:<reminder id>`).
 
 A task sits on the day the step is done, so food cooked on a Saturday for the next plan's Tuesday
 is on Saturday (Plans.sessions_on). Its time is the reminder that says it, when the household has
@@ -44,7 +42,7 @@ class Task:
     eat: dt.date | None = None  # the day the dish it is for is eaten
     ingredient: str | None = None
     reminder: int | None = None  # a chat reminder's id
-    source: str = "auto"  # auto: the planner's own; chat: a reminder set or offered in the chat
+    source: str = "auto"  # auto: the planner's own; chat: a reminder set in the chat
     line: str = field(default="", compare=False)  # how the chat's reminder lists it
     dishes: tuple = field(default=(), compare=False)  # cook: (recipe, eaten) of each dish
 
@@ -62,12 +60,8 @@ def times(data: Data, kind: str, day: dt.date) -> list[str]:
     return sorted(out)
 
 
-def tasks_for(
-    data: Data, db: DB, first: dt.date, last: dt.date, offered=(), bot=None
-) -> list[Task]:
-    """Every task done from `first` to `last` (both included), in time order. offered: reminders an
-    answer offers ({"when": "YYYY-MM-DD HH:MM", "text", "recipe", "date", "kind"}, or "at" in epoch
-    seconds). bot: the words each task is said in (a running bot.Bot); without it the texts are
+def tasks_for(data: Data, db: DB, first: dt.date, last: dt.date, bot=None) -> list[Task]:
+    """Every task done from `first` to `last` (both included), in time order. bot: the words each task is said in (a running bot.Bot); without it the texts are
     empty, which is all the plain-code checks need."""
     plans = Plans(data)
     zone = ZoneInfo(data.household.timezone)
@@ -81,20 +75,7 @@ def tasks_for(
             when = dt.datetime.fromtimestamp(r["at"], zone)
             if first <= when.date() <= last:
                 out.append(_chat(f"r:{r['id']}", when, r, r["id"]))
-    for n, r in enumerate(offered):
-        when = _when(r, zone)
-        if when and first <= when.date() <= last:
-            out.append(_chat(f"offer:{n}", when, r, None))
     return sorted(out, key=lambda x: (x.day, x.at, x.key))
-
-
-def _when(r: dict, zone: ZoneInfo) -> dt.datetime | None:
-    try:
-        if "at" in r:
-            return dt.datetime.fromtimestamp(float(r["at"]), zone)
-        return dt.datetime.strptime(str(r["when"]), "%Y-%m-%d %H:%M").replace(tzinfo=zone)
-    except (KeyError, TypeError, ValueError):
-        return None
 
 
 def _chat(key: str, when: dt.datetime, r: dict, rid: int | None) -> Task:
