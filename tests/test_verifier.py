@@ -9,7 +9,7 @@ import json
 import yaml
 
 from supermealplanner import doctor, llm, verifier
-from supermealplanner.model import load
+from supermealplanner.model import WEEKDAYS, load
 from supermealplanner.planner import plan_for
 
 from .conftest import MONDAY
@@ -352,12 +352,21 @@ def test_the_plan_check_sees_when_each_session_cooks_and_the_reminders_already_s
     assert f"{s.date.isoformat()}, after lunch: " in text and f"{x.recipe} for {eat}" in text
     assert "## Reminders set in the household chat" not in text
     at = dt.datetime.combine(s.date, dt.time(21, 30), ZONE).timestamp()
-    db.add_reminder(
+    rid = db.add_reminder(
         b.data.settings.bot.chat_id, "ana", at, "Remojo", recipe=x.recipe, date=eat[:10]
     )
     text, again = verifier.plan_brief(b.data, db, MONDAY)
-    row = {"when": f"{s.date:%A} {s.date.isoformat()} 21:30", "state": "pending", "text": "Remojo"}
-    assert json.dumps(row | {"recipe": x.recipe, "date": eat[:10]}, ensure_ascii=False) in text
+    row = {
+        "key": f"r:{rid}",
+        "when": f"{WEEKDAYS[s.date.weekday()]} {s.date.isoformat()} 21:30",
+        "kind": "note",
+        "state": "unknown",
+        "recipe": x.recipe,
+        "for": eat[:10],
+        "reminder": rid,
+        "text": "Remojo",
+    }
+    assert json.dumps(row, ensure_ascii=False) in text  # a task, with what was said of it
     assert again != key  # a reminder set since is a new plan to check
 
 
@@ -370,7 +379,7 @@ def test_a_reminder_already_sent_still_covers_its_step(data_dir, tmp_path):
     db.settle_reminder(db.add_reminder(chat, "ana", before, "Semana pasada"), "sent")
     db.add_reminder(chat + 1, "ana", at, "Otro chat")
     text, _ = verifier.plan_brief(b.data, db, MONDAY)
-    assert '"state": "sent", "text": "Remojo hecho"' in text
+    assert '"state": "unknown", "reminder": 1, "text": "Remojo hecho"' in text
     assert "Semana pasada" not in text and "Otro chat" not in text
     db.set_kv("bot.migrated_chat", {"from": chat, "to": chat + 1})  # the group moved
     assert "Otro chat" in verifier.plan_brief(b.data, db, MONDAY)[0]

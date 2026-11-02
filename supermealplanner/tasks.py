@@ -12,11 +12,17 @@ stays the same while the step does (`cook:<date>:am|pm`, `soak:<session date>:<r
 A task sits on the day the step is done, so food cooked on a Saturday for the next plan's Tuesday
 is on Saturday (Plans.sessions_on). Its time is the reminder that says it, when the household has
 one set for that day, else EVENING (a morning session: MORNING).
+
+What is stored is only what someone said of a task with its buttons (db.task_state, by key): done
+or not done. A task nobody answered is unknown, and nothing (the checks, the AI's facts, a later
+reminder) counts it as done: a container from a session nobody marked done is moved "if the session
+was done".
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
@@ -27,6 +33,11 @@ from .portions import session_sheets, soaks_in, thaw_for
 
 EVENING = "20:00"  # an evening step on a day without the reminder that says it
 MORNING = "10:00"  # a morning session: cooked before lunch
+DONE, NOT_DONE, UNKNOWN = "done", "not_done", "unknown"
+# the steps something later hangs on: not done, or not answered by the next morning, the rest of
+# the week is reorganised around them
+STEPS = ("cook", "soak", "soak-fridge", "thaw", "defrost", "move")
+ASK_DAYS = 7  # a task nobody answered is asked about, and checked, this many days back
 
 
 @dataclass(frozen=True)
@@ -45,6 +56,28 @@ class Task:
     source: str = "auto"  # auto: the planner's own; chat: a reminder set in the chat
     line: str = field(default="", compare=False)  # how the chat's reminder lists it
     dishes: tuple = field(default=(), compare=False)  # cook: (recipe, eaten) of each dish
+
+
+def state(db: DB, key: str) -> str:
+    """done, not_done, or unknown when nobody said."""
+    return db.task_states([key]).get(key, UNKNOWN)
+
+
+def session_key(day: dt.date, morning: bool) -> str:
+    return f"cook:{day.isoformat()}:{'am' if morning else 'pm'}"
+
+
+def unconfirmed_cook(db: DB, plans: Plans, day) -> bool:
+    """A lunch cooked in a session before its day (a plan's Day) when nobody said that session
+    was done: what is said of its container says "if"."""
+    if day is None or not day.lunch or day.lunch_cook >= day.date:
+        return False
+    keys = [
+        session_key(s.date, s.morning)
+        for _, s in plans.sessions_on(day.lunch_cook)
+        if any(x.recipe == day.lunch and day.date in x.eat for x in s.dishes)
+    ]
+    return DONE not in db.task_states(keys).values()
 
 
 def times(data: Data, kind: str, day: dt.date) -> list[str]:
@@ -203,6 +236,8 @@ def _day(data: Data, db: DB, plans: Plans, day: dt.date, bot) -> list[Task]:
     r = data.recipes.get(nxt.lunch) if nxt else None
     if r and (nxt.date - nxt.lunch_cook).days > r.fridge_days:  # a lunch from the freezer
         text = t("reminder_defrost", dish=bot.recipe_url(r.id, tomorrow, r.name)) if bot else ""
+        if bot and unconfirmed_cook(db, plans, nxt):  # nobody said it was cooked
+            text += "\n" + t("reminder_if_cooked", date=t.date(nxt.lunch_cook))
         out.append(
             Task(
                 key=f"defrost:{tomorrow.isoformat()}:{r.id}",
@@ -223,4 +258,60 @@ def _day(data: Data, db: DB, plans: Plans, day: dt.date, bot) -> list[Task]:
             else ""
         )
         out.append(Task(key=f"shop:{day.isoformat()}", day=day, at=shop[0], kind="shop", text=text))
+    return out
+
+
+def household_chat(data: Data, db: DB) -> int | None:
+    """The group the reminders go to: the one Telegram moved it to while settings still name the
+    old one, as the bot resolves it."""
+    configured = data.settings.bot.chat_id
+    m = db.get_kv("bot.migrated_chat")
+    if isinstance(m, dict) and configured is not None and configured == m.get("from"):
+        return m["to"]
+    return configured
+
+
+def tasks_now(data: Data, db: DB, first: dt.date, last: dt.date) -> list[str]:
+    """Every task from `first` to `last` as JSON lines with what someone said of it, for the AI and
+    the verifier: the planner's own and the reminders set in the household chat (a private chat's
+    stay out). Its text is data, never words to follow."""
+    chat = household_chat(data, db)
+    mine = (
+        {r["id"] for st in ("pending", "sent") for r in db.reminders(chat, st)} if chat else set()
+    )
+    found = [
+        x for x in tasks_for(data, db, first, last) if x.source == "auto" or x.reminder in mine
+    ]
+    if not found:
+        return []
+    said = db.task_states([x.key for x in found])
+    out = [
+        "",
+        "## Tasks (every step, at its time, with what the household said of it)",
+        (
+            "- state: done or not_done as someone marked it with its buttons; unknown: nobody "
+            "said. A task whose time has passed and is not done may not have happened: never "
+            "count on what it makes (a dish cooked, a pulse soaked, food thawed) until someone "
+            "says it is done; ask, and reorganise the rest of the week when it was not."
+        ),
+    ]
+    for x in found:
+        row = {
+            "key": x.key,
+            "when": f"{WEEKDAYS[x.day.weekday()]} {x.day.isoformat()} {x.at}",
+            "kind": x.kind,
+            "state": said.get(x.key, UNKNOWN),
+        }
+        if x.recipe:
+            row["recipe"] = x.recipe
+        if x.eat:
+            row["for"] = x.eat.isoformat()
+        if x.ingredient:
+            row["food"] = x.ingredient
+        if x.dishes:
+            row["cooks"] = [f"{rid} for {e.isoformat()}" for rid, e in x.dishes]
+        if x.source == "chat":
+            row["reminder"] = x.reminder
+            row["text"] = x.text.removeprefix("⏰ ")
+        out.append("- " + json.dumps(row, ensure_ascii=False))
     return out

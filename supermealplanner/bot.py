@@ -31,6 +31,13 @@ each as a reminder with buttons: here (the bot posts it in the chat at that time
 ask when the ask adds an event at that very time) or nothing. An offer nobody taps expires and
 nothing happens. /reminders lists the ones set, with a button to cancel each.
 
+Every message that reminds of a task (tasks.py: a cooking session, a soak, a thaw, a container to
+move, the shopping, a reminder set from the chat) carries two buttons per task, done and not done;
+the first answer is stored with the task. The next morning's day message asks about each task of
+the last days nobody answered. A "not done", or no answer by then for a step something later hangs
+on (tasks.STEPS), starts a turn the bot asks itself to reorganise the rest of the week. Nothing
+counts a task as done until someone marked it done.
+
 Telegram shows a bot with privacy mode on (the default) only commands and replies to it, so for
 mentions (and edits of messages without one) make the bot a group admin or turn privacy off
 (BotFather, /setprivacy -> Disable). The bot logs a warning at start when it cannot see them.
@@ -46,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import logging
 import mimetypes
@@ -194,6 +202,12 @@ REMIND_TTL = 1800  # an offer can be tapped this long; then nothing is done
 REMIND_WHAT = 20  # characters of a reminder's text on its buttons
 REMIND_DAYS = 60  # the furthest ahead a reminder may be
 LATE_S = 600  # a reminder posted this much after its time says so
+TASK_BUTTONS = (
+    "task.buttons"  # {short id: {"key", "what", "kind", "day"}}: the tasks under messages
+)
+TASK_BUTTONS_KEEP = 400  # Telegram's 64 bytes of callback data hold the short id, not the key
+TASK_ASKED = "task.asked"  # {task key: the morning the day message asked about it}: asked once
+TASK_WHAT = 80  # characters of a task's text where its buttons say which task is which
 # A spoken turn from the app (POST /api/v1/chef): the message it becomes carries its id under this
 # key, which no Telegram message has. Its answer is kept this long for the app to read.
 SPOKEN = "_spoken"
@@ -219,6 +233,7 @@ class Item:
     grant: dict | None = None
     # a photo or a file it carries, fetched when its turn starts {"file_id", "name", "mime", "size"}
     file: dict | None = None
+    task: str | None = None  # the turn reorganises the week around this task (a "not done")
 
 
 @dataclass
@@ -661,6 +676,7 @@ class Bot:
                         self.clock(),
                         x.get("grant"),
                         x.get("file"),
+                        x.get("task"),
                     )
                     for x in kept
                 ]
@@ -710,6 +726,7 @@ class Bot:
                     "who": add.who,
                     "grant": add.grant,
                     "file": add.file,
+                    "task": add.task,
                 }
             )
         else:
@@ -953,6 +970,7 @@ class Bot:
         log_mid: bool = True,
         grant: dict | None = None,
         file: dict | None = None,
+        task: str | None = None,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
@@ -975,7 +993,7 @@ class Bot:
                 spoken.row = row
                 self.spoken_rows[row] = spoken.id
             mid = (msg or {}).get("message_id")
-            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file)
+            item = Item(row, mid, user.get("id"), who, self.clock(), grant, file, task)
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
@@ -1217,6 +1235,9 @@ class Bot:
             }
             if llm.asks(data):
                 turn["ask"] = self._asker(client, turn_state)
+            steps = [i.task for i in items if i.task]
+            if steps:  # a task not done: the answer reorganises the week around it
+                turn["task"] = steps[0]
             try:
                 reply = await asyncio.wait_for(
                     llm.converse(data, turn), timeout=data.settings.llm.timeout_s
@@ -1731,14 +1752,15 @@ class Bot:
     async def tapped(self, client, query: dict) -> None:
         """A tap on one of the bot's buttons: a yes or no to a change or a proposal (c:), to an ask
         of the provider (a:), one of the choices under an answer (o:), where a reminder offered
-        goes (r:), or the cancel of a reminder set (k:). Only the person asked (or
-        an admin, as the item says) may tap; anyone else gets a note and nothing changes."""
+        goes (r:), the cancel of a reminder set (k:), or done / not done of a task (d:). Only the
+        person asked (or an admin, as the item says) may tap; anyone else gets a note and nothing
+        changes."""
         user, message = query.get("from") or {}, query.get("message") or {}
         chat = message.get("chat") or {}
         kind, _, rest = str(query.get("data") or "").partition(":")
         key, _, choice = rest.partition(":")
         if (
-            kind not in ("c", "a", "o", "r", "k")
+            kind not in ("c", "a", "o", "r", "k", "d")
             or not chat
             or not self.allowed(chat, user.get("id", 0))
         ):
@@ -1752,6 +1774,8 @@ class Bot:
             await self.tapped_remind(client, query, chat, key, choice)
         elif kind == "k":
             await self.tapped_cancel(client, query, chat["id"], key, choice)
+        elif kind == "d":
+            await self.tapped_task(client, query, chat["id"], key, choice)
         else:
             await self.tapped_option(client, query, chat, key, choice)
 
@@ -2731,6 +2755,8 @@ class Bot:
                 dish=self.recipe_url(rid, day, rec.name),
                 where=where,
             )
+            if r.meal == "lunch" and tasklist.unconfirmed_cook(db, Plans(data), d):
+                text += "\n" + t("reminder_if_cooked", date=t.date(d.lunch_cook))
             return text + (f"\n▶ {rec.video}" if rec.video else "")
         if r.kind == "pills_lunch":
             todo = []
@@ -2759,14 +2785,13 @@ class Bot:
         freezer for tomorrow, even when today is paused."""
         t = self.t
         tomorrow = day + dt.timedelta(days=1)
-        jobs = self.kitchen_tasks(day, tomorrow)
+        jobs = self.batch_jobs(day)
         said = []
         for x in jobs:
             if x.key == f"cook:{day.isoformat()}:pm":
                 url = self.link(t("link_sheet"), f"/batch?d={day.isoformat()}")
                 said.append(t("reminder_batch", dishes=x.line, url=url))
-        for x in jobs:
-            if x.key == f"cook:{tomorrow.isoformat()}:am" and not self._session_reminded(x, day):
+            if x.key == f"cook:{tomorrow.isoformat()}:am":
                 url = self.link(t("link_sheet"), f"/batch?d={tomorrow.isoformat()}")
                 said.append(t("reminder_batch_morning", dishes=x.line, url=url))
         tonight = [x for x in jobs if x.day == day and x.source == "auto"]
@@ -2779,6 +2804,82 @@ class Bot:
             url = self.link(t("link_day"), f"/?d={tomorrow.isoformat()}")
             said.append(t("reminder_thaw", items="\n".join(thaws), url=url))
         return "\n\n".join(said) or None
+
+    def batch_jobs(self, day: dt.date) -> list[tasklist.Task]:
+        """The tasks the evening batch reminder says (batch_message), in its order."""
+        tomorrow = day + dt.timedelta(days=1)
+        jobs = self.kitchen_tasks(day, tomorrow)
+        out = [x for x in jobs if x.key == f"cook:{day.isoformat()}:pm"]
+        out += [
+            x
+            for x in jobs
+            if x.key == f"cook:{tomorrow.isoformat()}:am" and not self._session_reminded(x, day)
+        ]
+        tonight = [x for x in jobs if x.day == day and x.source == "auto"]
+        return (
+            out
+            + [x for x in tonight if x.kind == "soak"]
+            + [x for x in tonight if x.kind == "thaw"]
+        )
+
+    def reminder_tasks(self, r, day: dt.date) -> list[tasklist.Task]:
+        """The tasks a reminder of the settings says on that day, each to be marked done."""
+        if r.kind == "batch":
+            return self.batch_jobs(day)
+        if r.kind in ("shopping", "defrost"):
+            kind = "shop" if r.kind == "shopping" else "defrost"
+            return [x for x in self.kitchen_tasks(day, day) if x.kind == kind]
+        return []
+
+    def unanswered(self, day: dt.date) -> list[tasklist.Task]:
+        """The tasks of the tasks.ASK_DAYS before `day` nobody marked and nobody was asked about
+        yet: the chat's own reminders only from the household group, where the question goes."""
+        db = self.state.db
+        first = day - dt.timedelta(days=tasklist.ASK_DAYS)
+        found = self.kitchen_tasks(first, day - dt.timedelta(days=1))
+        group = {r["id"] for st in ("pending", "sent") for r in db.reminders(self.chat_id, st)}
+        found = [x for x in found if x.source == "auto" or x.reminder in group]
+        said = db.task_states([x.key for x in found])
+        asked = db.get_kv(TASK_ASKED) or {}
+        return [x for x in found if x.key not in said and x.key not in asked]
+
+    def task_what(self, x: tasklist.Task) -> str:
+        """A task in one short line of plain words, for the list its buttons number."""
+        text = x.text or x.line
+        if x.kind == "cook":  # the session's sheet link says nothing of the task
+            text = _TRAILING_LINK.sub(".", text).removesuffix(" " + self.t("link_sheet"))
+        text = " ".join(_LINK.sub(r"\1", text).split())
+        return text if len(text) <= TASK_WHAT else text[: TASK_WHAT - 1].rstrip() + "…"
+
+    def task_buttons(self, found: list[tasklist.Task]) -> tuple[list[str], list]:
+        """One row of done / not done per task, and each task's line ("n. what" when there are
+        several, so the numbers on the buttons say which is which). Each task is kept under a short
+        id (TASK_BUTTONS): callback data holds 64 bytes, a key may not fit."""
+        if not found:
+            return [], []
+        t, db = self.t, self.state.db
+        kept = db.get_kv(TASK_BUTTONS) or {}
+        many = len(found) > 1
+        lines, rows = [], []
+        for n, x in enumerate(found, 1):
+            sid = hashlib.sha256(x.key.encode()).hexdigest()[:12]
+            what = self.task_what(x)
+            kept.pop(sid, None)  # the newest last, so the oldest go first
+            kept[sid] = {"key": x.key, "what": what, "kind": x.kind, "day": x.day.isoformat()}
+            pre = f"{n}. " if many else ""
+            lines.append(pre + what)
+            rows.append(
+                [(pre + t("task_done"), f"d:{sid}:y"), (pre + t("task_not_done"), f"d:{sid}:n")]
+            )
+        db.set_kv(TASK_BUTTONS, dict(list(kept.items())[-TASK_BUTTONS_KEEP:]))
+        return lines, rows
+
+    def reorganise(self, client, chat: int, who, text: str, task: str) -> None:
+        """A turn the bot asks itself to reorganise the rest of the week around a task."""
+        if self.data.settings.llm.provider == "none":
+            return
+        self.take(chat, {"first_name": self.t("task_who")}, who, None, text, True, task=task)
+        self.spawn(self.drive(client, chat))
 
     def _session_reminded(self, cook: tasklist.Task, day: dt.date) -> bool:
         """A reminder set in the chat about one of the session's dishes (its recipe and a day it
@@ -2843,6 +2944,8 @@ class Bot:
                     )
                 )
                 line += f" · {where.lower()}"
+                if tasklist.unconfirmed_cook(self.state.db, Plans(data), d):
+                    line += "\n" + t("reminder_if_cooked", date=t.date(d.lunch_cook))
             lines.append(line)
         if picks:
             lines.append(f"{ICONS['nibble']} {t('nibble_title')}: {', '.join(picks)}")
@@ -2874,11 +2977,44 @@ class Bot:
                 continue
             at_once.setdefault(at, []).append(r)
         for at, rs in at_once.items():  # reminders due at one time go as one message
-            said = [x for x in (self.reminder_text(r, now.date()) for r in rs) if x]
+            day = now.date()
+            said, own = [], {}
+            for r in rs:
+                text = self.reminder_text(r, day)
+                if text:
+                    said.append(text)
+                    own |= {x.key: x for x in self.reminder_tasks(r, day)}
+            own = list(own.values())
+            marked = self.state.db.task_states([x.key for x in own])
+            own = [x for x in own if x.key not in marked]
+            # the morning's day message asks about what nobody marked in the last days
+            ask = self.unanswered(day) if any(r.kind == "day" for r in rs) else []
+            lines, rows = self.task_buttons(own + ask)
+            if own and len(lines) > 1:
+                said.append("\n".join(lines[: len(own)]))
+            if ask:
+                said.append(self.t("task_ask_title") + "\n" + "\n".join(lines[len(own) :]))
             if said:
-                await self.send(client, chat, "\n\n".join(said))
+                more = {"buttons": rows} if rows else {}
+                await self.send(client, chat, "\n\n".join(said), **more)
             for r in rs:  # only after Telegram took it
-                self.state.db.mark_sent(r.id, now.date(), at)
+                self.state.db.mark_sent(r.id, day, at)
+            if ask:
+                self.mark_asked(ask, day)
+                steps = [(x, w) for x, w in zip(ask, lines[len(own) :]) if x.kind in tasklist.STEPS]
+                if steps:
+                    text = self.t(
+                        "task_unanswered_turn", tasks="; ".join(f"{w} ({x.key})" for x, w in steps)
+                    )
+                    self.reorganise(client, chat, None, text, steps[0][0].key)
+
+    def mark_asked(self, found: list[tasklist.Task], day: dt.date) -> None:
+        """Remember that these tasks were asked about, for the ASK_DAYS they could be again."""
+        db = self.state.db
+        old = (day - dt.timedelta(days=2 * tasklist.ASK_DAYS)).isoformat()
+        kept = {k: v for k, v in (db.get_kv(TASK_ASKED) or {}).items() if v >= old}
+        kept |= {x.key: day.isoformat() for x in found}
+        db.set_kv(TASK_ASKED, kept)
 
     def announcement(self, start: dt.date) -> str | None:
         """The new menu in a few lines: the links to each week's menu, list and batch sheet."""
@@ -3246,8 +3382,10 @@ class Bot:
                 text += "\n" + self.t("reminder_late", when=self._when(r["at"]))
             if r.get("recipe") in self.data.recipes and r.get("date"):  # the dish it is about
                 text += "\n" + self.recipe_url(r["recipe"], r["date"])
+            when = dt.datetime.fromtimestamp(r["at"], self._zone())
+            _, rows = self.task_buttons([tasklist._chat(f"r:{r['id']}", when, r, r["id"])])
             try:
-                await self.send(client, r["chat"], text)
+                await self.send(client, r["chat"], text, buttons=rows)
             except TelegramError as e:
                 if e.code in (400, 403):
                     log.warning("a reminder could not be posted: %s", e)
@@ -3304,6 +3442,8 @@ class Bot:
         rest = [p for p in found if p.kind not in ("stale_reminder", "unused")]
         # in the morning, a recipe nobody can eat is left to the AI: it stays true until someone
         # edits the recipe, and the household may keep it so on purpose
+        # a step nobody marked is asked about with buttons in the day message: not said twice
+        rest = [p for p in rest if p.kind != "unconfirmed"]
         new = (
             [p for p in rest if p.kind != "avoided"]
             if before is None
@@ -3438,6 +3578,49 @@ class Bot:
         ]
         await self.rekey(client, chat_id, message.get("message_id"), rows)
 
+    async def tapped_task(self, client, query, chat_id: int, sid: str, choice: str) -> None:
+        """Done or not done, from a task's buttons: stored once (a second tap changes nothing), its
+        row says what was chosen, the chat log has it as that person's answer, and a "not done"
+        starts a turn that reorganises the rest of the week around it."""
+        db, t = self.state.db, self.t
+        item = (db.get_kv(TASK_BUTTONS) or {}).get(sid)
+        message = query.get("message") or {}
+        if item is None or choice not in ("y", "n"):
+            await self.toast(client, query, t("tap_gone"))
+            return
+        uid = (query.get("from") or {}).get("id")
+        who = self.person_of(uid or 0)
+        if who is None:  # a stranger under group_open
+            await self.toast(client, query, t("task_not_yours"))
+            return
+        state = tasklist.DONE if choice == "y" else tasklist.NOT_DONE
+        fresh = db.mark_task(item["key"], state, who)
+        state = tasklist.state(db, item["key"])  # a second tap: what the first one said
+        label = t("task_marked_done" if state == tasklist.DONE else "task_marked_not_done")
+        await self.toast(client, query, label)
+        rows = []
+        for row in (message.get("reply_markup") or {}).get("inline_keyboard") or []:
+            ours = any(str(b.get("callback_data", "")).startswith(f"d:{sid}:") for b in row)
+            if ours:
+                pre = re.match(r"\d+\. ", row[0].get("text", "")) if row else None
+                rows.append([((pre.group(0) if pre else "") + label, "x")])
+            else:
+                rows.append([(b.get("text", ""), b.get("callback_data", "x")) for b in row])
+        await self.rekey(client, chat_id, message.get("message_id"), rows)
+        if not fresh:
+            return
+        db.add_chat(chat_id, "user", who, f"{label}: {item['what']}", asked=True)
+        if state == tasklist.NOT_DONE and item.get("kind") != "note":
+            day = dt.date.fromisoformat(item["day"])
+            text = t(
+                "task_not_done_turn",
+                name=self.data.household.person(who).name,
+                task=item["what"],
+                step=item["key"],
+                date=t.date(day),
+            )
+            self.reorganise(client, chat_id, who, text, item["key"])
+
 
 def _for_handle(msg: dict) -> bool:
     """A message the bot handles: text, a voice note, a photo or a file of any kind."""
@@ -3486,6 +3669,7 @@ def _either(t: Translator, labels: list[str]) -> str:
 
 _FENCE = re.compile(r"```.*?(```|$)", re.DOTALL)
 _LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_TRAILING_LINK = re.compile(r"\.\s*\[[^\]]*\]\([^)]*\)\s*$")
 _URL = re.compile(r"<?https?://\S+>?")
 _SHA = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b")
 _BOLD = re.compile(r"(\*\*|__|~~)(.+?)\1")

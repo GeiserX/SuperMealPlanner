@@ -13,7 +13,7 @@ import datetime as dt
 from functools import cache
 from pathlib import Path
 
-from . import doctor
+from . import doctor, tasks
 from .db import DB
 from .i18n import Translator
 from .model import Data
@@ -247,6 +247,12 @@ that cooks the dish, a reminder of kind cook, or the meal itself when the recipe
 than assembled and has no `ahead` steps), and a soak at most 24 h before that cook (48 h with
 soak-fridge). Thawed food is cooked within 48 h of its thaw. When a change moves a cook, move its
 soak and thaw with it. A reminder without its step kind counts as no step.
+Every task the app reminds of (a session, a soak, a thaw, a container to move, the shopping, a
+reminder from the chat) comes with two buttons, done and not done, and the facts list each task
+under «Tasks» with its state. Never treat a step as done, nor what it makes as ready (a dish
+cooked, a pulse soaked, food thawed or moved), unless its state is done: unknown means nobody said,
+so ask, or say "if it was done". When a step was not done, reorganise the rest of the week around
+it.
 
 The reminders already set in this chat are listed in the facts with their ids. When a change
 makes one wrong (the dish changed, the step moved, it is no longer needed), cancel it in the same
@@ -399,6 +405,8 @@ def facts(
     out += menu_now(data, t, today)
     out += list_now(data, db, today)
     out += pantry_now(data, db, today)
+    monday = today - dt.timedelta(days=today.weekday())
+    out += tasks.tasks_now(data, db, today - dt.timedelta(days=3), monday + dt.timedelta(days=13))
     out += problems_now(data, db, today, viewer)
     out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)

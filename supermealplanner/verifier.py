@@ -49,7 +49,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from . import changes, doctor, llm, menu
+from . import changes, doctor, llm, menu, tasks
 from .db import DB
 from .i18n import Translator
 from .model import WEEKDAYS, Data, DataError, load
@@ -342,7 +342,9 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
     after = {
         "menu": doctor_menu(data, t, today),
         "sessions": sessions_now(data, plans, monday),
-        "reminders": reminders_now(data, db, monday) + thaw_now(data, dishes),
+        # every task of the two weeks with what was said of it: the chat's reminders among them
+        "reminders": tasks.tasks_now(data, db, monday, monday + dt.timedelta(days=13))
+        + thaw_now(data, dishes),
         "recipes": recipe_texts(data, dishes),
     }
     text = brief(data, today, PLAN_ANSWER, problems, after, None)
@@ -374,37 +376,6 @@ def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
     if not out:
         return []
     return ["", "## Cooking sessions (each lunch is cooked in the one that lists its day)", *out]
-
-
-def household_chat(data: Data, db: DB) -> int | None:
-    """The group the reminders go to: the one Telegram moved it to while settings still name the
-    old one, as the bot resolves it."""
-    configured = data.settings.bot.chat_id
-    m = db.get_kv("bot.migrated_chat")
-    if isinstance(m, dict) and configured is not None and configured == m.get("from"):
-        return m["to"]
-    return configured
-
-
-def reminders_now(data: Data, db: DB, monday: dt.date) -> list[str]:
-    """The reminders set in the household chat for the two weeks, still to come or already sent:
-    a step one of them covers is not missing. Each one as JSON, so its text is data."""
-    chat = household_chat(data, db)
-    if chat is None:
-        return []
-    zone = ZoneInfo(data.household.timezone)
-    since = dt.datetime.combine(monday, dt.time(), zone).timestamp()
-    rows = [r for r in db.reminders(chat, "sent") if r["at"] >= since] + db.reminders(chat)
-    if not rows:
-        return []
-    out = ["", "## Reminders set in the household chat (sent, or still to come)"]
-    for r in rows:
-        local = dt.datetime.fromtimestamp(r["at"], zone)
-        row = {"when": f"{local:%A %Y-%m-%d %H:%M}", "state": r["state"], "text": r["text"]}
-        if r.get("recipe"):
-            row |= {"recipe": r["recipe"], "date": r["date"]}
-        out.append("- " + json.dumps(row, ensure_ascii=False))
-    return out
 
 
 def thaw_now(data: Data, dishes: set[str]) -> list[str]:
