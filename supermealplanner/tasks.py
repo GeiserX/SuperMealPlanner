@@ -42,6 +42,7 @@ DONE, NOT_DONE, UNKNOWN = "done", "not_done", "unknown"
 # the week is reorganised around them
 STEPS = ("cook", "soak", "soak-fridge", "thaw", "defrost", "move")
 ASK_DAYS = 7  # a task nobody answered is asked about, and checked, this many days back
+MERGE_S = 1800  # chat reminders this close are one slot: they go out as one message
 SINCE = "task.since"  # kv: the first day the bot ran with the buttons (bot.run sets it once)
 
 
