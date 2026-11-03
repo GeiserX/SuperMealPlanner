@@ -4,6 +4,7 @@ it offers, reads a change that waited for a yes as it stands when the review run
 a yes to someone who did not write."""
 
 import asyncio
+import datetime as dt
 import json
 
 import yaml
@@ -97,6 +98,60 @@ def test_a_no_to_the_follow_ups_change_keeps_its_reminders(data_dir, tmp_path):
     asked = next(p for p in sends(b, -100) if p.get("reply_markup") and "Pavo" not in p["text"])
     run(tap(b, buttons(asked)[1]["callback_data"], 7, 1))
     assert [r["id"] for r in db.reminders(-100)] == [rid]
+
+
+# ---------------------------------------------------------------- a change still waiting
+
+
+def test_a_follow_ups_change_joins_the_change_its_answer_left_waiting(data_dir, tmp_path):
+    """The answer offers a change for a yes (a dish moved and a new ingredient); the review finds
+    one thing, and the follow-up writes only that correction (what is at home of the new food).
+    Both wait together for one yes: the correction never throws away what it corrects."""
+    b, _db = vsetup(data_dir, tmp_path)
+    b.state.today = lambda: MONDAY + dt.timedelta(days=1)
+    new = {"name": "Basmati", "section": "despensa", "store": "mercado", "unit": "g"}
+    first = {
+        "plan": [{"set": {"date": "2026-10-14", "meal": "dinner", "recipe": "merluza-cena-1"}}],
+        "ingredients": {"basmati": new},
+    }
+    cfg(
+        data_dir,
+        text="Una idea.\n```change\n" + yaml.safe_dump(first) + "```",
+        revised="Y lo que hay.\n```change\n" + yaml.safe_dump({"pantry": {"basmati": 500}}) + "```",
+        verdict=json.dumps({"timeline": ["Say how much basmati is at home."]}),
+    )
+    say(b, "@chefbot qué cenamos el miércoles", message_id=1)
+    assert len(lines(data_dir, "turns.jsonl")) == 2  # the answer and its follow-up
+    (waiting,) = [i for i in b.pending(-100) if "change" in i]
+    assert waiting["change"]["plan"] == first["plan"]
+    assert waiting["change"]["ingredients"] == {"basmati": new}
+    assert waiting["change"]["pantry"] == {"basmati": 500}
+
+
+def test_a_step_the_follow_up_says_was_done_is_recorded_before_any_tap(data_dir, tmp_path):
+    """The follow-up's change says a step was done (the household said so) and moves a dish: the
+    step is done at once, and only the dish waits for a yes. A fact never waits for a tap, so a
+    change nobody taps cannot leave a done step as not done."""
+    from supermealplanner import tasks
+
+    b, db = vsetup(data_dir, tmp_path)
+    b.state.today = lambda: MONDAY + dt.timedelta(days=1)
+    key = tasks.tasks_for(b.data, db, MONDAY, MONDAY + dt.timedelta(days=6))[0].key
+    db.mark_task(key, "not_done", "ana")
+    move = {"plan": [{"set": {"date": "2026-10-14", "meal": "dinner", "recipe": "merluza-cena-1"}}]}
+    cfg(
+        data_dir,
+        text="Hecho.\n" + merluza_wednesday(),
+        revised="Corregido.\n```change\n"
+        + yaml.safe_dump({**move, "tasks": {key: "done"}})
+        + "```",
+        verdict=json.dumps({"timeline": ["The cook said the step was done."]}),
+    )
+    say(b, "@chefbot merluza el miércoles", message_id=1)
+    assert len(lines(data_dir, "turns.jsonl")) == 2
+    assert tasks.state(db, key) == tasks.DONE  # before any tap
+    (waiting,) = [i for i in b.pending(-100) if "change" in i]
+    assert "tasks" not in waiting["change"] and waiting["change"]["plan"] == move["plan"]
 
 
 # ---------------------------------------------------------------- a turn still being written

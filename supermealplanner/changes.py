@@ -49,13 +49,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 from ruamel.yaml.util import load_yaml_guess_indent
 
 from . import menu
-from .model import Data, DataError, check
+from .model import Data, DataError, Ingredient, check
 from .pantry import Part
 
 log = logging.getLogger("supermealplanner")
@@ -334,6 +335,12 @@ def _ingredients(raw, data: Data) -> dict[str, dict]:
             raise ChangeError(f"ingredients.{iid}.section is one of {', '.join(sorted(sections))}")
         if fields.get("store") not in stores:
             raise ChangeError(f"ingredients.{iid}.store is one of {', '.join(sorted(stores))}")
+        try:  # what the data would refuse when it is saved, refused now
+            Ingredient.model_validate({**fields, "id": iid})
+        except ValidationError as e:
+            err = e.errors()[0]
+            where = ".".join(map(str, err["loc"]))
+            raise ChangeError(f"ingredients.{iid}.{where}: {err['msg'][:200]}") from None
         out[iid] = fields
     return out
 
@@ -350,7 +357,10 @@ def _pantry(raw, data: Data, new: dict | None = None) -> dict[str, list[Part]]:
     out = {}
     for iid, said in raw.items():
         if iid not in data.ingredients and iid not in new:
-            raise ChangeError(f"no ingredient {iid}")
+            raise ChangeError(
+                f"no ingredient {iid}; one the data lacks goes under `ingredients` in this change. "
+                "A new change replaces the one still waiting for a yes, so repeat what that one adds"
+            )
         unit = data.ingredients[iid].unit if iid in data.ingredients else new[iid].get("unit")
         items = said if isinstance(said, list) else [said]
         if not items:
@@ -579,7 +589,10 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
     from .portions import fmt_qty
 
     for iid, parts in p.pantry.items():  # last: these, like the menu, are not part of a commit
-        ing = data.ingredients[iid]
+        # an ingredient the same change adds is not in the data yet
+        ing = data.ingredients.get(iid) or Ingredient.model_validate(
+            {**p.ingredients[iid], "id": iid}
+        )
         said = []
         for x in parts:
             if not x.qty:
@@ -719,6 +732,22 @@ def _ingredients_change(old: list, new: list, data: Data, t) -> str:
     if other := {i for i in set(a) & set(b) if a[i] != b[i]}:
         parts.append(t("change_ing_qty", names=names(other)))
     return "; ".join(parts) or t("change_steps_same")
+
+
+def merge(old: dict, new: dict) -> dict:
+    """A correction's change on top of the change it corrects, as one change: a section both set
+    keeps the old entries and the new ones (a new key wins over the old one), a list adds the new
+    items, anything else is the new one's."""
+    out = dict(old)
+    for k, v in new.items():
+        was = out.get(k)
+        if isinstance(v, dict) and isinstance(was, dict):
+            out[k] = {**was, **v}
+        elif isinstance(v, list) and isinstance(was, list):
+            out[k] = [*was, *(x for x in v if x not in was)]
+        else:
+            out[k] = v
+    return out
 
 
 def touches(p: Proposal) -> set[tuple]:

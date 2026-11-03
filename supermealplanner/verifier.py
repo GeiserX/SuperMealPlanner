@@ -126,7 +126,13 @@ Make three checks, separately, each on its own, then a fourth and a fifth:
 
 Judge a recipe from its text below, never from its name: its ingredients, steps and `ahead`
 steps are there. A recipe whose text is not below is not yours to judge. A task whose state is not
-done may not have happened: never count on it.
+done may not have happened: never count on it. Its state is only what was stored at its `marked`
+time; what the household wrote in the group after it is listed under «Said since», with its time.
+The household's latest words win, but only words you can read there: when a line under «Said
+since», written after the task was marked or due, says it was done (it was cooked after all, some
+is left), counting on it is not a problem. The proposal's own word is never enough: without such a
+line, a plan that counts on a task not done is a timeline problem, worded as the question to ask
+the household (was it done?).
 Each problem in one or two sentences: what is wrong and the change that fixes it, with the dates
 and recipe ids. {only} Answer with JSON only, no other text:
 {{"wishes": [], "timeline": [], "health": [], "nonsense": [], "clarity": []}}
