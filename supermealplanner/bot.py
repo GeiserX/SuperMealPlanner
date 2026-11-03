@@ -22,8 +22,10 @@ a correction of a message the answer answers (an edit made while it was written)
 cannot stand: then it is not sent, and the turn runs again at once with all of them, told its last
 answer did not go out (AGAIN, once in a row). An answer that covers one message replies to it; one
 that covers several is sent plainly. An answer that changes anything goes out at once and is
-reviewed afterwards (verifier.after); what the review finds, the bot fixes in one follow-up turn of
-its own. A change that waits for a yes waits for the person whose request it answers. An edited
+reviewed afterwards (verifier.after); what the review finds that would go wrong in the kitchen or
+for health, the bot fixes in one follow-up turn of its own. The answer of a turn the bot asked
+itself (a follow-up, the plan check, the weekly review, a step not done) is never reviewed, so
+automatic turns never chain, and it never edits a recipe or a setting (AUTO_KEYS). A change that waits for a yes waits for the person whose request it answers. An edited
 message is handled by where it is: still waiting, its new text goes; in the running answer, a
 correction joins it; already answered, the correction starts a new answer; an edit that adds the
 mention is a new message. Changes, proposals and the provider's asks come with inline buttons; a
@@ -185,6 +187,9 @@ VOICE_WAIT_S = 30
 VOICE_PER_S = 3
 PLAN_RAISED = "verifier.plan_raised"  # {"key", "on"}: the plan last raised in the chat, and the day
 PLAN_RAISE_H = 2  # hours after bot.checkup_at a finished plan check may still raise its problems
+# what an automatic turn's change block may hold: the menu of the days ahead, the pantry and what
+# was done of a step. Never a recipe's text, a new ingredient, a setting or a note nobody asked for
+AUTO_KEYS = frozenset({"plan", "pantry", "tasks"})
 PLAN_EVERY_S = 600  # how often the plan as it stands is checked again (judged only when it changed)
 # a new plan's announcement waits for the plan check of the plan as it stands, at most this long;
 # then it goes, saying the review could not run
@@ -236,6 +241,8 @@ TASK_BUTTONS = (
 TASK_BUTTONS_KEEP = 400  # Telegram's 64 bytes of callback data hold the short id, not the key
 TASK_ASKED = "task.asked"  # {task key: the morning the day message asked about it}: asked once
 TASK_WHAT = 80  # characters of a task's text where its buttons say which task is which
+# why a change the app could not word was refused, for the AI
+UNREADABLE = "the app could not read this change; nothing of it was made. Write it again, simpler"
 TASK_CHANGE_DAYS = 31  # how far back a change block may say a task was done (a freezer lunch)
 # A spoken turn from the app (POST /api/v1/chef): the message it becomes carries its id under this
 # key, which no Telegram message has. Its answer is kept this long for the app to read.
@@ -287,11 +294,13 @@ class Item:
     # the bot asked itself (a task not done): what the turn changes waits for a tap, even when it
     # runs as a private chat's person so that it sees only what they may see
     auto: bool = False
-    # a turn the bot asked itself to review the week (the weekly review, the plan check's turn):
-    # its answer is reviewed even when it changes nothing (verifier.in_scope), like an auto one
+    # a turn the bot asked itself to review the week (the weekly review, the plan check's turn).
+    # Answered alone it is not reviewed; with someone's message beside it, the review of that
+    # answer counts the whole week (verifier.in_scope)
     review: bool = False
     # the bot's own turn that fixes what the review of a sent answer found: what it changes waits
-    # for a tap, like an auto one, and its answer is never reviewed again (one follow-up at most)
+    # for a tap, like an auto one. No answer to the bot's own turns is reviewed (one follow-up at
+    # most, and none after an automatic turn)
     followup: bool = False
     # an edit of a message of the running turn: the answer written before it cannot stand (AGAIN)
     corrects: bool = False
@@ -1388,6 +1397,14 @@ class Bot:
         anchor = covered[-1]  # gestures act on the newest message
         text, change = changes.extract(reply.text)
         whose = change.pop("for", None) if isinstance(change, dict) else None
+        # a turn only the bot asked itself (a step not done, the weekly review, the plan check, a
+        # follow-up): nobody asked for anything, so it fixes only the days ahead (AUTO_KEYS)
+        automatic = all(i.auto or i.review or i.followup for i in covered)
+        if automatic and isinstance(change, dict):
+            dropped = sorted(k for k in change if k not in AUTO_KEYS)
+            if dropped:
+                log.info("an automatic turn's change block left out: %s", dropped)
+            change = {k: v for k, v in change.items() if k in AUTO_KEYS} or None
         # a change and a proposal wait for the person whose request they answer
         decider, clear = self.decider(covered, whose)
         text, acts = gestures.extract(text, data.settings.bot.photo_hosts, self.t("file_name"))
@@ -1398,7 +1415,7 @@ class Bot:
         acted = acts["react"] or acts["sticker"] or acts["photos"] or acts["documents"]
         followup = all(i.followup for i in covered)
         if not text and change is None and not reply.proposals and not listed and not acted:
-            if followup:  # the follow-up found nothing to say after all: nothing to send
+            if automatic:  # the bot's own turn found nothing to say after all: nothing to send
                 return covered
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return None
@@ -1427,13 +1444,32 @@ class Bot:
         now = not own and (
             isinstance(change, str) or (isinstance(change, dict) and change.get("asked") is True)
         )
-        # reviewed once sent, against the problems there before it changed anything; a follow-up
-        # is never reviewed again
-        check = not followup and verifier.in_scope(change, listed, turn)
+        if isinstance(change, dict) and not now and change.get("tasks"):
+            # what the household said happened is a fact, never a decision waiting for a tap: it
+            # is recorded now, and only the rest of the change waits
+            told = {"asked": True, "tasks": change["tasks"]}
+            change = {k: v for k, v in change.items() if k != "tasks"} or None
+            item = {"change": told, "asker": decider.who, "chat": chat_id}
+            tail.append(await self.apply(item, asked=True))
+        # reviewed once sent, against the problems there before it changed anything. The answer
+        # of a turn only the bot asked itself (a follow-up included) is never reviewed: automatic
+        # turns never chain
+        check = not followup and not automatic and verifier.in_scope(change, listed, turn)
         before = await self.problem_keys() if check else set()
+        # the reminders this answer offers: the checkups it brings count them as set, so a step
+        # it is offering is never said to be missing
+        offering = [r for r in listed if "cancel" not in r]
         if change is not None and now:
             made = await self.propose(
-                client, chat_id, decider.mid, decider.who, decider.uid, change, tail
+                client,
+                chat_id,
+                decider.mid,
+                decider.who,
+                decider.uid,
+                change,
+                tail,
+                offered=offering,
+                quiet=automatic,
             )
         items: list[dict] = []
         cancels: list = []  # what a change that waits for a yes cancels, once it is made
@@ -1443,7 +1479,7 @@ class Bot:
                     cancels = [r["cancel"] for r in listed if "cancel" in r]
                 listed = [r for r in listed if "cancel" not in r]
             items = await self.settle_reminders(
-                client, chat_id, listed, covered, reply_to, tail, fixes=followup
+                client, chat_id, listed, covered, reply_to, tail, fixes=followup, auto=automatic
             )
         joined = "\n\n".join(x for x in [render.brief(text) if text else "", *tail] if x)
         if joined:
@@ -1473,7 +1509,15 @@ class Bot:
         key = None
         if change is not None and not now:
             made = await self.propose(
-                client, chat_id, decider.mid, decider.who, decider.uid, change, cancels=cancels
+                client,
+                chat_id,
+                decider.mid,
+                decider.who,
+                decider.uid,
+                change,
+                cancels=cancels,
+                merge=followup,
+                quiet=automatic,
             )
             # the yes it waits for: the review looks it up when it runs (settled_change)
             key = next(
@@ -1797,15 +1841,29 @@ class Bot:
         change,
         tail: list[str] | None = None,
         cancels: list | None = None,
+        merge: bool = False,
+        offered: list[dict] | tuple = (),
+        quiet: bool = False,
     ) -> bool:
         """Make a change the person asked for at once; show one the AI came up with on its own and
         wait for a yes from the person it answered. In the bot's own turn (the morning plan check:
         no person and no user) the change waits for a yes from anyone in the household. tail: where
         what a made change says goes, so it joins the answer's message instead of following it.
         cancels: the reminders the answer cancels with a change that waits: they go with its yes.
-        True when the change is made now."""
+        merge: the change corrects the answer before it (a follow-up), so it joins the change of
+        that answer still waiting for the same yes (changes.merge) instead of replacing it.
+        offered: the reminders the same answer offers, which the checkup counts as set. quiet: the
+        bot's own turn, whose change nobody asked for: one that cannot be made is told only to the
+        AI, never to the chat. True when the change is made now."""
         t = self.t
         own = asker is None and user_id is None and chat_id < 0
+        if merge and isinstance(change, dict):
+            waiting = [
+                i for i in self.pending(chat_id) if "change" in i and i.get("asker") == asker
+            ]
+            if waiting and isinstance(waiting[-1]["change"], dict):
+                change = changes.merge(waiting[-1]["change"], change)
+                cancels = [*waiting[-1].get("cancels", []), *(cancels or [])]
         pending = {"change": change, "asker": asker, "chat": chat_id}
 
         async def say(text: str) -> None:
@@ -1823,19 +1881,21 @@ class Bot:
         try:
             proposal = changes.parse(change, self.data, asker)
         except changes.ChangeError as e:
-            await say(self.refused(pending, e))
+            line = self.refused(pending, e)
+            if not quiet:
+                await say(line)
             return False
         name = self.data.household.person(asker).name if asker else t("plan_check_who")
         if proposal.asked and not own:
             item = {**pending, "name": name}
-            before = await self.problem_keys()
+            before = await self.problem_keys(offered)
             await say(await self.apply(item, asked=True))
             if item.get("applied"):
                 # a change still waiting for a yes on what this one just set is outdated now
                 await self.unwait(
                     client, chat_id, self.wait_for(chat_id, None, self.outdates(proposal))
                 )
-                await self.checkup(client, chat_id, before, reply_to, tail)
+                await self.checkup(client, chat_id, before, reply_to, tail, offered)
             return bool(item.get("applied"))
         if own:
             people = self.data.settings.bot.people
@@ -1846,7 +1906,10 @@ class Bot:
             whom = ", ".join(self.mention(p) for p in members)
         else:
             by, whom = [user_id], self.mention(asker)
-        lines = changes.describe(proposal, self.data, t)
+        lines = self.describe(proposal, pending)
+        if lines is None:
+            await say(self.refused(pending, UNREADABLE))
+            return False
         msgs: list[int] = []
         sent = await self.send(
             client,
@@ -2365,7 +2428,9 @@ class Bot:
             proposal = changes.parse(pending["change"], self.data, pending.get("asker"))
         except changes.ChangeError as e:
             return self.refused(pending, e)
-        lines = changes.describe(proposal, self.data, t)
+        lines = self.describe(proposal, pending)
+        if lines is None:
+            return self.refused(pending, UNREADABLE)
         if proposal.tasks:  # before anything is written: a task the list does not have
             today = self.state.today()
             known = {
@@ -2392,7 +2457,14 @@ class Bot:
             token = os.environ.get("SMP_GIT_WRITE_TOKEN", "")
             if not token:
                 by_hand = t("change_manual") + "\n\n" + "\n".join(changes.manual(proposal))
-                if not (proposal.plan or proposal.pantry):
+                # what is at home of a food the data does not have yet waits for that food: its
+                # lot would belong to no ingredient
+                later = [iid for iid in proposal.pantry if iid in proposal.ingredients]
+                if later:
+                    names = ", ".join(proposal.ingredients[i].get("name") or i for i in later)
+                    by_hand += "\n\n" + t("change_manual_pantry", foods=names)
+                    proposal.pantry = {k: v for k, v in proposal.pantry.items() if k not in later}
+                if not (proposal.plan or proposal.pantry or proposal.tasks):
                     return by_hand
                 out.append(by_hand)
             else:
@@ -2466,6 +2538,15 @@ class Bot:
         if proposal.pantry or proposal.ingredients:
             return self.link(self.t("link_list"), "/list")
         return ""
+
+    def describe(self, proposal: changes.Proposal, pending: dict) -> list[str] | None:
+        """The change's lines in the household's words; None when the app cannot word it (a bug):
+        that change is refused, and the turn and every other part of the answer go on."""
+        try:
+            return changes.describe(proposal, self.data, self.t)
+        except Exception:
+            log.exception("could not describe a change")
+            return None
 
     def refused(self, pending: dict, error, saving: bool = False) -> str:
         """What the chat reads when a change could not be made: a plain line in the household's
@@ -3579,22 +3660,27 @@ class Bot:
         reply_to,
         tail: list[str] | None = None,
         fixes: bool = False,
+        auto: bool = False,
     ) -> list[dict]:
         """Cancel the ones the answer cancels (only this chat's) and set the ones the person asked
         for ("set") at once, saying both in one message, or in `tail` (the answer's message).
         fixes: the bot's follow-up, which cancels any of the chat's reminders its answer made wrong.
-        Returns the reminders still to offer."""
+        A cancelled reminder listed again at the same time for the same dish is the same step in
+        other words: it keeps its place with the new words (reword), never cancelled and offered
+        again. auto: a turn nobody asked for: the new words wait for a tap on the offer, and the
+        reminder stays as it is until then (tapped_remind rewords it). Returns the reminders still
+        to offer."""
         t, db = self.t, self.state.db
         done: list[str] = []
-        before = await self.problem_keys()
+        offering = [r for r in listed if "cancel" not in r]
+        before = await self.problem_keys(offering)
         uid = covered[-1].uid if covered else None
         member = fixes or self.person_of(uid or 0) is not None
-        done += self.cancel_reminders(
-            chat_id, [r["cancel"] for r in listed if "cancel" in r], uid, member
-        )
-        items = self._offered(
-            [r for r in listed if "cancel" not in r], covered[-1].who if covered else None
-        )
+        items = self._offered(offering, covered[-1].who if covered else None)
+        cancels = [r["cancel"] for r in listed if "cancel" in r]
+        cancels, items, said = self.reword(chat_id, cancels, items, uid, member, auto)
+        done += said
+        done += self.cancel_reminders(chat_id, cancels, uid, member)
         for r in [r for r in items if r.get("set")] if uid else []:
             met = self.near_reminder(chat_id, r["at"], r["text"])
             if met and met[0] == "same":  # already set: not stored twice
@@ -3615,11 +3701,44 @@ class Bot:
                 done[-1] += " " + t("remind_joined", time=met[1])
         if done and tail is not None:
             tail.extend(done)
-            await self.checkup(client, chat_id, before, reply_to, tail)
+            await self.checkup(client, chat_id, before, reply_to, tail, offering)
         elif done:  # recorded in the chat by send, so the AI hears it
             await self.send(client, chat_id, "\n".join(done), reply_to)
-            await self.checkup(client, chat_id, before, reply_to)
+            await self.checkup(client, chat_id, before, reply_to, offered=offering)
         return [r for r in items if not (uid and r.get("set"))]
+
+    def reword(
+        self, chat_id: int, ids: list, items: list[dict], uid, member: bool, auto: bool = False
+    ) -> tuple[list, list[dict], list[str]]:
+        """The cancels an answer pairs with a new reminder at the same time, for the same person
+        and the same dish (or none): the pending one gets the new words in place. auto: nobody
+        asked, so it is not touched now; the new one is offered with the old one's id (replaces)
+        and a yes rewords it. Returns the cancels and the offers left, and what it says of each
+        one reworded."""
+        db, left, said = self.state.db, [], []
+        for rid in ids:
+            old = db.reminder(int(rid)) if str(rid).isdigit() else None
+            mine = old is not None and old["chat"] == chat_id and (member or uid == old["by"])
+            new = next((r for r in items if mine and self._rewords(old, r)), None)
+            if new is not None and auto and old["state"] == "pending":
+                new["replaces"] = old["id"]  # the old one stays as it is until the tap
+                continue
+            if new is None or not db.reword_reminder(old["id"], new):
+                left.append(rid)
+                continue
+            items = [r for r in items if r is not new]
+            said.append(self.t("remind_reworded", when=self._when(old["at"]), text=new["text"]))
+        return left, items, said
+
+    @staticmethod
+    def _rewords(old: dict, new: dict) -> bool:
+        """A new reminder that is the old one in other words: the same time and person, and no
+        other dish (a different dish at the same time is a different step)."""
+        same_dish = not (new.get("recipe") and old.get("recipe")) or (
+            new.get("recipe"),
+            new.get("date"),
+        ) == (old.get("recipe"), old.get("date"))
+        return abs(new["at"] - old["at"]) < 60 and new["person"] == old["person"] and same_dish
 
     def cancel_reminders(self, chat_id: int, ids: list, uid, member: bool) -> list[str]:
         """Cancel these reminders of this chat; what it says of each one cancelled. The /reminders
@@ -3775,6 +3894,16 @@ class Bot:
         self.state.db.set_kv(REMIND, [*rest, offer] if open_items else rest or None)
         who = self.person_of(user.get("id", 0))
         when = self._when(item["at"])
+        # the new words of a reminder already set (an automatic turn's reword): the yes puts them
+        # on it in place, rather than a second reminder at its time
+        if c == "h" and item.get("replaces"):
+            old = self.state.db.reminder(int(item["replaces"]))
+            if old and old["chat"] == chat["id"] and self.state.db.reword_reminder(old["id"], item):
+                line = t("remind_reworded", when=when, text=item["text"])
+                await self.toast(client, query, line[:200])
+                await self.rekey(client, chat["id"], offer["msg"], self._remind_rows(key, items))
+                self.state.db.add_chat(chat["id"], "assistant", None, line)  # the AI hears it
+                return
         met = self.near_reminder(chat["id"], item["at"], item["text"]) if c == "h" else None
         said = t("remind_set", when=when) if c == "h" else None
         if met and met[0] == "same":
@@ -4131,7 +4260,11 @@ class Bot:
         out += self.slot_chat(rs)
         out += verifier.doctor_menu(data, self.t, today)
         out += tasklist.tasks_now(
-            data, db, day - dt.timedelta(days=doctor.REMINDER_LEAD_DAYS), day + dt.timedelta(1)
+            data,
+            db,
+            day - dt.timedelta(days=doctor.REMINDER_LEAD_DAYS),
+            day + dt.timedelta(1),
+            said=False,  # slot_chat above has the chat since the reminders were set
         )
         out += context.pantry_now(data, db, today)
         return "\n".join(out)
@@ -4235,19 +4368,20 @@ class Bot:
             return False
 
     # ------------------------------------------------------------- the consistency check
-    async def problems(self) -> list[doctor.Problem] | None:
+    async def problems(self, offered: list[dict] | tuple = ()) -> list[doctor.Problem] | None:
         """What the consistency check finds now; None when it could not run (never in the way of
-        the change or the reminder that called it)."""
+        the change or the reminder that called it). offered: reminders the answer offers for a
+        tap, counted as set (doctor.problems), so a step it offers is not said to be missing."""
         try:
             return await asyncio.to_thread(
-                doctor.problems, self.data, self.state.db, self.state.today()
+                doctor.problems, self.data, self.state.db, self.state.today(), list(offered)
             )
         except Exception as e:  # noqa: BLE001
             log.warning("the consistency check failed: %s", safe(e))
             return None
 
-    async def problem_keys(self) -> set[str]:
-        return {p.key for p in await self.problems() or []}
+    async def problem_keys(self, offered: list[dict] | tuple = ()) -> set[str]:
+        return {p.key for p in await self.problems(offered) or []}
 
     def problem_line(self, p: doctor.Problem) -> str:
         """A problem in a few words of the household's language."""
@@ -4262,15 +4396,18 @@ class Bot:
         before: set[str] | None = None,
         reply_to=None,
         tail: list[str] | None = None,
+        offered: list[dict] | tuple = (),
     ) -> list[doctor.Problem]:
         """Run the consistency check after a write (before: the problems it found just before it)
         or in the morning (before None). A linked reminder the menu no longer backs is cancelled
-        here, with one line in its chat. In chat_id: one line naming the problems the write left
-        that were not there before, or in the morning all of them. Food bought and on no dish is
-        left to the AI, which sees it every turn: it can stay true for days once it is frozen.
-        tail: where chat_id's lines go instead of a message of their own (the answer's message)."""
+        here, with one line in its chat. After a write, in chat_id: one line naming the problems
+        the write left that were not there before. The morning says no list here: raise_plan says
+        the plan's problems once, as a turn where the chef proposes the fixes or, when no turn can
+        come, as one list. Food bought and on no dish is left to the AI: it can stay true for days once it
+        is frozen. tail: where chat_id's lines go instead of a message of their own (the answer's
+        message). offered: the reminders the same answer offers for a tap, counted as set."""
         db, t = self.state.db, self.t
-        found = await self.problems()
+        found = await self.problems(offered)
         if found is None:
             return []
         said: dict[int, list[str]] = {}
@@ -4279,20 +4416,12 @@ class Bot:
             if r and db.settle_reminder(r["id"], "cancelled"):
                 line = t("doctor_reminder_cancelled", when=self._when(r["at"]), text=r["text"])
                 said.setdefault(r["chat"], []).append(line)
-        rest = [p for p in found if p.kind not in ("stale_reminder", "unused")]
-        # in the morning, a recipe nobody can eat is left to the AI: it stays true until someone
-        # edits the recipe, and the household may keep it so on purpose
         # a step nobody marked is asked about with buttons in the day message: not said twice
-        rest = [p for p in rest if p.kind != "unconfirmed"]
-        new = (
-            [p for p in rest if p.kind != "avoided"]
-            if before is None
-            else [p for p in rest if p.key not in before]
-        )
+        rest = [p for p in found if p.kind not in ("stale_reminder", "unused", "unconfirmed")]
+        new = [p for p in rest if p.key not in before] if before is not None else []
         if chat_id is not None and new:
             items = "; ".join(self.problem_line(p) for p in new)
-            key = "doctor_morning" if before is None else "doctor_new"
-            said.setdefault(chat_id, []).append(t(key, items=items))
+            said.setdefault(chat_id, []).append(t("doctor_new", items=items))
         if tail is not None and chat_id in said:
             tail.extend(said.pop(chat_id))
         for chat, lines in said.items():
@@ -4305,8 +4434,9 @@ class Bot:
         return rest
 
     async def tick_checkup(self, client) -> None:
-        """Once each morning at bot.checkup_at: the check's safe fixes, and a report in
-        bot.checkup_chat (the group when unset) only when something is wrong."""
+        """Once each morning at bot.checkup_at: the check's safe fixes (a reminder the menu no
+        longer backs, cancelled with one line in its chat). What is wrong in the plan reaches
+        bot.checkup_chat (the group when unset) once, through raise_plan after it."""
         cfg = self.data.settings.bot
         chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
         if not cfg.checkup_at or chat is None:
@@ -4354,37 +4484,65 @@ class Bot:
             log.warning("plan check failed: %s", safe(e))
 
     async def raise_plan(self, client, at_once: bool = False) -> None:
-        """Once a day, in the PLAN_RAISE_H after the morning checkup: when the plan check found
-        problems in the plan as it is, a turn the bot asks itself in bot.checkup_chat, so the chef
-        proposes the fixes in the chat like any change. A check that ends after the checkup still
-        gets its turn that morning; a plan raised once is not raised again. at_once: a plan the
-        app just drew, raised now rather than the next morning."""
+        """Once a day, in the PLAN_RAISE_H after the morning checkup: when the plan as it is has
+        problems (what the plan check found, or one the consistency check is sure of), a turn the
+        bot asks itself in bot.checkup_chat, so the chef proposes the fixes in the chat like any
+        change. A check that ends after the checkup still gets its turn that morning; a plan raised
+        once is not raised again. When no turn can come (no AI, or no turn by the end of the
+        window: the check never ended, or the chat is a private one of no one in the household),
+        the sure problems go there as one list instead, once. at_once: a plan the app just drew,
+        raised now rather than the next morning. Only what goes wrong in the kitchen or for health
+        raises it (verifier.ACT among the check's findings), and never the same problems twice."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
         chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
-        if data.settings.llm.provider == "none" or chat is None:
+        no_ai = data.settings.llm.provider == "none"
+        if chat is None or (at_once and no_ai):
             return
         if not at_once and not cfg.checkup_at:
             return
         now = dt.datetime.now(self._zone())
+        on = now.date().isoformat()
         kept, raised = db.get_kv(verifier.PLAN_KEY) or {}, db.get_kv(PLAN_RAISED) or {}
+        late = False
         if not at_once:
             h, m = (int(x) for x in cfg.checkup_at.split(":"))
             when = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            if not when <= now < when + dt.timedelta(hours=PLAN_RAISE_H):
+            if now < when or not db.was_sent("checkup", now.date(), cfg.checkup_at):
+                return  # after the checkup
+            if raised.get("on") == on:
                 return
-            if not db.was_sent("checkup", now.date(), cfg.checkup_at):
-                return  # after the checkup's own line
-            if raised.get("on") == now.date().isoformat():
-                return
-        if not kept.get("key") or raised.get("key") == kept["key"]:
+            late = now >= when + dt.timedelta(hours=PLAN_RAISE_H)
+        today = self.state.today()
+        _, key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
+        if raised.get("key") == key:
             return
-        if not await asyncio.to_thread(verifier.plan_findings, data, db, self.state.today()):
+        found = await self.problems() or []
+        sure = [p for p in found if p.kind not in (*verifier.SKIP, "avoided", "unconfirmed")]
+        if no_ai or late:
+            db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # once, said or not
+            if sure:
+                items = "; ".join(self.problem_line(p) for p in sure)
+                try:
+                    await self.send(client, chat, self.t("doctor_morning", items=items))
+                except TelegramError as e:
+                    log.warning("could not post the plan's problems: %s", safe(e))
             return
+        if kept.get("key") != key:
+            return  # the check has not judged this plan yet
+        found = await asyncio.to_thread(verifier.plan_findings, data, db, today)
+        found = sorted(f for f in found if f.split(":", 1)[0] in verifier.ACT)
+        if not (sure or found):
+            return
+        said = hashlib.sha256(
+            "\n".join([*found, *sorted(p.key for p in sure)]).encode()
+        ).hexdigest()
+        if raised.get("found") == said:
+            return  # the same findings as the last turn: it would say the same again
         # a private checkup chat: the turn is that person's, so it sees only what they may see
         who = self.person_of(chat) if chat > 0 else None
         if chat > 0 and who is None:
-            return  # a private chat of no one in the household
-        db.set_kv(PLAN_RAISED, {"key": kept["key"], "on": now.date().isoformat()})
+            return  # a private chat of no one in the household: the list at the window's end
+        db.set_kv(PLAN_RAISED, {"key": key, "on": on, "found": said})
         user = {"first_name": self.t("plan_check_who")}
         self.take(chat, user, who, None, self.t("plan_check_turn"), True, review=True)
         self.spawn(self.drive(client, chat))

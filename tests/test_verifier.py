@@ -14,7 +14,7 @@ from supermealplanner.model import WEEKDAYS, load
 from supermealplanner.planner import plan_for
 
 from .conftest import MONDAY
-from .test_doctor import D, edit_plan, keys
+from .test_doctor import D, edit_plan, household, keys
 from .test_reminders import ZONE, setup
 from .test_settings_stores_bot import msg, run
 from .test_turns import buttons, cfg, drain, sends, tap, toasts
@@ -610,6 +610,66 @@ def test_a_private_checkup_chat_gets_the_plan_turn_as_its_person_or_not_at_all(d
     assert "never name there anyone's notes" in system
 
 
+def certain_setup(data_dir, tmp_path):
+    """A plan with a problem the consistency check is sure of (sessions off the batch days), the
+    morning checkup done, and the turns and the drive caught."""
+    b, _db = vsetup(data_dir, tmp_path)
+    household(data_dir, preferred_days=["wednesday", "saturday"])
+    b.state.reload()
+    db = b.state.db
+    assert [p for p in doctor.problems(b.data, db, MONDAY) if p.kind == "off_day"]
+    now = dt.datetime.now(ZONE)
+    b.data.settings.bot.checkup_at = f"{now:%H:%M}"
+    db.mark_sent("checkup", now.date(), b.data.settings.bot.checkup_at)
+    taken = []
+    b.take = lambda chat, user, who, msg, text, asked, **k: taken.append((chat, text))
+
+    async def drive(client, chat):
+        pass
+
+    b.drive = drive
+    return b, db, taken
+
+
+def test_a_certain_problem_gets_the_plan_turn_when_the_judgment_found_nothing(data_dir, tmp_path):
+    b, db, taken = certain_setup(data_dir, tmp_path)
+    _calls, fake = judged({})
+    verifier.llm.complete, real = fake, verifier.llm.complete
+    try:
+        run(verifier.check_plan(b.data, db, MONDAY))
+        assert verifier.plan_findings(b.data, db, MONDAY) == []
+        run(b.raise_plan(None))
+        run(b.raise_plan(None))
+    finally:
+        verifier.llm.complete = real
+    assert taken == [(-100, b.t("plan_check_turn"))] and sends(b, -100) == []
+
+
+def test_a_plan_check_that_never_ends_in_the_window_leaves_the_list_once(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as bot_module
+
+    b, db, taken = certain_setup(data_dir, tmp_path)
+
+    async def boom(*a, **k):
+        raise RuntimeError("down")
+
+    verifier.llm.complete, real = boom, verifier.llm.complete
+    try:
+        run(verifier.check_plan(b.data, db, MONDAY))
+        run(b.raise_plan(None))
+        assert taken == [] and sends(b, -100) == []  # the check may still end in the window
+        monkeypatch.setattr(bot_module, "PLAN_RAISE_H", 0)  # the window is over
+        run(b.raise_plan(None))
+        run(b.raise_plan(None))
+    finally:
+        verifier.llm.complete = real
+    (report,) = [p["text"] for p in sends(b, -100)]
+    assert report.startswith("⚠️ The plan has something to fix: the batch session on")
+    assert taken == []
+
+
 def test_a_step_a_cook_could_misread_is_kept_and_every_chat_sees_it(data_dir, tmp_path):
     b, db = vsetup(data_dir, tmp_path)
     finding = "ensalada-garbanzos step 3: says 15 g per serving but the cook sees the total"
@@ -799,24 +859,6 @@ def test_the_chat_shows_the_bot_typing_until_the_answer_goes(data_dir, tmp_path,
     answer = next(i for i, (m, p) in enumerate(b.calls) if m == "sendMessage")
     assert "sendChatAction" in methods[:answer]
     assert "sendChatAction" not in methods[answer:]  # not while the review runs
-
-
-def test_the_weekly_review_and_a_step_not_done_are_reviewed_with_no_change(data_dir, tmp_path):
-    b, _db = vsetup(data_dir, tmp_path)
-    cfg(data_dir, text="Todo encaja.")
-
-    async def go(start):
-        start()
-        await b.drive(None, -100)
-        await asyncio.gather(*b.tasks)
-
-    run(go(lambda: b.review(-100, MONDAY)))
-    assert len(lines(data_dir, "checks.jsonl")) == 1
-    run(go(lambda: b.reorganise(None, -100, None, b.t("task_unanswered_turn", tasks="x"))))
-    assert len(lines(data_dir, "checks.jsonl")) == 2
-    # a plain question is still not reviewed
-    run(b.handle(None, msg("@chefbot qué comemos", message_id=3)))
-    assert len(lines(data_dir, "checks.jsonl")) == 2
 
 
 def test_a_new_plan_is_told_once_checked_and_what_was_found_is_raised_at_once(

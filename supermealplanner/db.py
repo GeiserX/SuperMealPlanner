@@ -403,6 +403,23 @@ class DB:
             )
             return cur.rowcount == 1
 
+    def reword_reminder(self, rid: int, new: dict) -> bool:
+        """New words for a pending reminder, at the same time, and the dish they name (recipe,
+        date, kind) when they name one; False when it is no longer pending."""
+        with self.conn() as c:
+            if new.get("recipe"):
+                cur = c.execute(
+                    "UPDATE reminder SET text=?, recipe=?, date=?, kind=? "
+                    "WHERE id=? AND state='pending'",
+                    (new["text"][:500], new["recipe"], new.get("date"), new.get("kind"), rid),
+                )
+            else:
+                cur = c.execute(
+                    "UPDATE reminder SET text=? WHERE id=? AND state='pending'",
+                    (new["text"][:500], rid),
+                )
+            return cur.rowcount == 1
+
     # tasks: what someone said of one (tasks.py works out the tasks themselves)
     def mark_task(self, key: str, state: str, who: str | None) -> str | None:
         """Store a task's answer, done or not_done, or unknown to take it back; a later answer
@@ -427,19 +444,25 @@ class DB:
 
     def task_states(self, keys=None) -> dict[str, str]:
         """key -> done or not_done, for these keys (every answered task without them)."""
+        return {r["key"]: r["state"] for r in self._task_rows(keys)}
+
+    def task_times(self, keys=None) -> dict[str, str]:
+        """key -> when its answer was stored (ISO, UTC), for these keys."""
+        return {r["key"]: r["at"] for r in self._task_rows(keys)}
+
+    def _task_rows(self, keys=None) -> list:
         with self.conn() as c:
             if keys is None:
-                rows = c.execute("SELECT key, state FROM task_state").fetchall()
-            else:
-                keys = list(keys)
-                rows = []
-                for n in range(0, len(keys), 500):
-                    part = keys[n : n + 500]
-                    marks = ",".join("?" * len(part))
-                    rows += c.execute(
-                        f"SELECT key, state FROM task_state WHERE key IN ({marks})", part
-                    ).fetchall()
-        return {r["key"]: r["state"] for r in rows}
+                return c.execute("SELECT key, state, at FROM task_state").fetchall()
+            keys = list(keys)
+            rows = []
+            for n in range(0, len(keys), 500):
+                part = keys[n : n + 500]
+                marks = ",".join("?" * len(part))
+                rows += c.execute(
+                    f"SELECT key, state, at FROM task_state WHERE key IN ({marks})", part
+                ).fetchall()
+            return rows
 
     # dish ratings: one vote per person and recipe, +1 or -1; 0 takes the vote back
     def rate(self, recipe: str, person: str, vote: int, day: dt.date) -> None:

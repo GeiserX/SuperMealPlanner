@@ -120,8 +120,8 @@ bot:
   share_logs_in_group: false  # true: the AI may discuss weigh-ins, binges, cravings and notes in the group
   history_scope: asked        # asked | all: which group messages are kept as AI context
   reminder_calendar: false    # true: a reminder the AI offers can also go in the calendar (a plugin with calendar tools)
-  checkup_at: "08:00"         # the consistency check's morning report ("" turns it off); only when something is wrong
-  checkup_chat: null          # where that report goes; null: the group (bot.chat_id)
+  checkup_at: "08:00"         # the consistency check's morning run ("" turns it off); the plan check's turn follows it
+  checkup_chat: null          # where that turn goes; null: the group (bot.chat_id)
   style: ""                   # the bot's voice in the chat, read by the AI after the formatting guide
   sticker_set: ""             # a Telegram sticker set the AI may send from by emoji; "": no stickers
   photo_hosts: []             # hosts the AI may send an image from by its address; []: no photos. Telegram

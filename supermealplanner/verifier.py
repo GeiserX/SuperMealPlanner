@@ -8,11 +8,13 @@ that changes nothing is not reviewed.
 
 The answer goes out as soon as it is written: answering quickly matters more than answering once.
 The review then runs in the background (after) on what was sent and on the state it left. When it
-finds problems, the bot takes one turn of its own that fixes them in one short follow-up message
+finds what would go wrong in the kitchen or for health (the structural problems, and ACT: timeline,
+health, nonsense; wishes and clarity are polish and bring nothing), the bot takes one turn of its own that fixes them in one short follow-up message
 (corrections said briefly, reminders cancelled and written again, a menu change offered for a
 yes). Reviews coalesce: an answer sent while a review runs is covered by one review of the latest
-state, the answers since the last review together. A follow-up is never reviewed again, so one
-answer gets one follow-up at most.
+state, the answers since the last review together. The answer of a turn the bot asked itself (a
+follow-up, the plan check's turn) is never reviewed, so one answer gets one follow-up at most and
+automatic turns never chain.
 
 What it reads is the whole rest of this week and the next as the answer left them, never only the
 diff: the menu, the cooking sessions, the text of every recipe on it, every task with what the
@@ -78,6 +80,10 @@ from .portions import MORNING, session_at
 log = logging.getLogger(__name__)
 
 CHECKS = ("wishes", "timeline", "health", "nonsense", "clarity")
+# the checks whose findings bring a turn of the bot's own (the follow-up, the plan check's turn):
+# what goes wrong in the kitchen or for someone's health. wishes and clarity are polish: the AI
+# still sees them among its facts, but they never make the bot speak by itself
+ACT = ("timeline", "health", "nonsense")
 PROBLEMS_MAX, PROBLEM_CHARS = 8, 800  # per check: a long list is noise, not a check
 RECIPES_MAX = 150_000  # characters of recipe text the judgment gets; the two weeks fit in it
 PLAN_KEY = "verifier.plan"  # the plan check's findings, with the key of the plan they are about
@@ -124,9 +130,21 @@ Make three checks, separately, each on its own, then a fourth and a fifth:
    words, say how they can be misread, and give the step rewritten. Plain and short is not a
    problem: only what a cook could get wrong.
 
+Only timeline, health and nonsense make the assistant write again by itself, so put there only what
+would go wrong in the kitchen or for someone's health: a step nobody does, a wrong time or amount,
+food that runs out or goes off before it is eaten, a health problem, a contradiction with what
+someone said. wishes and clarity are for what would merely be better: keep them few, never repeat
+there what the other checks say. A recipe's wording is never a reason to rewrite it.
+
 Judge a recipe from its text below, never from its name: its ingredients, steps and `ahead`
 steps are there. A recipe whose text is not below is not yours to judge. A task whose state is not
-done may not have happened: never count on it.
+done may not have happened: never count on it. Its state is only what was stored at its `marked`
+time; what the household wrote in the group after it is listed under «Said since», with its time.
+The household's latest words win, but only words you can read there: when a line under «Said
+since», written after the task was marked or due, says it was done (it was cooked after all, some
+is left), counting on it is not a problem. The proposal's own word is never enough: without such a
+line, a plan that counts on a task not done is a timeline problem, worded as the question to ask
+the household (was it done?).
 Each problem in one or two sentences: what is wrong and the change that fixes it, with the dates
 and recipe ids. {only} Answer with JSON only, no other text:
 {{"wishes": [], "timeline": [], "health": [], "nonsense": [], "clarity": []}}
@@ -247,7 +265,8 @@ async def findings(
         len(problems),
         {c: len(ps) for c, ps in judged.items()},
     )
-    return [*behind, *problems, *(f"{c}: {p}" for c, ps in judged.items() for p in ps)]
+    # a follow-up only for what goes wrong in the kitchen or for health (ACT), never for polish
+    return [*behind, *problems, *(f"{c}: {p}" for c, ps in judged.items() if c in ACT for p in ps)]
 
 
 SIBLINGS_S = 60  # reminders set within this long of each other came from one answer
