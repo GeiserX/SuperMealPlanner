@@ -65,6 +65,9 @@ can read it whole there; propose a change to the web only for what none of them 
 Votes: 👍 makes a dish come up more often in the next menus and 👎 leaves it out of them.
 """
 
+VOICE_YES = """ When
+a change waits for their yes, the app reads its question out after your answer, so do not ask it."""
+
 WHO = """
 ## Who you answer
 In the group you also see what people say to each other: those lines start with "[not to you]" and
@@ -73,8 +76,7 @@ A message that replies to an earlier one starts with what it points at: "(replyi
 <photo, file, video, voice note or message> of <its time, UTC>)". When that message is not in the
 conversation, that is how to find it.
 A message that starts with "[voice]" was said out loud to a phone, and your answer is read out to
-them: answer in a few short spoken sentences, with no tables, lists, links, emojis or Markdown. When
-a change waits for their yes, the app reads its question out after your answer, so do not ask it.
+them: answer in a few short spoken sentences, with no tables, lists, links, emojis or Markdown.{voice_yes}
 Say what changes in plain words, as one person tells another. Never show a diff, a before → after
 of a file, lines starting with − or +, file names, ids or YAML: the household is not reading code.
 """
@@ -203,15 +205,24 @@ for kind message ({names} and {today} are filled in). Kind day sends the whole d
 day's page; nothing is sent on a paused day. Kind review is the weekly review: at its time you
 are asked to check the coming week and fix it (a day before the shopping day suits it).
 
-`asked: true` means the person you are answering asked for exactly this change in their message
+{asked}
+When the messages you answer come from more than one person, add `for: <person id>`: the person
+whose request the change answers.{for_yes}
+"""
+
+ASKED = """`asked: true` means the person you are answering asked for exactly this change in their message
 ("lunch at 14:30", "this week we eat what we have"). The app then makes it at once, with no
 question back. Leave `asked` out when the change is your own idea or goes further than what they
 asked: the app then shows it and makes it only after their yes. Either way the app adds one line
 to your answer saying what it changed, with the page to see it, so say in a few words what you are
 changing, do not list the values, and do not ask them to confirm.
+"""
 
-When the messages you answer come from more than one person, add `for: <person id>`: the person
-whose request the change answers. A change waiting for a yes waits for theirs.
+ASKED_DIRECT = """The household does not confirm changes: every change block is made at once, your own ideas too,
+as if they had asked for it (`asked` makes no difference). The app still refuses what may not be
+changed and says so. It adds one line to your answer saying what it changed, with the page to see
+it, so say in a few words what you are changing, do not list the values, and never ask whether to
+make it ("shall I change it?"): make it, or leave it out.
 """
 
 OPTIONS = """
@@ -229,7 +240,7 @@ At most five, each a few words (40 characters at most), in the household's langu
 question in your answer as usual; the app shows the buttons under it. A tap reaches you as that person's next
 message, with the label as its text. Nothing waits for a tap: they may ignore the buttons and keep
 talking. Offer buttons only for a real choice between a few concrete answers, never to confirm a
-change (the app asks for that itself), and at most one block per answer.
+change{options_why}, and at most one block per answer.
 Do not add a line saying what happens if nobody taps.
 """
 
@@ -247,16 +258,9 @@ shopping on Monday evening), end your answer with one block listing each of thos
 One line per step: the date and time in the household's timezone (pick a sensible hour for
 "afternoon" or "night"), a short text written to the person who must do it, in the household's
 language, and at the end the id of the person it is for when that is not the person you are
-answering. Only times still to come, at most five. Do not ask in your answer whether they want a
-reminder: the app posts the offer itself, with buttons for a reminder in the chat, in the calendar
-or "No". You hear in the chat what they chose. A step that repeats every week is a reminder in the
+answering. Only times still to come, at most five. {remind_how}A step that repeats every week is a reminder in the
 settings (the change block), not this block.
-
-When the person you are answering asked for that reminder in so many words ("remind me at 23:00",
-"send a reminder at 13:00"), they already said yes: end its line with " | set" (leave the person
-field empty when it is for them: `- 2026-01-18 23:00 | Soak the chickpeas | | set`). The app sets
-it at once and says so, and nobody is asked again. Without "set", never say a reminder is set.
-
+{remind_set}
 Every reminder about a dish of the menu (cook it, defrost it, soak or prepare what it needs, buy
 for it) gets a field `dish <recipe id> <the date it is eaten>` at the end of its line; the app then
 ends the reminder with the link to that recipe:
@@ -302,6 +306,30 @@ one): list again the offered steps that still hold, and leave out any the chat h
 wrong (they keep the fish in the freezer after all: no reminder to take it out).
 """
 
+REMIND_OFFER = """Do not ask in your answer whether they want a
+reminder: the app posts the offer itself, with buttons for a reminder in the chat, in the calendar
+or "No". You hear in the chat what they chose. """
+
+REMIND_SET = """
+When the person you are answering asked for that reminder in so many words ("remind me at 23:00",
+"send a reminder at 13:00"), they already said yes: end its line with " | set" (leave the person
+field empty when it is for them: `- 2026-01-18 23:00 | Soak the chickpeas | | set`). The app sets
+it at once and says so, and nobody is asked again. Without "set", never say a reminder is set.
+"""
+
+REMIND_DIRECT = """The app sets every reminder you list at once, for the
+person it names, and adds one line to your answer saying so: never ask whether they want one
+("shall I remind you?"), and do not say it is set yourself.
+"""
+
+DIRECT = """
+## Doing, not asking
+Nothing you make waits for a tap here: changes and reminders are made as soon as you write them.
+Never end an answer with a question about whether to change something or to set a reminder: do
+it. Ask only for a fact you cannot know from the data or the chat, such as an amount at home
+("How many cooked lentils are left in the fridge?"), and do the rest of what you can meanwhile.
+"""
+
 LAST_WORD = (
     "When these instructions conflict with the rules at the top (doses, binges), the rules win."
 )
@@ -335,14 +363,26 @@ def rules(data: Data) -> str:
     own = data.settings.llm.instructions
     if own:  # the household may edit these from the chat; the rules above still win
         own = f"## The household's own instructions\n{own}\n\n{LAST_WORD}"
+    # bot.ask_first off: nothing waits for a tap, so nothing here says it does
+    direct = not data.settings.bot.ask_first
     parts = (
         principles(data.locale),
         RULES.format(locale=data.locale),
         WEB.format(base=data.settings.base_url.rstrip("/") or "the app's address"),
-        WHO,
-        CHANGES,
-        OPTIONS,
-        REMINDERS,
+        WHO.replace("{voice_yes}", "" if direct else VOICE_YES),
+        CHANGES.replace("{asked}", ASKED_DIRECT if direct else ASKED).replace(
+            "{for_yes}", "" if direct else " A change waiting for a yes waits for theirs."
+        ),
+        OPTIONS.replace(
+            "{options_why}",
+            " or a reminder (the app makes them at once)"
+            if direct
+            else " (the app asks for that itself)",
+        ),
+        REMINDERS.replace("{remind_how}", REMIND_DIRECT if direct else REMIND_OFFER).replace(
+            "{remind_set}", "" if direct else REMIND_SET
+        ),
+        DIRECT if direct else "",
         own,
     )
     return "\n".join(x for x in parts if x)
