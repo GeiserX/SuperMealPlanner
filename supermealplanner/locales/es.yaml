@@ -57,6 +57,8 @@ batch_title: "Cocinar · semana del {date}"
 batch_none: No hay sesiones de cocina esta semana.
 batch_morning: por la mañana
 batch_afternoon: por la tarde
+batch_from: "desde las {time}"
+batch_night: por la noche
 batch_busy: "Ojo, la agenda tiene: {events}. No quedaba otra tarde libre."
 servings: "{n} raciones"
 servings_one: "1 ración"
@@ -158,6 +160,7 @@ bot_chat_id: "El id de este chat es {id}."
 reminder_defrost: "🧊 Esta noche: pasa {dish} del congelador a la nevera para la comida de mañana."
 reminder_batch: "🍲 Hoy toca cocinar por adelantado:\n\n{dishes}\n\n{url}"
 reminder_batch_morning: "🍲 Mañana por la mañana toca cocinar por adelantado:\n\n{dishes}\n\n{url}"
+reminder_batch_from: "🍲 Mañana desde las {time} toca cocinar por adelantado:\n\n{dishes}\n\n{url}"
 reminder_soak: "🫘 Esta noche deja en remojo para cocinar mañana por adelantado:\n{items}\n{url}"
 reminder_soak_item: "• {name}: {amount}, para {dish}"
 reminder_thaw: "🧊 Esta noche saca del congelador lo de mañana y déjalo descongelar en la nevera o en la encimera (el pan también se puede tostar congelado justo antes de comer):\n{items}\n{url}"
@@ -236,6 +239,7 @@ change_batch_sessions: Sesiones de cocina por semana
 change_rule: "Regla semanal {name}"
 change_avoid: "Alimentos que evita {name}"
 change_batch_avoid_days: Días sin cocina
+change_batch_start: "Hora de empezar a cocinar ({name})"
 change_swaps: "Ingredientes que {name} cambia"
 change_training_days: "Días de entrenamiento de {name}"
 change_shopping_primary: Tienda principal de la lista

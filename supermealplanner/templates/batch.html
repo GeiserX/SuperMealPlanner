@@ -10,7 +10,7 @@
 {% for day, sessions, todo in days %}
 {% for s, dishes in sessions %}
 <section class="meal">
-  <h2>{{ t.date(day) | capitalize }} · {{ t('batch_morning') if s.morning else t('batch_afternoon') }}</h2>
+  <h2>{{ t.date(day) | capitalize }} · {{ session_when(s) }}</h2>
   {% if s.busy %}<p class="note">{{ t('batch_busy', events=s.busy | join(', ')) }}</p>{% endif %}
   {{ sheet(dishes, day) }}
 </section>

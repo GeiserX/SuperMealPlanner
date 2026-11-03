@@ -84,10 +84,13 @@ from .i18n import Translator
 from .model import WEEKDAYS
 from .planner import ICONS, Plans, day_menu, paused_days, plan_for
 from .portions import (
+    MORNING,
     batch_dish_text,
     batch_sheet,
     person_days,
+    session_at,
     session_sheets,
+    session_when,
     shopping_list,
 )
 
@@ -2871,7 +2874,7 @@ class Bot:
         ):
             dishes = self.sheet_text(sheet)
             if dishes:
-                when = t("batch_morning" if s.morning else "batch_afternoon")
+                when = session_when(t, s.morning, session_at(self.data, s.date, s.morning))
                 blocks.append(t("batch_cook", date=t.date(s.date), when=when) + "\n\n" + dishes)
         if not blocks:
             return t("batch_none")
@@ -3084,7 +3087,8 @@ class Bot:
                 said.append(t("reminder_batch", dishes=x.line, url=url))
             if x.key == f"cook:{tomorrow.isoformat()}:am":
                 url = self.link(t("link_sheet"), f"/batch?d={tomorrow.isoformat()}")
-                said.append(t("reminder_batch_morning", dishes=x.line, url=url))
+                key = "reminder_batch_morning" if x.at == MORNING else "reminder_batch_from"
+                said.append(t(key, time=x.at, dishes=x.line, url=url))
         tonight = [x for x in jobs if x.day == day and x.source == "auto"]
         soaks = [x.line for x in tonight if x.kind == "soak"]
         if soaks:

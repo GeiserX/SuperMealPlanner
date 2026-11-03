@@ -352,12 +352,17 @@ def test_a_pulse_cooked_the_night_before_is_soaked_the_night_before_that(data_di
 
 
 def test_the_check_knows_the_swaps_the_app_already_makes(data_dir, tmp_path):
-    """A person's swap is on their plate already, though the recipe text keeps the original."""
+    """A person's swap is on their plate already, though the recipe text keeps the original; never
+    in a batch recipe, which is one pot for everyone."""
     raw = yaml.safe_load((data_dir / "household.yaml").read_text())
     raw["people"][0]["swaps"] = {"tomate": "lechuga"}
     (data_dir / "household.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
     brief = verifier.brief(load(data_dir), MONDAY, "x", [], {}, None)
-    assert "Ana (ana) gets instead, done by the app: tomate -> lechuga" in brief
+    assert (
+        "Ana (ana) gets instead, done by the app in the dishes plated per person, never in a "
+        in brief
+    )
+    assert "batch recipe (one pot for everyone, cooked as written): tomate -> lechuga" in brief
 
 
 # ---------------------------------------------------------------- the plan as it stands
@@ -457,6 +462,25 @@ def test_the_plan_check_knows_the_cooking_reminder_says_what_to_take_out_of_the_
     assert "## Said by the app itself" in text
     assert "at 21:30, the cooking reminder says what to take out of the freezer" in text
     assert f"next day's meals: {name}." in text
+
+
+def test_the_freezer_line_counts_a_cooking_reminder_set_for_some_weekdays_only(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    plan = plan_for(b.data, MONDAY)
+    iid = b.data.recipes[plan.day(MONDAY + dt.timedelta(days=1)).lunch].ingredients[0].id
+    ings = yaml.safe_load((data_dir / "ingredients.yaml").read_text())
+    ings[iid]["frozen"] = True
+    (data_dir / "ingredients.yaml").write_text(yaml.safe_dump(ings, allow_unicode=True))
+    raw = yaml.safe_load((data_dir / "settings.yaml").read_text())
+    rest = ["monday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    raw["reminders"] += [
+        {"id": "batch", "kind": "batch", "at": ["21:30"], "days": rest},
+        {"id": "batch-tue", "kind": "batch", "at": ["22:45"], "days": ["tuesday"]},
+    ]
+    (data_dir / "settings.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    b.state.data = load(data_dir)
+    text, _ = verifier.plan_brief(b.data, db, MONDAY)
+    assert "at 21:30 (Tuesday 22:45), the cooking reminder says what to take out" in text
 
 
 def test_a_long_finding_is_cut_at_a_sentence_end_never_mid_sentence():

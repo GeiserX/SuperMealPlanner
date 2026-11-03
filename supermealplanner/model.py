@@ -235,11 +235,16 @@ class Batch(Loose):
     preferred_days: list[Weekday] = ["monday", "friday", "saturday"]  # tried first
     sessions_per_week: int = Field(default=2, ge=1, le=2)
     avoid_days: list[Weekday] = []  # never a batch session on these, busy or not
+    # "HH:MM" a session cooked the day its lunch is eaten starts at, by weekday (unset: 10:00)
+    start: dict[Weekday, str] = {}
 
     @model_validator(mode="after")
     def _some_day_left(self) -> Batch:
         if set(self.avoid_days) >= set(WEEKDAYS):
             raise ValueError("batch.avoid_days leaves no day to cook on")
+        for day, at in self.start.items():
+            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", at):
+                raise ValueError(f"batch.start {day}: time {at!r} is not HH:MM")
         return self
 
 
@@ -265,6 +270,17 @@ class Household(Loose):
     rules: Rules = Rules()
     # the kitchen's devices and tools, in the household's words: recipes use only these
     equipment: list[str] = []
+
+    @model_validator(mode="after")
+    def _starts_before_lunch(self) -> Household:
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", self.lunch_time):
+            raise ValueError(f"lunch_time {self.lunch_time!r} is not HH:MM")
+        for day, at in self.batch.start.items():
+            if at >= self.lunch_time:  # the session cooks that day's lunch: it starts before it
+                raise ValueError(
+                    f"batch.start {day}: {at} is not before lunch_time {self.lunch_time}"
+                )
+        return self
 
     def person(self, pid: str) -> Person:
         for p in self.people:

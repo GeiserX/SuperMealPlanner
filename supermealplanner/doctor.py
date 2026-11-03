@@ -535,7 +535,7 @@ def _chains(
             r = data.recipes.get(getattr(day, meal) or "")
             if r is None:
                 continue
-            eat = at(d, MEAL_HOURS[meal][0])
+            eat = at(d, _eaten(data, meal))
             what = f"{r.name} [{r.id}], {meal} on {_day(d)}"
             link = f"`dish {r.id} {d.isoformat()}"
             mine = steps.get((r.id, d), [])
@@ -648,6 +648,13 @@ def _chains(
     return out
 
 
+def _eaten(data: Data, meal: str) -> str:
+    """When a meal is eaten: lunch at the household's lunch_time, so a session that starts after
+    noon on the day of its lunch (batch.start) still cooks it before; any other meal when its hours
+    open."""
+    return data.household.lunch_time if meal == "lunch" else MEAL_HOURS[meal][0]
+
+
 def _soak_max(kind: str) -> int:
     return SOAK_FRIDGE_MAX_H if kind == "soak-fridge" else SOAK_MAX_H
 
@@ -669,7 +676,7 @@ def _thaws(data, plans, today, found, sessions, steps, at, when, hm, hours) -> l
         meal = next((m for m in MEALS if day and getattr(day, m) == x.recipe), None)
         if meal is None:
             continue  # the menu dropped the dish: the stale reminder check says so
-        eat = at(x.eat, MEAL_HOURS[meal][0])
+        eat = at(x.eat, _eaten(data, meal))
         counts = meal == "lunch" and day.lunch_cook < x.eat
         if x.kind == "defrost" or x.source == "auto":
             # a cooked container is warmed up for the meal; the app's own thaw is food marked

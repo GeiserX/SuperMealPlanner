@@ -73,6 +73,7 @@ from .db import DB
 from .i18n import Translator
 from .model import WEEKDAYS, Data, DataError, load
 from .planner import MEALS, Plans
+from .portions import MORNING, session_at
 
 log = logging.getLogger(__name__)
 
@@ -528,7 +529,13 @@ def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
             dishes = "; ".join(
                 f"{x.recipe} for {', '.join(e.isoformat() for e in x.eat)}" for x in s.dishes
             )
-            when = "in the morning, before lunch" if s.morning else evening(s.date)
+            if s.morning:  # the day of its lunch: at the household's start, else in the morning
+                at = session_at(data, s.date, True)
+                when = (
+                    f"from {at}, before lunch" if at != MORNING else "in the morning, before lunch"
+                )
+            else:
+                when = evening(s.date)
             out.append(f"- {s.date:%A} {s.date.isoformat()}, {when}: {dishes}")
     if not out:
         return []
@@ -537,15 +544,21 @@ def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
 
 def thaw_now(data: Data, dishes: set[str]) -> list[str]:
     """What the app's own cooking reminder says every evening without a chat reminder: what to
-    take out of the freezer for the next day's meals. A thaw it says is not missing."""
-    at = sorted(
-        {
-            x
-            for r in data.settings.reminders
-            if r.kind == "batch" and r.enabled and r.days == "daily"
-            for x in r.at
-        }
-    )
+    take out of the freezer for the next day's meals. A thaw it says is not missing. A reminder
+    set for some weekdays only counts on those days (a later time on one day, none on another)."""
+    by_day = {
+        w: tuple(
+            sorted(
+                {
+                    x
+                    for r in data.settings.reminders
+                    if r.kind == "batch" and r.enabled and (r.days == "daily" or w in r.days)
+                    for x in r.at
+                }
+            )
+        )
+        for w in WEEKDAYS
+    }
     frozen = sorted(
         {
             data.ingredients[i.id].name
@@ -555,10 +568,19 @@ def thaw_now(data: Data, dishes: set[str]) -> list[str]:
             if data.ingredients[i.id].frozen
         }
     )
-    if not at or not frozen:
+    if not any(by_day.values()) or not frozen:
         return []
+    usual = max(set(by_day.values()), key=lambda t: (list(by_day.values()).count(t), bool(t)))
+    other = [
+        f"{w.capitalize()} {', '.join(t)}" if t else f"never on {w.capitalize()}"
+        for w, t in by_day.items()
+        if t != usual
+    ]
+    at = ", ".join(usual) if usual else "no time"
+    if other:
+        at += f" ({'; '.join(other)})"
     said = (
-        f"- The evening before, at {', '.join(at)}, the cooking reminder says what to take out of"
+        f"- The evening before, at {at}, the cooking reminder says what to take out of"
         f" the freezer for the next day's meals: {', '.join(frozen)}."
     )
     return ["", "## Said by the app itself", said]
@@ -670,7 +692,10 @@ def brief(data: Data, today: dt.date, answer: str, problems: list[str], after: d
             out.append(f"- {p.name} ({p.id}) never eats: {', '.join(p.avoid_ingredients)}")
         if p.swaps:  # already on their plate and the list: the recipe text stays as written
             swaps = ", ".join(f"{a} -> {b}" for a, b in p.swaps.items())
-            out.append(f"- {p.name} ({p.id}) gets instead, done by the app: {swaps}")
+            out.append(
+                f"- {p.name} ({p.id}) gets instead, done by the app in the dishes plated per "
+                f"person, never in a batch recipe (one pot for everyone, cooked as written): {swaps}"
+            )
     if data.settings.llm.instructions:
         out += ["", "### The household's own instructions", data.settings.llm.instructions]
     r = hh.rules

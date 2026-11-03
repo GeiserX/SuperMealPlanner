@@ -170,7 +170,8 @@ def test_a_day_with_a_morning_and_an_afternoon_batch_shows_each_with_its_own_dis
             page = c.get(path).text
             parts = {
                 "morning": page.split("in the morning", 1)[1].split("<section", 1)[0],
-                "afternoon": page.split("in the afternoon", 1)[1].split("<section", 1)[0],
+                # no batch reminder: the session is at 20:00, said to be at night
+                "afternoon": page.split("at night", 1)[1].split("<section", 1)[0],
             }
             for rid in theirs:
                 assert f"/recipe/{rid}?" not in parts["morning"], (path, rid)

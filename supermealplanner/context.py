@@ -101,8 +101,11 @@ on another dish for that meal. `meals: []` retires a recipe from the plan withou
 
 Three facts have their own setting, so the plan acts on them; set it instead of a chat note:
 - A swap ("I drink oat drink instead of milk", "pear instead of apple"): that person's plate and the
-  shopping list use the other ingredient. The recipe stays as written and nobody else's plate
-  changes. Both are ingredient ids from the ingredient list, in the same unit.
+  shopping list use the other ingredient in the dishes plated per person (a breakfast, a salad).
+  Never in a batch recipe: it is one pot for everyone, cooked as written, so its plates and the list
+  keep the recipe's ingredient; a swap of a food only batch recipes use changes nothing, say so. The
+  recipe stays as written and nobody else's plate changes. Both are ingredient ids from the
+  ingredient list, in the same unit.
 - Days with no batch ("Tuesdays I clean"): the planner never puts a batch session on them, even when
   every other afternoon is busy. Batch days only say which days to try first.
 - Training days (strength training): that person's energy target rises on those days by their
@@ -143,6 +146,7 @@ set:
   household.batch.preferred_days: [monday, thursday]
   household.batch.sessions_per_week: 2
   household.batch.avoid_days: [tuesday]   # never a batch session on these days
+  household.batch.start.saturday: "13:00"   # a session that cooks that day's lunch starts then (else 10:00); null removes it
   household.rules.fish_min: 3          # also legumes_min, oily_fish_min, salad_daily, max_repeats_per_4_weeks
   household.people.<asker's id>.avoid_ingredients: [<ingredient id>]   # the whole new list: the current one plus the new foods
   household.people.<asker's id>.swaps: {<ingredient id>: <ingredient id they eat instead>}   # the whole new map; {} removes them all
@@ -359,7 +363,11 @@ def facts(
         if p.avoid_ingredients:
             line += f" Avoids: {', '.join(p.avoid_ingredients)}."
         if p.swaps:
-            line += " Eats instead: " + ", ".join(f"{a} -> {b}" for a, b in p.swaps.items()) + "."
+            line += (
+                " Eats instead, except in batch recipes (one pot for everyone): "
+                + ", ".join(f"{a} -> {b}" for a, b in p.swaps.items())
+                + "."
+            )
         out.append(line)
         if viewer is not None and p.id != viewer:
             continue  # someone else's health data stays out of a private chat
@@ -609,6 +617,7 @@ def limits() -> list[str]:
         "- limits the app enforces (a change outside them is refused):",
         f"  - household.batch.sessions_per_week: {bounds(Batch, 'sessions_per_week')}",
         "  - household.batch.avoid_days: at least one weekday left to cook on",
+        "  - household.batch.start.<weekday>: HH:MM, before household.lunch_time",
         (
             f"  - settings.reminders: kind one of {', '.join(kinds)}; at: HH:MM (00:00 to 23:59); "
             "days: daily or a non-empty list of weekdays; kind message needs text, which may use only "
@@ -644,7 +653,8 @@ def settings_now(data: Data, viewer: str | None = None) -> str:
         f"- household.lunch_time: {hh.lunch_time}; household.shopping_day: {hh.shopping_day}",
         f"- household.guests: {hh.guests or '{}'}",
         f"- household.batch: days {hh.batch.preferred_days}, avoid_days {hh.batch.avoid_days}, "
-        + f"{hh.batch.sessions_per_week} sessions a week",
+        + f"{hh.batch.sessions_per_week} sessions a week, "
+        + f"start {hh.batch.start or '{}'} (a session on the day of its lunch; unset: 10:00)",
         f"- household.rules: {hh.rules.model_dump()}",
         f"- stores: {stores}; primary {st.shopping.primary}; alternatives {st.shopping.alternatives}",
         f"- settings.sections: {st.sections or '{}'}",

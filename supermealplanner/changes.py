@@ -67,6 +67,7 @@ ALLOWED = {
     "household.batch.preferred_days": "batch_days",
     "household.batch.sessions_per_week": "batch_sessions",
     "household.batch.avoid_days": "batch_avoid_days",
+    "household.batch.start.*": "batch_start",
     "household.rules.legumes_min": "rule",
     "household.rules.fish_min": "rule",
     "household.rules.oily_fish_min": "rule",
@@ -490,6 +491,8 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
         name = e.arg
         if e.label in OWN:
             name = data.household.person(e.arg).name
+        if e.label == "batch_start":
+            name = _field("days", [e.arg], t)
         what = t(f"change_{e.label}", name=name)
         old = _current(data, e)
         if e.label == "swaps":
