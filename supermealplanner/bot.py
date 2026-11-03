@@ -1450,15 +1450,17 @@ class Bot:
         made = True  # a reminder made wrong by a change goes only once the change is made
         # a turn the bot asked itself, alone or with messages that came in beside it: nobody asked
         # for its change as it stands, so it waits for a tap
-        direct = self.direct
+        # bot.ask_first off: nothing waits for a tap, except what belongs to one person (their
+        # avoided foods, swaps, training days, a pills reminder): that keeps the AI's own `asked`
+        # and, on the AI's own idea, still waits for that person's yes
+        mine = isinstance(change, dict) and changes.personal(change, data)
+        direct = self.direct and not mine
         if any(i.auto or i.followup for i in covered) and isinstance(change, dict) and not direct:
             change = {k: v for k, v in change.items() if k != "asked"}
         if not clear and isinstance(change, dict):
             decider, change = self.only_theirs(covered, decider, change)
         if direct and isinstance(change, dict):
-            # nothing waits for a tap: the change is made now, as a yes would make it, with the same
-            # refusals. A person's own change is made only in the name of the one who wrote and may
-            # make it (only_theirs); nobody who wrote may: the app refuses it, as before
+            # the change is made now, as a yes would make it, with the same refusals
             change = {**change, "asked": True}
         own = decider.who is None and decider.uid is None  # the bot's own turn: nobody asked
         now = (not own or direct) and (
@@ -1506,7 +1508,7 @@ class Bot:
                 reply_to,
                 tail,
                 fixes=followup,
-                auto=automatic and not direct,
+                auto=automatic and not self.direct,
             )
         joined = "\n\n".join(x for x in [render.brief(text) if text else "", *tail] if x)
         if joined:
@@ -3712,8 +3714,16 @@ class Bot:
         done += said
         done += self.cancel_reminders(chat_id, cancels, uid, member)
         if self.direct:  # nothing is offered: each one is set now, as a tap on «here» sets it
+            done += self.move_same_steps(chat_id, items, uid, member)
             for r in items:
                 r["set"] = True
+            # an offer still open in the chat is retired: nothing waits for a tap any more
+            offers = self._offers()
+            open_ = [o for o in offers if o.get("chat") == chat_id]
+            if open_:
+                self.state.db.set_kv(REMIND, [o for o in offers if o not in open_] or None)
+                for o in open_:
+                    await self.retire_offer(client, o)
         for r in [r for r in items if r.get("set")] if uid or self.direct else []:
             met = self.near_reminder(chat_id, r["at"], r["text"])
             if met and met[0] == "same":  # already set: not stored twice
@@ -3739,6 +3749,33 @@ class Bot:
             await self.send(client, chat_id, "\n".join(done), reply_to)
             await self.checkup(client, chat_id, before, reply_to, offered=offering)
         return [r for r in items if not ((uid or self.direct) and r.get("set"))]
+
+    def move_same_steps(self, chat_id: int, items: list[dict], uid, member: bool) -> list[str]:
+        """bot.ask_first off: a listed reminder for a step the chat already has pending (the same
+        dish, day and kind, or the same words: _same_step) moves that one to its time and words
+        instead of a second one beside it. Takes those out of `items`; what it says of each."""
+        db, said, taken = self.state.db, [], set()
+        for r in list(items):
+            old = next(
+                (
+                    o
+                    for o in db.reminders(chat_id)
+                    if o["id"] not in taken and (member or uid == o["by"]) and self._same_step(o, r)
+                ),
+                None,
+            )
+            if old is None:
+                continue
+            taken.add(old["id"])
+            items.remove(r)
+            if abs(old["at"] - r["at"]) < 60 and _same_words(old["text"]) == _same_words(r["text"]):
+                at = dt.datetime.fromtimestamp(old["at"], self._zone())
+                said.append(self.t("remind_same", time=f"{at:%H:%M}", text=r["text"]))
+                continue
+            if db.move_reminder(old["id"], r):
+                db.reword_reminder(old["id"], r)  # the dish it names, when it names one
+                said.append(self.t("remind_moved", when=self._when(r["at"]), text=r["text"]))
+        return said
 
     def reword(
         self, chat_id: int, ids: list, items: list[dict], uid, member: bool, auto: bool = False
@@ -3975,20 +4012,34 @@ class Bot:
         once (each item leaves the list before it is made): every change waiting for a yes is made
         through the same apply as a yes, one that no longer fits is dropped (its reason goes to the
         AI), and every reminder offered and not tapped is set as «here» would set it, one whose
-        time has passed dropped. One message per chat says what it accepted. A plugin's proposal and
-        a provider's ask keep waiting: they act outside the chat, for the person or admin named."""
+        time has passed or whose dish the menu no longer has dropped. One message per chat says
+        what it accepted, then the checkup runs there. What belongs to one person (changes.personal)
+        keeps waiting for that person's yes, and so do a plugin's proposal and a provider's ask:
+        they act outside the chat, for the person or admin named."""
         if not self.direct:
             return
-        cfg, t = self.data.settings.bot, self.t
-        said: dict[int, list[str]] = {}
-        made: set[int] = set()
+        cfg, t, data = self.data.settings.bot, self.t, self.data
         chats = {c for c in (cfg.chat_id, cfg.checkup_chat, *cfg.people.values()) if c}
-        before = None
-        for chat in chats:
-            for item in [i for i in self.pending(chat) if "change" in i]:
+        waiting = {
+            chat: [
+                i
+                for i in self.pending(chat)
+                if "change" in i and not changes.personal(i["change"], data)
+            ]
+            for chat in chats
+        }
+        offers = self._offers()
+        live = [o for o in offers if time.time() - o.get("ts", 0) <= REMIND_TTL]
+        if not live and not any(waiting.values()):
+            return
+        before = await self.problem_keys()
+        refusal = {t("change_invalid"), t("change_failed")}
+        said: dict[int, list[str]] = {}
+        for chat, items in waiting.items():
+            for item in items:
+                if item not in self.pending(chat):  # a newer change replaced it meanwhile
+                    continue
                 self.drop(chat, item)  # before any await: never made twice
-                if before is None:
-                    before = await self.problem_keys()
                 try:
                     line = await self.apply(item, asked=True)
                 except Exception as e:  # noqa: BLE001  the tick goes on
@@ -3996,19 +4047,14 @@ class Bot:
                     line = self.refused(item, type(e).__name__, saving=True)
                 if item.get("key"):  # what the review of the answer that offered it reads
                     self.settled[item["key"]] = bool(item.get("applied"))
-                if item.get("applied"):
-                    made.add(chat)
-                    if item.get("cancels"):
-                        line = "\n".join(
-                            [line, *self.cancel_reminders(chat, item["cancels"], None, True)]
-                        )
-                else:
+                if item.get("applied") and item.get("cancels"):
+                    gone = self.cancel_reminders(chat, item["cancels"], None, True)
+                    line = "\n".join([line, *gone])
+                elif not item.get("applied") and line in refusal:
                     line = t("auto_accept_dropped")
                 label = t("auto_accept_label") if item.get("applied") else None
                 await self.unbutton(client, chat, item.get("msg"), label)
                 said.setdefault(chat, []).append(line)
-        offers = self._offers()
-        live = [o for o in offers if time.time() - o.get("ts", 0) <= REMIND_TTL]
         if live:
             # gone from the list before anything is set: a tap meanwhile finds nothing
             self.state.db.set_kv(REMIND, [o for o in offers if o not in live] or None)
@@ -4031,13 +4077,16 @@ class Bot:
                 await self.send(client, chat, t("auto_accepted", lines="\n".join(lines)))
             except TelegramError as e:  # made either way; only the notice is lost
                 log.warning("could not say what was accepted: %s", safe(e))
-        for chat in made:
+        for chat in said:
             await self.checkup(client, chat, before)
 
     def accept_reminder(self, chat: int, r: dict) -> str | None:
         """An offered reminder set as a tap on «here» sets it, with the bot as the one who tapped;
-        what it says of it, None when its time has passed (dropped)."""
+        what it says of it. None: dropped, its time has passed or the menu no longer has its dish
+        that day (a change it went with was dropped)."""
         if r["at"] < time.time() + 60:
+            return None
+        if r.get("recipe") and not self._links(r["recipe"], r.get("date")):
             return None
         when, db = self._when(r["at"]), self.state.db
         if r.get("replaces"):

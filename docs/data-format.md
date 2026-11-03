@@ -120,7 +120,7 @@ bot:
   share_logs_in_group: false  # true: the AI may discuss weigh-ins, binges, cravings and notes in the group
   history_scope: asked        # asked | all: which group messages are kept as AI context
   reminder_calendar: false    # true: a reminder the AI offers can also go in the calendar (a plugin with calendar tools)
-  ask_first: true             # false: the bot makes the changes and sets the reminders the AI comes up with at once, with no Yes/No or reminder buttons, and accepts by itself what was still waiting
+  ask_first: true             # false: the bot makes the changes and sets the reminders the AI comes up with at once, with no Yes/No or reminder buttons, and accepts by itself what was still waiting; a person's own avoided foods, swaps, training days and pills reminder still wait for their yes unless they asked
   checkup_at: "08:00"         # the consistency check's morning run ("" turns it off); the plan check's turn follows it
   checkup_chat: null          # where that turn goes; null: the group (bot.chat_id)
   style: ""                   # the bot's voice in the chat, read by the AI after the formatting guide

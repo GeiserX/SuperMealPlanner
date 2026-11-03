@@ -180,6 +180,26 @@ PILLS_REMINDER_KINDS = {"pills_lunch"}  # changed or dropped from the chat only 
 OWN = {"avoid", "swaps", "training_days"}
 
 
+def personal(raw, data: Data) -> bool:
+    """The change touches what belongs to one person (their avoided foods, swaps, training days,
+    a pills reminder): with bot.ask_first off it still is made only when they asked for it, or after
+    their yes, never on the AI's own idea."""
+    sets = raw.get("set") if isinstance(raw, dict) else None
+    for path, value in (sets if isinstance(sets, dict) else {}).items():
+        hit = _match(str(path))
+        if hit is None:
+            continue
+        label, arg = hit
+        if label in OWN:
+            return True
+        if label == "reminder":
+            now = next((r for r in data.settings.reminders if r.id == arg), None)
+            new = value.get("kind") if isinstance(value, dict) else None
+            if {now.kind if now else None, new} & PILLS_REMINDER_KINDS:
+                return True
+    return False
+
+
 def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
     """Check a proposed change against the allow-list, for the household member who asked. Raises
     ChangeError with the reason."""

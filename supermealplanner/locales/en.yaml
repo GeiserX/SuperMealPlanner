@@ -213,7 +213,7 @@ bot_about_files: "Photos, videos, GIFs, stickers and files of any kind reach me 
 bot_new: "New conversation: I've forgotten what we talked about. Your plan and data are still here."
 bot_cmd_new: Start a new conversation with me
 bot_about_changes: "⚙️ Changes\nAsk me to change the menu: another dish for a day, two days swapped, a pause while you eat what you have at home, or a new draw from a Monday. Ask me too for a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, the shopping stores, how I answer, a new recipe or a change to one you have (for example taking it out of breakfast). Tell me things about each of you that I should keep in mind and I note them. What you ask for I do at once and tell you what changed; it can be undone. When the idea is mine, I show it and wait for your yes. Pills, calories and goals are never changed from the chat."
-bot_about_changes_direct: "⚙️ Changes\nAsk me to change the menu: another dish for a day, two days swapped, a pause while you eat what you have at home, or a new draw from a Monday. Ask me too for a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, the shopping stores, how I answer, a new recipe or a change to one you have (for example taking it out of breakfast). Tell me things about each of you that I should keep in mind and I note them. I make changes at once, yours and my own ideas, and tell you what changed; it can be undone. Pills, calories and goals are never changed from the chat."
+bot_about_changes_direct: "⚙️ Changes\nAsk me to change the menu: another dish for a day, two days swapped, a pause while you eat what you have at home, or a new draw from a Monday. Ask me too for a reminder, the batch days, the lunch time, the weekly rules, guests, foods to avoid, the shopping stores, how I answer, a new recipe or a change to one you have (for example taking it out of breakfast). Tell me things about each of you that I should keep in mind and I note them. I make changes at once, yours and my own ideas, and tell you what changed (only what belongs to one of you, such as foods to avoid, swaps, training days or a pills reminder, waits for that person's yes when it was my idea); it can be undone. Pills, calories and goals are never changed from the chat."
 change_confirm: "{name}, shall I change this?\n{lines}\nTap Yes or No. If you want something else, reply to this message."
 change_yes_words: ["yes", "y", "ok", "okay", "sure", "go"]
 change_no_words: ["no", "n", "nope", "cancel"]
@@ -329,6 +329,7 @@ remind_joined: "(added to the {time} reminder: they go out as one message)"
 remind_same: "⏰ The {time} reminder already says this, not set again: {text}"
 remind_cancelled: "🗑 Reminder removed, it is no longer right: {when}: {text}"
 remind_reworded: "✏️ Reminder kept, with new words: {when}: {text}"
+remind_moved: "⏰ Reminder moved to {when}: {text}"
 remind_calendar_turn: "Add an event to the calendar for this reminder, once, on {when} ({iso}): «{text}». I asked with the reminder's 📅 (in the calendar) button."
 reminder_when: "{date}, {time}"
 reminder_late: "(late: it was for {when})"

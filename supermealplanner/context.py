@@ -10,6 +10,7 @@ as of now.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from functools import cache
 from pathlib import Path
 
@@ -219,8 +220,10 @@ changing, do not list the values, and do not ask them to confirm.
 """
 
 ASKED_DIRECT = """The household does not confirm changes: every change block is made at once, your own ideas too,
-as if they had asked for it (`asked` makes no difference). The app still refuses what may not be
-changed and says so. It adds one line to your answer saying what it changed, with the page to see
+as if they had asked for it. The one exception is what belongs to one person: their avoided foods,
+swaps and training days, and a pills reminder. There `asked: true` still means they asked for
+exactly this; without it the change waits for that person's yes. The app still refuses what may
+not be changed and says so. It adds one line to your answer saying what it changed, with the page to see
 it, so say in a few words what you are changing, do not list the values, and never ask whether to
 make it ("shall I change it?"): make it, or leave it out.
 """
@@ -300,7 +303,9 @@ Reminders of one chat due within about half an hour of each other go out as one 
 app's own reminder of that time takes them in. Before you offer a reminder, look at the pending
 ones the facts list: when one at about that time already covers the step, offer nothing more; when
 it needs changing, cancel it and list one that says both.
+{remind_replaces}"""
 
+REMIND_REPLACES = """
 A reminders block replaces the offer still open in this chat (the facts list it, when there is
 one): list again the offered steps that still hold, and leave out any the chat has since made
 wrong (they keep the fish in the freezer after all: no reminder to take it out).
@@ -319,12 +324,14 @@ it at once and says so, and nobody is asked again. Without "set", never say a re
 
 REMIND_DIRECT = """The app sets every reminder you list at once, for the
 person it names, and adds one line to your answer saying so: never ask whether they want one
-("shall I remind you?"), and do not say it is set yourself.
+("shall I remind you?"), and do not say it is set yourself. A step the chat already has a reminder
+for (the same dish, day and step) moves that reminder to the new time.
 """
 
 DIRECT = """
 ## Doing, not asking
-Nothing you make waits for a tap here: changes and reminders are made as soon as you write them.
+Nothing you make waits for a tap here, except a person's own change they did not ask for (above):
+changes and reminders are made as soon as you write them.
 Never end an answer with a question about whether to change something or to set a reminder: do
 it. Ask only for a fact you cannot know from the data or the chat, such as an amount at home
 ("How many cooked lentils are left in the fridge?"), and do the rest of what you can meanwhile.
@@ -339,15 +346,48 @@ SENSITIVE = ("hunger", "craving", "nausea", "binge")
 PRINCIPLES = Path(__file__).parent / "principles"
 
 
+# bot.ask_first off: the principles that say a decision is offered or asked with buttons, as this
+# household wants them (the changes and reminders are made at once, never offered)
+DIRECT_PRINCIPLES = {
+    "en": {
+        3: """**Facts versus decisions.** A fact you are told ("there is only oat milk") is recorded in that same
+   turn, without asking. The menu and the reminders you decide yourself and change at once; ask only
+   for a fact you cannot know (how much of something is left at home).""",
+        7: """**Reversible now, irreversible with a tap.** Do at once what can be undone, asked for or your own
+   idea; only what belongs to one person (their avoided foods, swaps, training days, pills reminder)
+   waits for their yes when they did not ask for it. Anything that leaves the chat (a calendar, a
+   file others see, a purchase) waits until someone taps Approve.""",
+        8: """**Proactive, not pushy.** When you can do something useful that was not asked (a reminder, a
+   re-check), do it and say so in one line, once. Never put it as a question.""",
+    },
+    "es": {
+        3: """**Hechos frente a decisiones.** Un hecho que te cuentan («solo hay bebida de avena») lo registras en
+   ese mismo turno, sin preguntar. El menú y los recordatorios los decides tú y los cambias en el
+   momento; pregunta solo un dato que no puedas saber (cuánto queda de algo en casa).""",
+        7: """**Lo reversible, ya; lo irreversible, con un toque.** Haz en el momento lo que se puede deshacer,
+   te lo pidan o sea idea tuya; solo lo que es de una persona (lo que evita, sus cambios de alimento,
+   sus días de entreno, su recordatorio de pastillas) espera a su sí cuando no lo ha pedido. Lo que
+   sale del chat (un calendario, un archivo que ven otros, una compra) espera a que alguien pulse
+   Aprobar.""",
+        8: """**Proactivo, sin insistir.** Cuando puedas hacer algo útil que no te han pedido (un recordatorio,
+   volver a comprobar algo), hazlo y dilo en una línea, una vez. Nunca lo plantees como pregunta.""",
+    },
+}
+
+
 @cache
-def principles(locale: str) -> str:
+def principles(locale: str, direct: bool = False) -> str:
     """The shared assistant principles in the household's language (English when there is no copy
-    in it). They come first: the app's rules after them say how they apply here."""
+    in it). They come first: the app's rules after them say how they apply here. direct: with
+    bot.ask_first off, the items about offering and asking say what this household wants."""
     lang = (locale or "en").split("-")[0].split("_")[0].lower()
     path = PRINCIPLES / f"{lang}.md"
     if not path.is_file():
-        path = PRINCIPLES / "en.md"
-    return path.read_text(encoding="utf-8").rstrip() + "\n"
+        path, lang = PRINCIPLES / "en.md", "en"
+    text = path.read_text(encoding="utf-8").rstrip() + "\n"
+    for n, item in (DIRECT_PRINCIPLES.get(lang, {}) if direct else {}).items():
+        text = re.sub(rf"(?ms)^{n}\. .*?(?=^{n + 1}\. )", f"{n}. {item}\n", text)
+    return text
 
 
 def build(
@@ -366,7 +406,7 @@ def rules(data: Data) -> str:
     # bot.ask_first off: nothing waits for a tap, so nothing here says it does
     direct = not data.settings.bot.ask_first
     parts = (
-        principles(data.locale),
+        principles(data.locale, direct),
         RULES.format(locale=data.locale),
         WEB.format(base=data.settings.base_url.rstrip("/") or "the app's address"),
         WHO.replace("{voice_yes}", "" if direct else VOICE_YES),
@@ -379,9 +419,9 @@ def rules(data: Data) -> str:
             if direct
             else " (the app asks for that itself)",
         ),
-        REMINDERS.replace("{remind_how}", REMIND_DIRECT if direct else REMIND_OFFER).replace(
-            "{remind_set}", "" if direct else REMIND_SET
-        ),
+        REMINDERS.replace("{remind_how}", REMIND_DIRECT if direct else REMIND_OFFER)
+        .replace("{remind_set}", "" if direct else REMIND_SET)
+        .replace("{remind_replaces}", "" if direct else REMIND_REPLACES),
         DIRECT if direct else "",
         own,
     )
