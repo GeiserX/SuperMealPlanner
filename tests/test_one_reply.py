@@ -252,12 +252,31 @@ def test_a_change_the_app_cannot_word_is_refused_and_the_answer_still_goes(
 
 def test_a_pantry_line_for_an_ingredient_only_a_waiting_change_adds_is_refused_with_why(data):
     """Said of an ingredient that only a change still waiting for a yes adds: that change is refused,
-    with a reason that tells the AI where the ingredient has to go."""
-    with pytest.raises(changes.ChangeError, match="waiting for a yes"):
+    with a reason that tells the AI where the ingredient has to go, and that waiting for the other
+    yes is no way: the new change replaces the one waiting."""
+    # the way that works: a new change replaces the waiting one, so it carries the ingredient too
+    with pytest.raises(changes.ChangeError, match="replaces the one still waiting.*repeat"):
         changes.parse({"pantry": {"basmati": 500}}, data, "ana")
     with pytest.raises(changes.ChangeError, match="unit"):
         bad = {"name": "Basmati", "section": "despensa", "store": "mercado", "unit": "kg"}
         changes.parse({"ingredients": {"basmati": bad}, "pantry": {"basmati": 1}}, data, "ana")
+
+
+def test_without_write_access_the_pantry_of_a_new_ingredient_is_not_saved_and_the_chat_is_told(
+    data_dir, tmp_path, monkeypatch
+):
+    """No token: the new ingredient goes to the by-hand text, and what is at home of it is left
+    out (its lot would belong to no ingredient) and said so; the rest of the pantry is saved."""
+    monkeypatch.delenv("SMP_GIT_WRITE_TOKEN", raising=False)
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    new = {"name": "Basmati", "section": "despensa", "store": "mercado", "unit": "g"}
+    change = {"ingredients": {"basmati": new}, "pantry": {"basmati": 500, "lenteja": 200}}
+    pending = {"change": change, "asker": "ana", "chat": -100, "name": "Ana"}
+    out = run(b.apply(pending, asked=True))
+    assert b.t("change_manual") in out and b.t("change_manual_pantry", foods="Basmati") in out
+    assert [r["ingredient"] for r in db.lots()] == ["lenteja"]
 
 
 @pytest.mark.parametrize(

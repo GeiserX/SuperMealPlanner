@@ -220,6 +220,7 @@ change_cancelled: Okay, nothing changed.
 change_failed: "I couldn't save the change; nothing was changed."
 change_invalid: "I couldn't make that change; nothing was changed."
 change_manual: "I can't edit the settings myself here (no write access to the data repo). A person can make this change by hand:"
+change_manual_pantry: "I have not saved what is at home of {foods}: that ingredient is not in the data yet. Tell me again once it is added."
 change_members_only: Only the people of the household can change the settings.
 change_none: (none)
 change_yes: "yes"

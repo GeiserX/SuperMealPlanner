@@ -219,6 +219,7 @@ change_cancelled: Vale, no cambio nada.
 change_failed: "No he podido guardar el cambio; no se ha tocado nada."
 change_invalid: "Ese cambio no lo he podido hacer; no se ha tocado nada."
 change_manual: "Aquí no puedo editar los ajustes yo (no tengo permiso de escritura en el repositorio de datos). Una persona puede hacer este cambio a mano:"
+change_manual_pantry: "No he guardado lo que hay en casa de {foods}: ese ingrediente aún no está en los datos. Dímelo otra vez cuando esté añadido."
 change_members_only: Solo las personas de casa pueden cambiar los ajustes.
 change_none: (nada)
 change_yes: sí

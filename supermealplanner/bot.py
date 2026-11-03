@@ -1429,6 +1429,13 @@ class Bot:
         now = not own and (
             isinstance(change, str) or (isinstance(change, dict) and change.get("asked") is True)
         )
+        if isinstance(change, dict) and not now and change.get("tasks"):
+            # what the household said happened is a fact, never a decision waiting for a tap: it
+            # is recorded now, and only the rest of the change waits
+            told = {"asked": True, "tasks": change["tasks"]}
+            change = {k: v for k, v in change.items() if k != "tasks"} or None
+            item = {"change": told, "asker": decider.who, "chat": chat_id}
+            tail.append(await self.apply(item, asked=True))
         # reviewed once sent, against the problems there before it changed anything; a follow-up
         # is never reviewed again
         check = not followup and verifier.in_scope(change, listed, turn)
@@ -1475,7 +1482,14 @@ class Bot:
         key = None
         if change is not None and not now:
             made = await self.propose(
-                client, chat_id, decider.mid, decider.who, decider.uid, change, cancels=cancels
+                client,
+                chat_id,
+                decider.mid,
+                decider.who,
+                decider.uid,
+                change,
+                cancels=cancels,
+                merge=followup,
             )
             # the yes it waits for: the review looks it up when it runs (settled_change)
             key = next(
@@ -1799,15 +1813,25 @@ class Bot:
         change,
         tail: list[str] | None = None,
         cancels: list | None = None,
+        merge: bool = False,
     ) -> bool:
         """Make a change the person asked for at once; show one the AI came up with on its own and
         wait for a yes from the person it answered. In the bot's own turn (the morning plan check:
         no person and no user) the change waits for a yes from anyone in the household. tail: where
         what a made change says goes, so it joins the answer's message instead of following it.
         cancels: the reminders the answer cancels with a change that waits: they go with its yes.
+        merge: the change corrects the answer before it (a follow-up), so it joins the change of
+        that answer still waiting for the same yes (changes.merge) instead of replacing it.
         True when the change is made now."""
         t = self.t
         own = asker is None and user_id is None and chat_id < 0
+        if merge and isinstance(change, dict):
+            waiting = [
+                i for i in self.pending(chat_id) if "change" in i and i.get("asker") == asker
+            ]
+            if waiting and isinstance(waiting[-1]["change"], dict):
+                change = changes.merge(waiting[-1]["change"], change)
+                cancels = [*waiting[-1].get("cancels", []), *(cancels or [])]
         pending = {"change": change, "asker": asker, "chat": chat_id}
 
         async def say(text: str) -> None:
@@ -2399,7 +2423,14 @@ class Bot:
             token = os.environ.get("SMP_GIT_WRITE_TOKEN", "")
             if not token:
                 by_hand = t("change_manual") + "\n\n" + "\n".join(changes.manual(proposal))
-                if not (proposal.plan or proposal.pantry):
+                # what is at home of a food the data does not have yet waits for that food: its
+                # lot would belong to no ingredient
+                later = [iid for iid in proposal.pantry if iid in proposal.ingredients]
+                if later:
+                    names = ", ".join(proposal.ingredients[i].get("name") or i for i in later)
+                    by_hand += "\n\n" + t("change_manual_pantry", foods=names)
+                    proposal.pantry = {k: v for k, v in proposal.pantry.items() if k not in later}
+                if not (proposal.plan or proposal.pantry or proposal.tasks):
                     return by_hand
                 out.append(by_hand)
             else:
@@ -4147,7 +4178,11 @@ class Bot:
         out += self.slot_chat(rs)
         out += verifier.doctor_menu(data, self.t, today)
         out += tasklist.tasks_now(
-            data, db, day - dt.timedelta(days=doctor.REMINDER_LEAD_DAYS), day + dt.timedelta(1)
+            data,
+            db,
+            day - dt.timedelta(days=doctor.REMINDER_LEAD_DAYS),
+            day + dt.timedelta(1),
+            said=False,  # slot_chat above has the chat since the reminders were set
         )
         out += context.pantry_now(data, db, today)
         return "\n".join(out)

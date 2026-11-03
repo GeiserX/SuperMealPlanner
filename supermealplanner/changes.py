@@ -358,8 +358,8 @@ def _pantry(raw, data: Data, new: dict | None = None) -> dict[str, list[Part]]:
     for iid, said in raw.items():
         if iid not in data.ingredients and iid not in new:
             raise ChangeError(
-                f"no ingredient {iid}; one the data lacks goes under `ingredients` in this same "
-                "change (one a change still waiting for a yes adds does not exist until it is made)"
+                f"no ingredient {iid}; one the data lacks goes under `ingredients` in this change. "
+                "A new change replaces the one still waiting for a yes, so repeat what that one adds"
             )
         unit = data.ingredients[iid].unit if iid in data.ingredients else new[iid].get("unit")
         items = said if isinstance(said, list) else [said]
@@ -714,6 +714,22 @@ def _steps_diff(old: list, new: list, t) -> list[str]:
 def _clip(text: str) -> str:
     text = " ".join(text.split())
     return text if len(text) <= STEP_CLIP else text[: STEP_CLIP - 1].rstrip() + "…"
+
+
+def merge(old: dict, new: dict) -> dict:
+    """A correction's change on top of the change it corrects, as one change: a section both set
+    keeps the old entries and the new ones (a new key wins over the old one), a list adds the new
+    items, anything else is the new one's."""
+    out = dict(old)
+    for k, v in new.items():
+        was = out.get(k)
+        if isinstance(v, dict) and isinstance(was, dict):
+            out[k] = {**was, **v}
+        elif isinstance(v, list) and isinstance(was, list):
+            out[k] = [*was, *(x for x in v if x not in was)]
+        else:
+            out[k] = v
+    return out
 
 
 def touches(p: Proposal) -> set[tuple]:

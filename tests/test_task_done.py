@@ -320,6 +320,58 @@ def test_a_task_says_when_it_was_marked_and_the_households_later_words_win(data_
     assert tasks.state(db, key) == tasks.DONE
 
 
+def said(db, who, text: str, when: dt.datetime, role: str = "user") -> None:
+    """A message in the household group, written at that time."""
+    row = db.add_chat(-100, role, who, text, asked=False)
+    with db.conn() as c:
+        c.execute("UPDATE chat SET ts=? WHERE id=?", (when.isoformat(timespec="seconds"), row))
+
+
+def test_what_the_household_wrote_after_a_not_done_tap_reaches_the_ai_and_the_verifier_with_its_time(
+    data_dir, tmp_path
+):
+    """Not done is tapped in the evening; past midnight the cook writes that it was cooked after
+    all. The facts (the AI's and the verifier's, both from tasks_now) list that message with its
+    local time under «Said since», and not what was said before any task was due nor the bot's own
+    words; the verifier accepts a later word only from those lines, never on the proposal's word."""
+    b, db = setup(data_dir, tmp_path)
+    s = evening_session(b.data)
+    key = tasks.session_key(s.date, False)
+    db.mark_task(key, "not_done", "ana")
+    tapped = dt.datetime.combine(s.date, dt.time(20, 5), dt.UTC)
+    with db.conn() as c:
+        c.execute("UPDATE task_state SET at=? WHERE key=?", (tapped.isoformat(), key))
+    first = dt.datetime.combine(MONDAY, dt.time(0, 0), dt.UTC)  # before every task listed
+    said(db, "ana", "nothing to do with it", first - dt.timedelta(days=1))
+    said(db, "ana", "we cooked it after all, two boxes left", tapped + dt.timedelta(hours=4))
+    said(db, None, "Good night", tapped + dt.timedelta(hours=5), role="assistant")
+    lines_ = tasks.tasks_now(b.data, db, MONDAY, MONDAY + dt.timedelta(days=13))
+    text = "\n".join(lines_)
+    later = (tapped + dt.timedelta(hours=4)).astimezone(ZoneInfo(b.data.household.timezone))
+    assert "## Said since" in text
+    (line,) = [x for x in lines_ if "cooked it after all" in x]
+    assert f"{later:%Y-%m-%d %H:%M} ana:" in line
+    assert "nothing to do with it" not in text and "Good night" not in text
+    assert "Said since" in context.facts(b.data, db, MONDAY)
+    assert "Said since" in verifier.VERIFY and "never enough" in verifier.VERIFY
+
+
+def test_a_task_answer_with_no_time_or_a_bad_one_costs_only_its_marked_line(data_dir, tmp_path):
+    """A row edited by hand may hold no time or a bad one: the facts still come, without `marked`
+    for that task, so the turn does not fail."""
+    b, db = setup(data_dir, tmp_path)
+    s = evening_session(b.data)
+    key = tasks.session_key(s.date, False)
+    for bad in (None, "yesterday"):
+        db.mark_task(key, "not_done", "ana")
+        with db.conn() as c:
+            c.execute("UPDATE task_state SET at=? WHERE key=?", (bad, key))
+        (row,) = [
+            x for x in context.facts(b.data, db, MONDAY).splitlines() if key in x and "{" in x
+        ]
+        assert '"state": "not_done"' in row and '"marked"' not in row
+
+
 def test_the_morning_turn_is_only_about_steps_a_dish_still_counts_on(data_dir, tmp_path):
     """Nobody taps for days: the day message lists what nobody answered, once, but the turn names
     only the steps doctor's unconfirmed says something still hangs on, and none at all when nothing
