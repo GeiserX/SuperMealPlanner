@@ -589,10 +589,7 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
     from .portions import fmt_qty
 
     for iid, parts in p.pantry.items():  # last: these, like the menu, are not part of a commit
-        # an ingredient the same change adds is not in the data yet
-        ing = data.ingredients.get(iid) or Ingredient.model_validate(
-            {**p.ingredients[iid], "id": iid}
-        )
+        ing = data.ingredients.get(iid) or _new_ingredient(iid, p.ingredients[iid])
         said = []
         for x in parts:
             if not x.qty:
@@ -611,6 +608,18 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
     for key, state in p.tasks.items():
         lines.append("• " + task_line(key, state, t))
     return lines
+
+
+def _new_ingredient(iid: str, fields: dict) -> Ingredient:
+    """An ingredient the same change adds, as it will be once saved: its name and unit are what
+    a pantry line about it shows."""
+    try:
+        return Ingredient.model_validate({"id": iid, **fields})
+    except Exception:  # noqa: BLE001  only the words are at stake here; parse checked the fields
+        unit = fields.get("unit")
+        return Ingredient(
+            id=iid, name=str(fields["name"]), unit=unit if unit in ("ml", "ud") else "g"
+        )
 
 
 def task_line(key: str, state: str, t) -> str:
