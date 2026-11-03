@@ -4265,10 +4265,12 @@ class Bot:
     ) -> list[doctor.Problem]:
         """Run the consistency check after a write (before: the problems it found just before it)
         or in the morning (before None). A linked reminder the menu no longer backs is cancelled
-        here, with one line in its chat. In chat_id: one line naming the problems the write left
-        that were not there before, or in the morning all of them. Food bought and on no dish is
-        left to the AI, which sees it every turn: it can stay true for days once it is frozen.
-        tail: where chat_id's lines go instead of a message of their own (the answer's message)."""
+        here, with one line in its chat. After a write, in chat_id: one line naming the problems
+        the write left that were not there before. The morning says no list here: raise_plan says
+        the plan's problems once, as a turn where the chef proposes the fixes or, when no turn can
+        come, as one list. Food bought and on no dish is left to the AI: it can stay true for days once it
+        is frozen. tail: where chat_id's lines go instead of a message of their own (the answer's
+        message)."""
         db, t = self.state.db, self.t
         found = await self.problems()
         if found is None:
@@ -4279,20 +4281,12 @@ class Bot:
             if r and db.settle_reminder(r["id"], "cancelled"):
                 line = t("doctor_reminder_cancelled", when=self._when(r["at"]), text=r["text"])
                 said.setdefault(r["chat"], []).append(line)
-        rest = [p for p in found if p.kind not in ("stale_reminder", "unused")]
-        # in the morning, a recipe nobody can eat is left to the AI: it stays true until someone
-        # edits the recipe, and the household may keep it so on purpose
         # a step nobody marked is asked about with buttons in the day message: not said twice
-        rest = [p for p in rest if p.kind != "unconfirmed"]
-        new = (
-            [p for p in rest if p.kind != "avoided"]
-            if before is None
-            else [p for p in rest if p.key not in before]
-        )
+        rest = [p for p in found if p.kind not in ("stale_reminder", "unused", "unconfirmed")]
+        new = [p for p in rest if p.key not in before] if before is not None else []
         if chat_id is not None and new:
             items = "; ".join(self.problem_line(p) for p in new)
-            key = "doctor_morning" if before is None else "doctor_new"
-            said.setdefault(chat_id, []).append(t(key, items=items))
+            said.setdefault(chat_id, []).append(t("doctor_new", items=items))
         if tail is not None and chat_id in said:
             tail.extend(said.pop(chat_id))
         for chat, lines in said.items():
@@ -4305,8 +4299,9 @@ class Bot:
         return rest
 
     async def tick_checkup(self, client) -> None:
-        """Once each morning at bot.checkup_at: the check's safe fixes, and a report in
-        bot.checkup_chat (the group when unset) only when something is wrong."""
+        """Once each morning at bot.checkup_at: the check's safe fixes (a reminder the menu no
+        longer backs, cancelled with one line in its chat). What is wrong in the plan reaches
+        bot.checkup_chat (the group when unset) once, through raise_plan after it."""
         cfg = self.data.settings.bot
         chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
         if not cfg.checkup_at or chat is None:
@@ -4354,37 +4349,57 @@ class Bot:
             log.warning("plan check failed: %s", safe(e))
 
     async def raise_plan(self, client, at_once: bool = False) -> None:
-        """Once a day, in the PLAN_RAISE_H after the morning checkup: when the plan check found
-        problems in the plan as it is, a turn the bot asks itself in bot.checkup_chat, so the chef
-        proposes the fixes in the chat like any change. A check that ends after the checkup still
-        gets its turn that morning; a plan raised once is not raised again. at_once: a plan the
-        app just drew, raised now rather than the next morning."""
+        """Once a day, in the PLAN_RAISE_H after the morning checkup: when the plan as it is has
+        problems (what the plan check found, or one the consistency check is sure of), a turn the
+        bot asks itself in bot.checkup_chat, so the chef proposes the fixes in the chat like any
+        change. A check that ends after the checkup still gets its turn that morning; a plan raised
+        once is not raised again. When no turn can come (no AI, or no turn by the end of the
+        window: the check never ended, or the chat is a private one of no one in the household),
+        the sure problems go there as one list instead, once. at_once: a plan the app just drew,
+        raised now rather than the next morning."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
         chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
-        if data.settings.llm.provider == "none" or chat is None:
+        no_ai = data.settings.llm.provider == "none"
+        if chat is None or (at_once and no_ai):
             return
         if not at_once and not cfg.checkup_at:
             return
         now = dt.datetime.now(self._zone())
+        on = now.date().isoformat()
         kept, raised = db.get_kv(verifier.PLAN_KEY) or {}, db.get_kv(PLAN_RAISED) or {}
+        late = False
         if not at_once:
             h, m = (int(x) for x in cfg.checkup_at.split(":"))
             when = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            if not when <= now < when + dt.timedelta(hours=PLAN_RAISE_H):
+            if now < when or not db.was_sent("checkup", now.date(), cfg.checkup_at):
+                return  # after the checkup
+            if raised.get("on") == on:
                 return
-            if not db.was_sent("checkup", now.date(), cfg.checkup_at):
-                return  # after the checkup's own line
-            if raised.get("on") == now.date().isoformat():
-                return
-        if not kept.get("key") or raised.get("key") == kept["key"]:
+            late = now >= when + dt.timedelta(hours=PLAN_RAISE_H)
+        today = self.state.today()
+        _, key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
+        if raised.get("key") == key:
             return
-        if not await asyncio.to_thread(verifier.plan_findings, data, db, self.state.today()):
+        found = await self.problems() or []
+        sure = [p for p in found if p.kind not in (*verifier.SKIP, "avoided", "unconfirmed")]
+        if no_ai or late:
+            db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # once, said or not
+            if sure:
+                items = "; ".join(self.problem_line(p) for p in sure)
+                try:
+                    await self.send(client, chat, self.t("doctor_morning", items=items))
+                except TelegramError as e:
+                    log.warning("could not post the plan's problems: %s", safe(e))
+            return
+        if kept.get("key") != key:
+            return  # the check has not judged this plan yet
+        if not (sure or await asyncio.to_thread(verifier.plan_findings, data, db, today)):
             return
         # a private checkup chat: the turn is that person's, so it sees only what they may see
         who = self.person_of(chat) if chat > 0 else None
         if chat > 0 and who is None:
-            return  # a private chat of no one in the household
-        db.set_kv(PLAN_RAISED, {"key": kept["key"], "on": now.date().isoformat()})
+            return  # a private chat of no one in the household: the list at the window's end
+        db.set_kv(PLAN_RAISED, {"key": key, "on": on})
         user = {"first_name": self.t("plan_check_who")}
         self.take(chat, user, who, None, self.t("plan_check_turn"), True, review=True)
         self.spawn(self.drive(client, chat))
