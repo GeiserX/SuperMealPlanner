@@ -202,6 +202,64 @@ def test_a_change_can_add_an_ingredient_the_list_then_buys(data_dir, tmp_path, m
     assert raw["basmati"]["store"] == "mercado" and "lenteja" in raw  # the rest kept
 
 
+def test_a_waiting_change_with_a_new_ingredient_and_its_pantry_is_shown_and_made(
+    data_dir, tmp_path, monkeypatch
+):
+    """A change the AI came up with adds an ingredient and says how much of it is at home: it is
+    shown for a yes, not a failed turn, and the yes makes both."""
+    data, _ = committed(data_dir, tmp_path, monkeypatch)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    new = {"name": "Basmati", "section": "despensa", "store": "mercado", "unit": "g"}
+    items = [{"id": "pollo", "qty": 130}, {"id": "basmati", "qty": 35}]
+    change = {
+        "ingredients": {"basmati": new},
+        "recipes": {"pollo-0": {"ingredients": items}},
+        "pantry": {"basmati": 500},
+    }
+    reply(data_dir, text="Basmati in the chicken, if you like.\n" + block(change))
+    run(b.handle(None, msg("@chefbot what about rice?", user=8)))
+    said = [p["text"] for p in sends(b, -100)]
+    assert b.t("bot_error") not in said
+    (ask,) = [p for p in sends(b, -100) if p.get("reply_markup")]
+    assert "In the pantry: Basmati, 500 g" in ask["text"]
+    yes = buttons(ask)[0]["callback_data"]
+    run(tap(b, yes, 8, 1000 + b.calls.index(("sendMessage", ask)) + 1))
+    assert load(data_dir).ingredients["basmati"].name == "Basmati"
+    assert [(r["ingredient"], r["qty"]) for r in db.lots()] == [("basmati", 500)]
+
+
+def test_a_change_the_app_cannot_word_is_refused_and_the_answer_still_goes(
+    data_dir, tmp_path, monkeypatch
+):
+    """A bug in wording a change costs only that change: the answer is sent, the change is refused
+    with a reason the AI reads, and the turn does not fail."""
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+
+    def broken(*_a):
+        raise KeyError("x")
+
+    monkeypatch.setattr(changes, "describe", broken)
+    reply(data_dir, text="Lentils on Friday?\n" + block({"pantry": {"lenteja": 200}}))
+    run(b.handle(None, msg("@chefbot ideas?", user=8)))
+    said = [p["text"] for p in sends(b, -100)]
+    assert b.t("bot_error") not in said
+    assert said[0].startswith("Lentils on Friday?") and b.t("change_invalid") in said
+    assert "could not read this change" in refusals(db)[-1]
+
+
+def test_a_pantry_line_for_an_ingredient_only_a_waiting_change_adds_is_refused_with_why(data):
+    """Said of an ingredient that only a change still waiting for a yes adds: that change is refused,
+    with a reason that tells the AI where the ingredient has to go."""
+    with pytest.raises(changes.ChangeError, match="waiting for a yes"):
+        changes.parse({"pantry": {"basmati": 500}}, data, "ana")
+    with pytest.raises(changes.ChangeError, match="unit"):
+        bad = {"name": "Basmati", "section": "despensa", "store": "mercado", "unit": "kg"}
+        changes.parse({"ingredients": {"basmati": bad}, "pantry": {"basmati": 1}}, data, "ana")
+
+
 @pytest.mark.parametrize(
     ("fields", "why"),
     [

@@ -236,6 +236,8 @@ TASK_BUTTONS = (
 TASK_BUTTONS_KEEP = 400  # Telegram's 64 bytes of callback data hold the short id, not the key
 TASK_ASKED = "task.asked"  # {task key: the morning the day message asked about it}: asked once
 TASK_WHAT = 80  # characters of a task's text where its buttons say which task is which
+# why a change the app could not word was refused, for the AI
+UNREADABLE = "the app could not read this change; nothing of it was made. Write it again, simpler"
 TASK_CHANGE_DAYS = 31  # how far back a change block may say a task was done (a freezer lunch)
 # A spoken turn from the app (POST /api/v1/chef): the message it becomes carries its id under this
 # key, which no Telegram message has. Its answer is kept this long for the app to read.
@@ -1846,7 +1848,10 @@ class Bot:
             whom = ", ".join(self.mention(p) for p in members)
         else:
             by, whom = [user_id], self.mention(asker)
-        lines = changes.describe(proposal, self.data, t)
+        lines = self.describe(proposal, pending)
+        if lines is None:
+            await say(self.refused(pending, UNREADABLE))
+            return False
         msgs: list[int] = []
         sent = await self.send(
             client,
@@ -2365,7 +2370,9 @@ class Bot:
             proposal = changes.parse(pending["change"], self.data, pending.get("asker"))
         except changes.ChangeError as e:
             return self.refused(pending, e)
-        lines = changes.describe(proposal, self.data, t)
+        lines = self.describe(proposal, pending)
+        if lines is None:
+            return self.refused(pending, UNREADABLE)
         if proposal.tasks:  # before anything is written: a task the list does not have
             today = self.state.today()
             known = {
@@ -2466,6 +2473,15 @@ class Bot:
         if proposal.pantry or proposal.ingredients:
             return self.link(self.t("link_list"), "/list")
         return ""
+
+    def describe(self, proposal: changes.Proposal, pending: dict) -> list[str] | None:
+        """The change's lines in the household's words; None when the app cannot word it (a bug):
+        that change is refused, and the turn and every other part of the answer go on."""
+        try:
+            return changes.describe(proposal, self.data, self.t)
+        except Exception:
+            log.exception("could not describe a change")
+            return None
 
     def refused(self, pending: dict, error, saving: bool = False) -> str:
         """What the chat reads when a change could not be made: a plain line in the household's
