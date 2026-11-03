@@ -385,6 +385,7 @@ verify_turn: "[Revisión de tu última respuesta, automática: no lo ha escrito 
 # the consistency check (doctor.py): what the app found, after a change and in the morning
 doctor_reminder_cancelled: "🗑 Recordatorio cancelado, el menú ya no tiene ese plato: {when}: {text}"
 doctor_new: "⚠️ Este cambio ha dejado algo por arreglar: {items}."
+doctor_morning: "⚠️ El plan tiene algo por arreglar: {items}."
 problem_off_day: "la sesión de cocina del {date} no cae en un día de cocinar"
 problem_split: "{dish} del {a} y del {b} se cocina dos veces; bastaría con cocinarlo una vez el {cook}"
 problem_too_old: "la comida del {date} ({dish}) se cocina el {cook} y no aguanta tanto"

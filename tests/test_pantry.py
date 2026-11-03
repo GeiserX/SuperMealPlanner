@@ -14,8 +14,9 @@ from fastapi.testclient import TestClient
 from supermealplanner import context, doctor, pantry
 from supermealplanner.db import DB, FROZEN_DAYS, PANTRY_DAYS
 from supermealplanner.model import load
+from supermealplanner.pantry import Part
 from supermealplanner.planner import plan_for
-from supermealplanner.portions import ingredients_of, needs, servings_on, shopping_list
+from supermealplanner.portions import fmt_qty, ingredients_of, needs, servings_on, shopping_list
 
 from .conftest import MONDAY
 from .test_app_api import auth, db_of, pair, planned
@@ -241,11 +242,22 @@ def test_a_crumb_the_dishes_leave_is_not_food_going_off_and_a_serving_left_is(da
     took = used(b.data, db, "lenteja", day)
     data = keeps(data_dir, lenteja=(day - MONDAY).days + 1)  # good up to that dish's day
     least = min(x.qty for r in data.recipes.values() for x in r.ingredients if x.id == "lenteja")
-    pantry.correct(data, db, {"lenteja": took + least / 2}, at(0, 7))
+    pantry.correct(data, db, {"lenteja": took + least / 4}, at(0, 7))
     assert not [p for p in doctor.problems(data, db, MONDAY) if p.kind == "going_off"]
-    pantry.correct(data, db, {"lenteja": took + least}, at(0, 7))
+    pantry.correct(data, db, {"lenteja": took + least / 2}, at(0, 7))  # half a dish is food
     (p,) = [p for p in doctor.problems(data, db, MONDAY) if p.kind == "going_off"]
     assert p.args["food"] == "Lenteja" and p.args["amount"]
+
+
+def test_two_small_lots_that_go_off_the_same_day_count_together(data_dir, tmp_path):
+    _b, db = setup(data_dir, tmp_path)
+    data = keeps(data_dir, espinaca=3)
+    least = min(x.qty for r in data.recipes.values() for x in r.ingredients if x.id == "espinaca")
+    part = least * 0.3  # each under half a serving, together over it
+    pantry.correct(data, db, {"espinaca": [Part(part), Part(part)]}, at(0))
+    (p,) = [p for p in doctor.problems(data, db, MONDAY) if p.kind == "going_off"]
+    assert p.key == f"going_off:espinaca:{D(3)}"
+    assert p.args["amount"] == fmt_qty(data.ingredients["espinaca"], 2 * part, data.locale)
 
 
 # ---------------------------------------------------------------- the chat, the web, the phone

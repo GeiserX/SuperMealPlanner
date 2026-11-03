@@ -47,8 +47,8 @@ by their step kind (a reminder that says no step counts as none):
 - avoided: a recipe on some meal that uses a food someone avoids. The planner never picks it, so
   it never reaches the menu and nothing else ever looks at it again: swap the food or retire it.
 - going_off: food in the pantry (pantry.py) that goes off before any planned dish uses it up,
-  the plan cooking as planned up to the end of next week; a leftover smaller than one serving of
-  any recipe with that food is not one.
+  the plan cooking as planned up to the end of next week; a leftover (all of that food going off
+  that day together) under half the smallest serving of any recipe with it is not one.
 - unused: food ticked as bought that no dish uses (unused_food), as the AI already sees it; food
   the going_off check names is left out of it, so nothing is said twice.
 

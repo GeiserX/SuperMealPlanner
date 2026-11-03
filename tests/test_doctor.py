@@ -323,18 +323,26 @@ def test_a_change_names_only_the_problems_it_made(data_dir, tmp_path):
     assert not [p for p in sends(b, -100) if p["text"].startswith("⚠️")]
 
 
-def test_the_morning_checkup_posts_no_list_of_the_plans_problems(data_dir, tmp_path):
-    # the plan check's own turn after it is the one path from the plan's problems to the chat
+def test_the_morning_checkup_posts_no_list_and_without_an_ai_the_list_comes_once(
+    data_dir, tmp_path
+):
+    # with an AI the plan check's turn says what is wrong; with none, nothing could, so the
+    # certain problems go as one list, once
     b, _db = setup(data_dir, tmp_path)
     household(data_dir, preferred_days=["wednesday", "saturday"])
     b.state.reload()
     assert [p for p in doctor.problems(b.data, b.state.db, b.state.today()) if p.kind == "off_day"]
+    b.data.settings.llm.provider = "none"
     b.data.settings.bot.checkup_at = f"{dt.datetime.now(ZONE):%H:%M}"
     run(b.tick_checkup(None))
     assert sends(b, -100) == []
     assert b.state.db.was_sent(
         "checkup", dt.datetime.now(ZONE).date(), b.data.settings.bot.checkup_at
     )
+    run(b.raise_plan(None))
+    run(b.raise_plan(None))
+    (report,) = [p["text"] for p in sends(b, -100)]
+    assert report.startswith("⚠️ The plan has something to fix: the batch session on Friday 16")
 
 
 def test_the_morning_checkup_can_be_turned_off(data_dir, tmp_path):
