@@ -403,12 +403,21 @@ class DB:
             )
             return cur.rowcount == 1
 
-    def reword_reminder(self, rid: int, text: str) -> bool:
-        """New words for a pending reminder, at the same time; False when it is no longer pending."""
+    def reword_reminder(self, rid: int, new: dict) -> bool:
+        """New words for a pending reminder, at the same time, and the dish they name (recipe,
+        date, kind) when they name one; False when it is no longer pending."""
         with self.conn() as c:
-            cur = c.execute(
-                "UPDATE reminder SET text=? WHERE id=? AND state='pending'", (text[:500], rid)
-            )
+            if new.get("recipe"):
+                cur = c.execute(
+                    "UPDATE reminder SET text=?, recipe=?, date=?, kind=? "
+                    "WHERE id=? AND state='pending'",
+                    (new["text"][:500], new["recipe"], new.get("date"), new.get("kind"), rid),
+                )
+            else:
+                cur = c.execute(
+                    "UPDATE reminder SET text=? WHERE id=? AND state='pending'",
+                    (new["text"][:500], rid),
+                )
             return cur.rowcount == 1
 
     # tasks: what someone said of one (tasks.py works out the tasks themselves)
