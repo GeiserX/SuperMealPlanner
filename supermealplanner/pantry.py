@@ -344,6 +344,7 @@ def correct(
     at = at or dt.datetime.now(dt.UTC)
     for iid, said in amounts.items():
         parts = said if isinstance(said, list) else [Part(float(said))]
+        db.drop_set_at(iid, at)
         for p in parts:
             db.add_lot(iid, float(p.qty), at, "set", use_by=p.use_by, frozen=p.frozen)
         if not sum(p.qty for p in parts):
