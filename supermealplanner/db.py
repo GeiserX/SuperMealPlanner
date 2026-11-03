@@ -420,6 +420,16 @@ class DB:
                 )
             return cur.rowcount == 1
 
+    def move_reminder(self, rid: int, new: dict) -> bool:
+        """A pending reminder at a new time, for whom and with the words of `new`; False when it
+        is no longer pending."""
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE reminder SET at=?, person=?, text=? WHERE id=? AND state='pending'",
+                (new["at"], new.get("person"), new["text"][:500], rid),
+            )
+            return cur.rowcount == 1
+
     # tasks: what someone said of one (tasks.py works out the tasks themselves)
     def mark_task(self, key: str, state: str, who: str | None) -> str | None:
         """Store a task's answer, done or not_done, or unknown to take it back; a later answer

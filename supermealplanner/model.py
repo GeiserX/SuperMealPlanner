@@ -366,6 +366,10 @@ class Bot(Loose):
     # the AI's offer of a reminder also shows "In the calendar": a tap starts a turn in which the
     # provider adds the event with its own calendar tools (a plugin that has them)
     reminder_calendar: bool = False
+    # a change the AI comes up with and a reminder it offers wait for a tap (Yes / No, here / in the
+    # calendar / nothing). false: the bot makes the change and sets the reminder at once, through the
+    # same checks a tap goes through, and accepts by itself whatever was still waiting
+    ask_first: bool = True
     # the consistency check (doctor.py) each morning at this time: what it found, in checkup_chat
     # (the group when unset), only when something is wrong; "" turns the report off
     checkup_at: str = Field(default="08:00", pattern=r"^(([01]\d|2[0-3]):[0-5]\d)?$")
