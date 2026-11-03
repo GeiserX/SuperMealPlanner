@@ -519,3 +519,13 @@ def test_the_page_and_the_phone_show_what_is_in_the_freezer(app, data_dir):
     (x,) = got["items"]
     assert x["frozen"] == 400 and x["expires"]
     assert "in the freezer" in client.get(f"/list?d={MONDAY}").text.split("In the pantry")[1]
+
+
+def test_a_second_statement_in_the_same_second_replaces_the_first(data_dir, tmp_path):
+    data = load(data_dir)
+    db = DB(tmp_path / "s.db")
+    iid = next(iter(data.ingredients))
+    at = dt.datetime(2026, 1, 14, 20, 0, tzinfo=dt.UTC)
+    pantry.correct(data, db, {iid: 500}, at)
+    pantry.correct(data, db, {iid: 0}, at)  # it ran out, said within the same second
+    assert iid not in {x.ingredient for x in pantry.now(data, db, at.date())}

@@ -574,6 +574,15 @@ class DB:
                 (week.isoformat(), ingredient),
             )
 
+    def drop_set_at(self, ingredient: str, at: dt.datetime) -> None:
+        """A new statement about an ingredient replaces one made in the same second: the parts of
+        one statement share their time, so without this the two would be read as one."""
+        with self.conn() as c:
+            c.execute(
+                "DELETE FROM pantry WHERE source='set' AND ingredient=? AND at=?",
+                (ingredient, at.astimezone(dt.UTC).isoformat(timespec="seconds")),
+            )
+
     def lots(self) -> list[dict]:
         """Every entry, the oldest first."""
         with self.conn() as c:
