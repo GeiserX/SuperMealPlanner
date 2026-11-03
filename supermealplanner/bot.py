@@ -22,8 +22,10 @@ a correction of a message the answer answers (an edit made while it was written)
 cannot stand: then it is not sent, and the turn runs again at once with all of them, told its last
 answer did not go out (AGAIN, once in a row). An answer that covers one message replies to it; one
 that covers several is sent plainly. An answer that changes anything goes out at once and is
-reviewed afterwards (verifier.after); what the review finds, the bot fixes in one follow-up turn of
-its own. A change that waits for a yes waits for the person whose request it answers. An edited
+reviewed afterwards (verifier.after); what the review finds that would go wrong in the kitchen or
+for health, the bot fixes in one follow-up turn of its own. The answer of a turn the bot asked
+itself (a follow-up, the plan check, the weekly review, a step not done) is never reviewed, so
+automatic turns never chain, and it never edits a recipe or a setting (AUTO_KEYS). A change that waits for a yes waits for the person whose request it answers. An edited
 message is handled by where it is: still waiting, its new text goes; in the running answer, a
 correction joins it; already answered, the correction starts a new answer; an edit that adds the
 mention is a new message. Changes, proposals and the provider's asks come with inline buttons; a
@@ -185,6 +187,9 @@ VOICE_WAIT_S = 30
 VOICE_PER_S = 3
 PLAN_RAISED = "verifier.plan_raised"  # {"key", "on"}: the plan last raised in the chat, and the day
 PLAN_RAISE_H = 2  # hours after bot.checkup_at a finished plan check may still raise its problems
+# what an automatic turn's change block may hold: the menu of the days ahead, the pantry and what
+# was done of a step. Never a recipe's text, a new ingredient, a setting or a note nobody asked for
+AUTO_KEYS = frozenset({"plan", "pantry", "tasks"})
 PLAN_EVERY_S = 600  # how often the plan as it stands is checked again (judged only when it changed)
 # a new plan's announcement waits for the plan check of the plan as it stands, at most this long;
 # then it goes, saying the review could not run
@@ -287,11 +292,13 @@ class Item:
     # the bot asked itself (a task not done): what the turn changes waits for a tap, even when it
     # runs as a private chat's person so that it sees only what they may see
     auto: bool = False
-    # a turn the bot asked itself to review the week (the weekly review, the plan check's turn):
-    # its answer is reviewed even when it changes nothing (verifier.in_scope), like an auto one
+    # a turn the bot asked itself to review the week (the weekly review, the plan check's turn).
+    # Answered alone it is not reviewed; with someone's message beside it, the review of that
+    # answer counts the whole week (verifier.in_scope)
     review: bool = False
     # the bot's own turn that fixes what the review of a sent answer found: what it changes waits
-    # for a tap, like an auto one, and its answer is never reviewed again (one follow-up at most)
+    # for a tap, like an auto one. No answer to the bot's own turns is reviewed (one follow-up at
+    # most, and none after an automatic turn)
     followup: bool = False
     # an edit of a message of the running turn: the answer written before it cannot stand (AGAIN)
     corrects: bool = False
@@ -1388,6 +1395,14 @@ class Bot:
         anchor = covered[-1]  # gestures act on the newest message
         text, change = changes.extract(reply.text)
         whose = change.pop("for", None) if isinstance(change, dict) else None
+        # a turn only the bot asked itself (a step not done, the weekly review, the plan check, a
+        # follow-up): nobody asked for anything, so it fixes only the days ahead (AUTO_KEYS)
+        automatic = all(i.auto or i.review or i.followup for i in covered)
+        if automatic and isinstance(change, dict):
+            dropped = sorted(k for k in change if k not in AUTO_KEYS)
+            if dropped:
+                log.info("an automatic turn's change block left out: %s", dropped)
+            change = {k: v for k, v in change.items() if k in AUTO_KEYS} or None
         # a change and a proposal wait for the person whose request they answer
         decider, clear = self.decider(covered, whose)
         text, acts = gestures.extract(text, data.settings.bot.photo_hosts, self.t("file_name"))
@@ -1398,7 +1413,7 @@ class Bot:
         acted = acts["react"] or acts["sticker"] or acts["photos"] or acts["documents"]
         followup = all(i.followup for i in covered)
         if not text and change is None and not reply.proposals and not listed and not acted:
-            if followup:  # the follow-up found nothing to say after all: nothing to send
+            if automatic:  # the bot's own turn found nothing to say after all: nothing to send
                 return covered
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return None
@@ -1427,9 +1442,10 @@ class Bot:
         now = not own and (
             isinstance(change, str) or (isinstance(change, dict) and change.get("asked") is True)
         )
-        # reviewed once sent, against the problems there before it changed anything; a follow-up
-        # is never reviewed again
-        check = not followup and verifier.in_scope(change, listed, turn)
+        # reviewed once sent, against the problems there before it changed anything. The answer
+        # of a turn only the bot asked itself is never reviewed: automatic turns never chain, so
+        # one message from someone brings one follow-up at most and the bot's own turn none
+        check = not automatic and verifier.in_scope(change, listed, turn)
         before = await self.problem_keys() if check else set()
         if change is not None and now:
             made = await self.propose(
@@ -3583,18 +3599,21 @@ class Bot:
         """Cancel the ones the answer cancels (only this chat's) and set the ones the person asked
         for ("set") at once, saying both in one message, or in `tail` (the answer's message).
         fixes: the bot's follow-up, which cancels any of the chat's reminders its answer made wrong.
+        A cancelled reminder listed again at the same time is the same step in other words: it
+        keeps its place with the new words (reword), never cancelled and offered again for a tap.
         Returns the reminders still to offer."""
         t, db = self.t, self.state.db
         done: list[str] = []
         before = await self.problem_keys()
         uid = covered[-1].uid if covered else None
         member = fixes or self.person_of(uid or 0) is not None
-        done += self.cancel_reminders(
-            chat_id, [r["cancel"] for r in listed if "cancel" in r], uid, member
-        )
         items = self._offered(
             [r for r in listed if "cancel" not in r], covered[-1].who if covered else None
         )
+        cancels = [r["cancel"] for r in listed if "cancel" in r]
+        cancels, items, said = self.reword(chat_id, cancels, items, uid, member)
+        done += said
+        done += self.cancel_reminders(chat_id, cancels, uid, member)
         for r in [r for r in items if r.get("set")] if uid else []:
             met = self.near_reminder(chat_id, r["at"], r["text"])
             if met and met[0] == "same":  # already set: not stored twice
@@ -3620,6 +3639,31 @@ class Bot:
             await self.send(client, chat_id, "\n".join(done), reply_to)
             await self.checkup(client, chat_id, before, reply_to)
         return [r for r in items if not (uid and r.get("set"))]
+
+    def reword(
+        self, chat_id: int, ids: list, items: list[dict], uid, member: bool
+    ) -> tuple[list, list[dict], list[str]]:
+        """The cancels an answer pairs with a new reminder at the same time for the same person:
+        the pending one gets the new words in place. Returns the cancels and the offers left, and
+        what it says of each one reworded."""
+        db, left, said = self.state.db, [], []
+        for rid in ids:
+            old = db.reminder(int(rid)) if str(rid).isdigit() else None
+            mine = old is not None and old["chat"] == chat_id and (member or uid == old["by"])
+            new = next(
+                (
+                    r
+                    for r in items
+                    if mine and abs(r["at"] - old["at"]) < 60 and r["person"] == old["person"]
+                ),
+                None,
+            )
+            if new is None or not db.reword_reminder(old["id"], new["text"]):
+                left.append(rid)
+                continue
+            items = [r for r in items if r is not new]
+            said.append(self.t("remind_reworded", when=self._when(old["at"]), text=new["text"]))
+        return left, items, said
 
     def cancel_reminders(self, chat_id: int, ids: list, uid, member: bool) -> list[str]:
         """Cancel these reminders of this chat; what it says of each one cancelled. The /reminders
@@ -4358,7 +4402,9 @@ class Bot:
         problems in the plan as it is, a turn the bot asks itself in bot.checkup_chat, so the chef
         proposes the fixes in the chat like any change. A check that ends after the checkup still
         gets its turn that morning; a plan raised once is not raised again. at_once: a plan the
-        app just drew, raised now rather than the next morning."""
+        app just drew, raised now rather than the next morning. Only what goes wrong in the
+        kitchen or for health raises it (verifier.ACT), at most once a day, and never the same
+        findings as the last turn's."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
         chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
         if data.settings.llm.provider == "none" or chat is None:
@@ -4374,17 +4420,22 @@ class Bot:
                 return
             if not db.was_sent("checkup", now.date(), cfg.checkup_at):
                 return  # after the checkup's own line
-            if raised.get("on") == now.date().isoformat():
-                return
+        if raised.get("on") == now.date().isoformat():
+            return  # one plan turn a day, a new plan's too
         if not kept.get("key") or raised.get("key") == kept["key"]:
             return
-        if not await asyncio.to_thread(verifier.plan_findings, data, db, self.state.today()):
+        found = await asyncio.to_thread(verifier.plan_findings, data, db, self.state.today())
+        found = sorted(f for f in found if f.split(":", 1)[0] in verifier.ACT)
+        if not found:
             return
+        said = hashlib.sha256("\n".join(found).encode()).hexdigest()
+        if raised.get("found") == said:
+            return  # the same findings as the last turn: it would say the same again
         # a private checkup chat: the turn is that person's, so it sees only what they may see
         who = self.person_of(chat) if chat > 0 else None
         if chat > 0 and who is None:
             return  # a private chat of no one in the household
-        db.set_kv(PLAN_RAISED, {"key": kept["key"], "on": now.date().isoformat()})
+        db.set_kv(PLAN_RAISED, {"key": kept["key"], "on": now.date().isoformat(), "found": said})
         user = {"first_name": self.t("plan_check_who")}
         self.take(chat, user, who, None, self.t("plan_check_turn"), True, review=True)
         self.spawn(self.drive(client, chat))

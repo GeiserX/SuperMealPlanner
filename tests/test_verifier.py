@@ -801,24 +801,6 @@ def test_the_chat_shows_the_bot_typing_until_the_answer_goes(data_dir, tmp_path,
     assert "sendChatAction" not in methods[answer:]  # not while the review runs
 
 
-def test_the_weekly_review_and_a_step_not_done_are_reviewed_with_no_change(data_dir, tmp_path):
-    b, _db = vsetup(data_dir, tmp_path)
-    cfg(data_dir, text="Todo encaja.")
-
-    async def go(start):
-        start()
-        await b.drive(None, -100)
-        await asyncio.gather(*b.tasks)
-
-    run(go(lambda: b.review(-100, MONDAY)))
-    assert len(lines(data_dir, "checks.jsonl")) == 1
-    run(go(lambda: b.reorganise(None, -100, None, b.t("task_unanswered_turn", tasks="x"))))
-    assert len(lines(data_dir, "checks.jsonl")) == 2
-    # a plain question is still not reviewed
-    run(b.handle(None, msg("@chefbot qué comemos", message_id=3)))
-    assert len(lines(data_dir, "checks.jsonl")) == 2
-
-
 def test_a_new_plan_is_told_once_checked_and_what_was_found_is_raised_at_once(
     data_dir, tmp_path, monkeypatch
 ):

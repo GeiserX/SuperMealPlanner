@@ -403,6 +403,14 @@ class DB:
             )
             return cur.rowcount == 1
 
+    def reword_reminder(self, rid: int, text: str) -> bool:
+        """New words for a pending reminder, at the same time; False when it is no longer pending."""
+        with self.conn() as c:
+            cur = c.execute(
+                "UPDATE reminder SET text=? WHERE id=? AND state='pending'", (text[:500], rid)
+            )
+            return cur.rowcount == 1
+
     # tasks: what someone said of one (tasks.py works out the tasks themselves)
     def mark_task(self, key: str, state: str, who: str | None) -> str | None:
         """Store a task's answer, done or not_done, or unknown to take it back; a later answer
