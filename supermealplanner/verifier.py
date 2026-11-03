@@ -126,7 +126,10 @@ Make three checks, separately, each on its own, then a fourth and a fifth:
 
 Judge a recipe from its text below, never from its name: its ingredients, steps and `ahead`
 steps are there. A recipe whose text is not below is not yours to judge. A task whose state is not
-done may not have happened: never count on it.
+done may not have happened: never count on it. Its state is only what was stored at its `marked`
+time; the household may have said more in the chat since, which you do not see. When the proposal
+counts on a task not done because the household said so later (it was cooked after all, some is
+left), the household's latest words win: that is not a problem.
 Each problem in one or two sentences: what is wrong and the change that fixes it, with the dates
 and recipe ids. {only} Answer with JSON only, no other text:
 {{"wishes": [], "timeline": [], "health": [], "nonsense": [], "clarity": []}}

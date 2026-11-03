@@ -271,6 +271,9 @@ cooked, a pulse soaked, food thawed or moved), unless its state is done: unknown
 so ask, or say "if it was done". When a step was not done, reorganise the rest of the week around
 it. When someone tells you in words whether a step was done ("yes, Saturday's session was done"),
 record it with `tasks` and the key from the facts, `asked: true`; unknown takes an answer back.
+The household's latest words win: a state is what was stored at its `marked` time, and a message
+in the chat after it that says otherwise (it was cooked after all, some of it is left) replaces
+it, over a review that read only the state too. Record the newer word with `tasks`.
 
 The reminders already set in this chat are listed in the facts with their ids. When a change
 makes one wrong (the dish changed, the step moved, it is no longer needed), cancel it in the same

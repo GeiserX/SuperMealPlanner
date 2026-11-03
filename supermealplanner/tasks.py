@@ -307,16 +307,22 @@ def tasks_now(data: Data, db: DB, first: dt.date, last: dt.date) -> list[str]:
     found = tracked(data, db, first, last)
     if not found:
         return []
-    said = db.task_states([x.key for x in found])
+    keys = [x.key for x in found]
+    said, times = db.task_states(keys), db.task_times(keys)
+    zone = ZoneInfo(data.household.timezone)
     out = [
         "",
         "## Tasks (every step, at its time, with what the household said of it)",
         (
-            "- state: done or not_done as someone marked it with its buttons; unknown: nobody "
-            "said. A task whose time has passed and is not done may not have happened: never "
-            "count on what it makes (a dish cooked, a pulse soaked, food thawed) until someone "
-            "says it is done; ask, and reorganise the rest of the week when it was not. When "
-            "someone says in words whether it was done, record it with `tasks` and its key."
+            "- state: done or not_done as someone marked it with its buttons or in words; "
+            "unknown: nobody said. marked: when that state was stored. A task whose time has "
+            "passed and is not done may not have happened: never count on what it makes (a dish "
+            "cooked, a pulse soaked, food thawed) until someone says it is done; ask, and "
+            "reorganise the rest of the week when it was not. The household's latest words win: "
+            "a message in the chat after `marked` that says otherwise (it was cooked after all, "
+            "some of it is left) replaces the older state, and so does it over a review that "
+            "only read the state. When someone says in words whether it was done, record it "
+            "with `tasks` and its key."
         ),
     ]
     for x in found:
@@ -326,6 +332,9 @@ def tasks_now(data: Data, db: DB, first: dt.date, last: dt.date) -> list[str]:
             "kind": x.kind,
             "state": said.get(x.key, UNKNOWN),
         }
+        if x.key in times:
+            at = dt.datetime.fromisoformat(times[x.key]).astimezone(zone)
+            row["marked"] = f"{WEEKDAYS[at.weekday()]} {at:%Y-%m-%d %H:%M}"
         if x.recipe:
             row["recipe"] = x.recipe
         if x.eat:

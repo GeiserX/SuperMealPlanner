@@ -5,6 +5,7 @@ the week, and nothing counts a task as done until someone said so. The hake test
 session nobody did, and on Sunday the bot spoke of its containers as if they existed."""
 
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 from supermealplanner import bot as botmod
 from supermealplanner import context, doctor, tasks, verifier
@@ -293,6 +294,30 @@ def test_the_facts_say_which_tasks_are_done_not_done_or_unknown(data_dir, tmp_pa
     assert '"state": "done"' in by[one.key]
     assert '"state": "not_done"' in by[two.key]
     assert '"state": "unknown"' in by[three.key]
+
+
+def test_a_task_says_when_it_was_marked_and_the_households_later_words_win(data_dir, tmp_path):
+    """A tap of Not done, then the cook says in the chat that it was cooked after all: the facts say
+    when the state was stored, the chat and the review are told a later message wins over it, and
+    the AI's `tasks` line with done replaces the not done."""
+    b, db = setup(data_dir, tmp_path)
+    s = evening_session(b.data)
+    key = tasks.session_key(s.date, False)
+    db.mark_task(key, "not_done", "ana")
+    tapped = dt.datetime.combine(s.date, dt.time(20, 5), dt.UTC)
+    with db.conn() as c:  # tapped at a known time
+        c.execute("UPDATE task_state SET at=? WHERE key=?", (tapped.isoformat(), key))
+    local = tapped.astimezone(ZoneInfo(b.data.household.timezone))
+    text = context.facts(b.data, db, MONDAY)
+    (row,) = [x for x in text.splitlines() if f'"key": "{key}"' in x]
+    assert '"state": "not_done"' in row
+    assert f'"marked": "{local:%A} {local:%Y-%m-%d %H:%M}"'.lower() in row.lower()
+    assert "latest words win" in text  # the header of the tasks
+    assert "latest words win" in context.REMINDERS and "latest words win" in verifier.VERIFY
+    b.state.today = lambda: s.date + dt.timedelta(days=1)
+    pending = {"change": {"asked": True, "tasks": {key: "done"}}, "asker": "ana", "chat": -100}
+    run(b.apply(pending, asked=True))
+    assert tasks.state(db, key) == tasks.DONE
 
 
 def test_the_morning_turn_is_only_about_steps_a_dish_still_counts_on(data_dir, tmp_path):
