@@ -528,9 +528,9 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
             days = [_field("days", v, t) if v else t("change_none") for v in (old, e.value)]
             lines.append(f"• {what}: {days[0]} → {days[1]}")
             continue
-        if e.label == "instructions":  # a whole text: only the lines that change
-            lines.append(f"• {what}:")
-            lines += _text_diff(old if isinstance(old, str) else "", str(e.value or ""))
+        if e.label == "instructions":  # a whole text: how much changes, never a diff
+            n = _changed_lines(old if isinstance(old, str) else "", str(e.value or ""))
+            lines.append(f"• {what}: {t('change_lines_one' if n == 1 else 'change_lines_n', n=n)}")
             continue
         if e.label == "reminder" and old is not None and isinstance(e.value, dict):
             new = {**old, **e.value}  # only the fields that change are sent
@@ -552,12 +552,17 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
         r = data.recipes[rid]
         for key, value in fields.items():
             old = getattr(r, key, None)
-            if key == "steps" and isinstance(value, list):  # the steps that change, in words
-                what = "• " + t(
-                    "change_recipe_edit", name=r.name, field=t(f"change_recipe_field_{key}")
+            what = "• " + t(
+                "change_recipe_edit", name=r.name, field=t(f"change_recipe_field_{key}")
+            )
+            if key == "steps" and isinstance(value, list):  # how many change: the answer says what
+                n = _changed_steps(_plain(old) or [], value)
+                lines.append(
+                    f"{what}: {t('change_steps_one' if n == 1 else 'change_steps_n', n=n) if n else t('change_steps_same')}"
                 )
-                diff = _steps_diff(_plain(old) or [], value, t)
-                lines += [f"{what}:", *diff] if diff else [f"{what}: {t('change_steps_same')}"]
+                continue
+            if key == "ingredients" and isinstance(value, list):  # by name, what goes and comes
+                lines.append(f"{what}: {_ingredients_change(_plain(old) or [], value, data, t)}")
                 continue
             lines.append(
                 "• "
@@ -680,27 +685,40 @@ def _recipe_value(key: str, value, t) -> str:
 MEALS = ("breakfast", "lunch", "dinner", "snack")
 
 
-STEP_CLIP = 90  # characters of a changed step shown in a change's summary
-STEP_LINES = 6  # changed steps shown per recipe; the rest are counted
-
-
-def _steps_diff(old: list, new: list, t) -> list[str]:
-    """The steps a recipe change removes (−) and adds (+), numbered, each clipped to STEP_CLIP."""
+def _changed_steps(old: list, new: list) -> int:
+    """How many steps a recipe change removes, adds or rewrites."""
     old, new = [str(x) for x in old], [str(x) for x in new]
-    out = []
-    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=old, b=new, autojunk=False).get_opcodes():
-        if op == "equal":
-            continue
-        out += [f"  − {n + 1}. {_clip(old[n])}" for n in range(i1, i2)]
-        out += [f"  + {n + 1}. {_clip(new[n])}" for n in range(j1, j2)]
-    if len(out) > STEP_LINES:
-        out = [*out[:STEP_LINES], "  " + t("change_more_lines", n=len(out) - STEP_LINES)]
-    return out
+    return sum(
+        max(i2 - i1, j2 - j1)
+        for op, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            a=old, b=new, autojunk=False
+        ).get_opcodes()
+        if op != "equal"
+    )
 
 
-def _clip(text: str) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= STEP_CLIP else text[: STEP_CLIP - 1].rstrip() + "…"
+def _ingredients_change(old: list, new: list, data: Data, t) -> str:
+    """A recipe's new ingredients in words: what it drops, what it adds, whose amount changes."""
+
+    def qty(items):
+        return {
+            str(i.get("id")): i.get("qty") for i in items if isinstance(i, dict) and i.get("id")
+        }
+
+    def names(ids):
+        return ", ".join(
+            (data.ingredients[i].name if i in data.ingredients else i) for i in sorted(ids)
+        )
+
+    a, b = qty(old), qty(new)
+    parts = []
+    if gone := set(a) - set(b):
+        parts.append(t("change_ing_out", names=names(gone)))
+    if added := set(b) - set(a):
+        parts.append(t("change_ing_in", names=names(added)))
+    if other := {i for i in set(a) & set(b) if a[i] != b[i]}:
+        parts.append(t("change_ing_qty", names=names(other)))
+    return "; ".join(parts) or t("change_steps_same")
 
 
 def touches(p: Proposal) -> set[tuple]:
@@ -721,14 +739,14 @@ def touches(p: Proposal) -> set[tuple]:
     return out
 
 
-def _text_diff(old: str, new: str) -> list[str]:
-    """The lines a new text removes (−) and adds (+), without the ones it keeps."""
-    out = []
-    for line in difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=0):
-        if line.startswith(("---", "+++", "@@")):
-            continue
-        out.append(("  + " if line[0] == "+" else "  − ") + line[1:])
-    return out
+def _changed_lines(old: str, new: str) -> int:
+    """How many lines a new text removes, adds or rewrites."""
+    a, b = old.splitlines(), new.splitlines()
+    return sum(
+        max(i2 - i1, j2 - j1)
+        for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes()
+        if op != "equal"
+    )
 
 
 def manual(p: Proposal) -> list[str]:

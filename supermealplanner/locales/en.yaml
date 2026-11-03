@@ -260,7 +260,13 @@ change_recipe_field_steps: steps
 change_recipe_field_ingredients: ingredients
 change_recipe_field_nutrition: nutrition
 change_steps_same: "the same steps"
-change_more_lines: "… and {n} more"
+change_steps_one: "1 step changes"
+change_lines_one: "1 line changes"
+change_steps_n: "{n} steps change"
+change_lines_n: "{n} lines change"
+change_ing_out: "drops {names}"
+change_ing_in: "adds {names}"
+change_ing_qty: "another amount of {names}"
 change_replaced: "Replaced by a newer change"
 change_note_add: "Note about {name}: {text}"
 change_note_remove: "Note about {name} removed: {text}"
