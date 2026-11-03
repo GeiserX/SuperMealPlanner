@@ -235,6 +235,19 @@ def test_food_a_planned_dish_uses_up_in_time_is_not_a_problem(data_dir, tmp_path
     assert not [p for p in doctor.problems(data, db, MONDAY) if p.kind == "going_off"]
 
 
+def test_a_crumb_the_dishes_leave_is_not_food_going_off_and_a_serving_left_is(data_dir, tmp_path):
+    b, db = setup(data_dir, tmp_path)
+    day, _ = lentils_week(b.data, db)
+    took = used(b.data, db, "lenteja", day)
+    data = keeps(data_dir, lenteja=(day - MONDAY).days + 1)  # good up to that dish's day
+    least = min(x.qty for r in data.recipes.values() for x in r.ingredients if x.id == "lenteja")
+    pantry.correct(data, db, {"lenteja": took + least / 2}, at(0, 7))
+    assert not [p for p in doctor.problems(data, db, MONDAY) if p.kind == "going_off"]
+    pantry.correct(data, db, {"lenteja": took + least}, at(0, 7))
+    (p,) = [p for p in doctor.problems(data, db, MONDAY) if p.kind == "going_off"]
+    assert p.args["food"] == "Lenteja" and p.args["amount"]
+
+
 # ---------------------------------------------------------------- the chat, the web, the phone
 
 

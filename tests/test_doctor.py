@@ -323,21 +323,18 @@ def test_a_change_names_only_the_problems_it_made(data_dir, tmp_path):
     assert not [p for p in sends(b, -100) if p["text"].startswith("⚠️")]
 
 
-def test_the_morning_checkup_reports_once_and_only_when_something_is_wrong(data_dir, tmp_path):
-    b, db = setup(data_dir, tmp_path)
-    now = dt.datetime.now(ZONE)
-    b.data.settings.bot.checkup_at = f"{now:%H:%M}"
-    run(b.tick_checkup(None))
-    assert sends(b, -100) == []  # nothing wrong: nothing said
+def test_the_morning_checkup_posts_no_list_of_the_plans_problems(data_dir, tmp_path):
+    # the plan check's own turn after it is the one path from the plan's problems to the chat
+    b, _db = setup(data_dir, tmp_path)
     household(data_dir, preferred_days=["wednesday", "saturday"])
     b.state.reload()
-    b.data.settings.bot.checkup_at = f"{now:%H:%M}"
-    with sqlite3.connect(db.path) as c:  # the quiet run above counted as this morning's
-        c.execute("DELETE FROM sent WHERE reminder='checkup'")
+    assert [p for p in doctor.problems(b.data, b.state.db, b.state.today()) if p.kind == "off_day"]
+    b.data.settings.bot.checkup_at = f"{dt.datetime.now(ZONE):%H:%M}"
     run(b.tick_checkup(None))
-    run(b.tick_checkup(None))
-    (report,) = [p["text"] for p in sends(b, -100)]
-    assert report.startswith("⚠️ The plan has something to fix: the batch session on Friday 16")
+    assert sends(b, -100) == []
+    assert b.state.db.was_sent(
+        "checkup", dt.datetime.now(ZONE).date(), b.data.settings.bot.checkup_at
+    )
 
 
 def test_the_morning_checkup_can_be_turned_off(data_dir, tmp_path):

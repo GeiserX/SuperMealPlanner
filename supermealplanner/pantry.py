@@ -292,9 +292,20 @@ def going_off(
     data: Data, db: DB, today: dt.date, end: dt.date, walk: Walk | None = None
 ) -> list[tuple[Lot, dt.date]]:
     """Lots that go off after today and up to `end` with food left, the plan cooking as planned:
-    no planned dish uses them up in time."""
+    no planned dish uses them up in time. What is left must be at least a serving of the recipe
+    that uses the least of that food: less is what a pack or a rounding leaves over once the dishes
+    took theirs, and no dish could be made of it."""
     _, gone = (walk or Walk(data, db)).run(end + dt.timedelta(days=1))
-    return [(lot, d) for lot, d in gone if today < d <= end + dt.timedelta(days=1)]
+    serving: dict[str, float] = {}
+    for r in data.recipes.values():
+        for x in r.ingredients:
+            serving[x.id] = min(serving.get(x.id, x.qty), x.qty)
+    return [
+        (lot, d)
+        for lot, d in gone
+        if today < d <= end + dt.timedelta(days=1)
+        and lot.qty + EPS >= serving.get(lot.ingredient, 0)
+    ]
 
 
 def bought(data: Data, db: DB, monday: dt.date, iid: str) -> float | None:

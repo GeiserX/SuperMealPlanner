@@ -47,7 +47,8 @@ by their step kind (a reminder that says no step counts as none):
 - avoided: a recipe on some meal that uses a food someone avoids. The planner never picks it, so
   it never reaches the menu and nothing else ever looks at it again: swap the food or retire it.
 - going_off: food in the pantry (pantry.py) that goes off before any planned dish uses it up,
-  the plan cooking as planned up to the end of next week.
+  the plan cooking as planned up to the end of next week; a leftover smaller than one serving of
+  any recipe with that food is not one.
 - unused: food ticked as bought that no dish uses (unused_food), as the AI already sees it; food
   the going_off check names is left out of it, so nothing is said twice.
 
@@ -799,7 +800,7 @@ def _going_off(data: Data, db: DB, plans: Plans, today: dt.date, end: dt.date) -
                 f"by then) is good until {_day(last)} and no planned dish uses it up before. Fix: "
                 f"`set` a dish with it on or before {last.isoformat()}, or say to freeze it; "
                 f"once it is frozen, or its label gives a later day, `pantry` says so.",
-                {"food": ing.name, "date": last},
+                {"food": ing.name, "date": last, "amount": fmt_qty(ing, lot.qty, data.locale)},
             )
         )
     return out
