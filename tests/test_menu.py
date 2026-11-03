@@ -649,8 +649,8 @@ def test_only_some_fields_of_an_existing_recipe_change_and_the_data_must_still_c
     p = changes.parse({"recipes": {"fritura": good}}, data, "luis")
     lines = "\n".join(changes.describe(p, data, Translator("en")))
     assert "Recipe Fritura, name: Fritura → Fritura ligera" in lines
-    assert "steps:\n  − 1. Cocinar.\n  + 1. Enharinar.\n  + 2. Freír." in lines
-    assert "merluza 120" in lines
+    assert "steps: 2 steps change" in lines and "−" not in lines
+    assert "ingredients: drops" in lines and "adds Merluza" in lines
     assert "nutrition: kcal 600.0, protein_g 35.0 → kcal 380, protein_g 30" in lines
     changes.apply(data_dir, p, "chat: ok", "token")
     r = load(data_dir).recipes["fritura"]

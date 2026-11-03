@@ -1207,12 +1207,7 @@ def test_new_instructions_stay_a_readable_block_and_show_only_what_changes(data_
     new = "Responde en español.\nSé muy breve.\nUsa listas.\n  con sangría\n"
     p = changes.parse({"set": {"settings.llm.instructions": new}}, data, "luis")
     lines = changes.describe(p, data, Translator("es"))
-    assert lines == [
-        "• Instrucciones del asistente:",
-        "  − Sé breve.",
-        "  + Sé muy breve.",
-        "  +   con sangría",
-    ]
+    assert lines == ["• Instrucciones del asistente: cambian 2 líneas"]  # never a diff
     text = changes.render(data_dir, p)["settings.yaml"]
     assert "instructions: |" in text and "\\n" not in text
     assert yaml.safe_load(text)["llm"]["instructions"] == new
@@ -1347,21 +1342,21 @@ def test_a_version_nobody_was_told_about_is_tried_again_at_the_next_start(
     assert ChatBot.texts(later) == ["Now running version 3.0.0."]
 
 
-def test_a_recipe_change_shows_the_steps_that_change_not_only_how_many(data_dir):
+def test_a_recipe_change_says_in_words_how_much_changes_never_as_a_diff(data_dir):
     data = load(data_dir)
     rid = next(iter(data.recipes))
     long = "Asa el pimiento en la freidora de aire a 200 grados durante quince minutos, " * 3
     p = changes.parse({"recipes": {rid: {"steps": ["Cocinar en el horno.", long]}}}, data, "luis")
-    head, *steps = changes.describe(p, data, Translator("es"))
-    assert head.endswith(", pasos:")
-    assert steps == [
-        "  − 1. Cocinar.",
-        "  + 1. Cocinar en el horno.",
-        f"  + 2. {long[:89].rstrip()}…",
-    ]
+    lines = changes.describe(p, data, Translator("es"))
+    assert lines == [f"• Receta {data.recipes[rid].name}, pasos: cambian 2 pasos"]
+    assert not any(x.lstrip().startswith(("−", "+")) for x in lines)
     same = changes.parse({"recipes": {rid: {"steps": ["Cocinar."]}}}, data, "luis")
     assert changes.describe(same, data, Translator("es"))[0].endswith(": los mismos pasos")
-    many = [f"Paso {n}." for n in range(9)]
-    p = changes.parse({"recipes": {rid: {"steps": many}}}, data, "luis")
-    lines = changes.describe(p, data, Translator("es"))
-    assert len(lines) == 1 + 6 + 1 and lines[-1] == "  … y 4 más"
+    one = changes.parse({"recipes": {rid: {"steps": ["Cocinar bien."]}}}, data, "luis")
+    assert changes.describe(one, data, Translator("es"))[0].endswith(": cambia 1 paso")
+
+
+def test_the_assistant_is_told_never_to_answer_with_a_diff(data_dir):
+    from supermealplanner import context
+
+    assert "Never show a diff" in context.WHO
