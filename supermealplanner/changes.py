@@ -56,6 +56,7 @@ from ruamel.yaml.util import load_yaml_guess_indent
 
 from . import menu
 from .model import Data, DataError, check
+from .pantry import Part
 
 log = logging.getLogger("supermealplanner")
 
@@ -140,7 +141,7 @@ class Proposal:
     recipes: dict[str, dict] = field(default_factory=dict)  # recipe id -> the fields that change
     notes: list[tuple[str, str, str]] = field(default_factory=list)  # (add|remove, person, text)
     plan: list[menu.Op] = field(default_factory=list)  # menu changes, written under state/
-    pantry: dict[str, float] = field(default_factory=dict)  # ingredient -> amount at home now
+    pantry: dict[str, list[Part]] = field(default_factory=dict)  # ingredient -> what is at home now
     ingredients: dict[str, dict] = field(default_factory=dict)  # new ingredient id -> its fields
     tasks: dict[str, str] = field(default_factory=dict)  # task key -> done, not_done or unknown
     asked: bool = False  # the person asked for exactly this: no yes/no round
@@ -337,21 +338,46 @@ def _ingredients(raw, data: Data) -> dict[str, dict]:
     return out
 
 
-def _pantry(raw, data: Data, new: dict | None = None) -> dict[str, float]:
-    """`pantry: {<ingredient id>: <amount at home now, in its unit>}`; 0 means it ran out."""
+def _pantry(raw, data: Data, new: dict | None = None) -> dict[str, list[Part]]:
+    """`pantry: {<ingredient id>: <amount at home now, in its unit>}`; 0 means it ran out. Instead
+    of the amount, `{qty, use_by, frozen}` (use_by: the label's last good day; frozen: true when it
+    is in the freezer), or a list of those for the parts of it kept apart (some frozen, some not)."""
     if raw is None:
         return {}
     if not isinstance(raw, dict) or not raw:
         raise ChangeError("pantry must map an ingredient id to the amount at home now")
     new = new or {}
     out = {}
-    for iid, qty in raw.items():
+    for iid, said in raw.items():
         if iid not in data.ingredients and iid not in new:
             raise ChangeError(f"no ingredient {iid}")
-        if isinstance(qty, bool) or not isinstance(qty, int | float) or not 0 <= qty <= PANTRY_MAX:
-            unit = data.ingredients[iid].unit if iid in data.ingredients else new[iid].get("unit")
-            raise ChangeError(f"pantry.{iid} is an amount in {unit}, 0 to {PANTRY_MAX}")
-        out[str(iid)] = float(qty)
+        unit = data.ingredients[iid].unit if iid in data.ingredients else new[iid].get("unit")
+        items = said if isinstance(said, list) else [said]
+        if not items:
+            raise ChangeError(f"pantry.{iid} is an amount, a {{qty, use_by, frozen}} or a list")
+        parts = []
+        for x in items:
+            fields = x if isinstance(x, dict) else {"qty": x}
+            if set(fields) - {"qty", "use_by", "frozen"}:
+                raise ChangeError(f"pantry.{iid} takes qty, use_by and frozen")
+            qty = fields.get("qty")
+            if (
+                isinstance(qty, bool)
+                or not isinstance(qty, int | float)
+                or not 0 <= qty <= PANTRY_MAX
+            ):
+                raise ChangeError(f"pantry.{iid} is an amount in {unit}, 0 to {PANTRY_MAX}")
+            use_by = fields.get("use_by")
+            if use_by is not None:
+                try:
+                    use_by = dt.date.fromisoformat(str(use_by))
+                except ValueError:
+                    raise ChangeError(f"pantry.{iid}.use_by is a date, YYYY-MM-DD") from None
+            frozen = fields.get("frozen", False)
+            if not isinstance(frozen, bool):
+                raise ChangeError(f"pantry.{iid}.frozen is true or false")
+            parts.append(Part(float(qty), use_by, frozen))
+        out[str(iid)] = parts
     return out
 
 
@@ -547,10 +573,20 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
     lines += menu.describe(p.plan, data, t, new)
     from .portions import fmt_qty
 
-    for iid, qty in p.pantry.items():  # last: these, like the menu, are not part of a commit
+    for iid, parts in p.pantry.items():  # last: these, like the menu, are not part of a commit
         ing = data.ingredients[iid]
-        if qty:
-            line = t("change_pantry", name=ing.name, amount=fmt_qty(ing, qty, data.locale))
+        said = []
+        for x in parts:
+            if not x.qty:
+                continue
+            part = fmt_qty(ing, x.qty, data.locale)
+            if x.frozen:
+                part = t("pantry_part_frozen", amount=part)
+            if x.use_by:
+                part = t("pantry_part_until", amount=part, date=t.date(x.use_by))
+            said.append(part)
+        if said:
+            line = t("change_pantry", name=ing.name, amount="; ".join(said))
         else:
             line = t("change_pantry_out", name=ing.name)
         lines.append(f"• {line}")

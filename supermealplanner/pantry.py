@@ -5,14 +5,18 @@ Only what came in is stored (db.py, table pantry):
   sells, or the line's amount without a catalogue. Unticking takes the entry away again;
 - the chat saying how much there is ("there is 1 kg of rice", "the oil ran out") replaces what was
   there with that amount. Said before the household's lunch time it is what that day's cooking
-  starts from; from lunch time on, what it left.
+  starts from; from lunch time on, what it left. It may come in parts (Part), each with its own
+  use-by date (the label's last good day) or frozen: a frozen part keeps until its use-by, or
+  FROZEN_DAYS without one. There is no thaw of its own: taking food out of the freezer is told as
+  a new amount without frozen, so its keeps_days run from that day.
 
 Everything else follows from the plan and the data, the same way every time:
 - each day the plan cooks takes its dishes' ingredients out (planner.Plans and
   portions.servings_on: the lunches cooked that day and the other meals eaten that day, at each
-  person's servings), the oldest entry first. A dish is taken out at the end of its cook day;
+  person's servings), first what goes off first and frozen food last. A dish is taken out at the
+  end of its cook day;
 - an ingredient with `keeps_days` (ingredients.yaml) goes off that many days after it came in. One
-  without keeps until it is used up.
+  without keeps until it is used up. A part said with a use-by or frozen follows that instead.
 
 «I have it» (db.have) is at home in an amount nobody counted, never used up, and off the lists
 while it holds (at_home): for good on an ingredient that keeps, for its `keeps_days` from the day
@@ -27,7 +31,7 @@ import math
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
-from .db import DB
+from .db import DB, FROZEN_DAYS
 from .model import WEEKDAYS, Data, Ingredient, Recipe
 from .planner import Plans, plan_for
 from .portions import fmt_qty, ingredients_of, needs, servings_on
@@ -45,6 +49,18 @@ class Lot:
     source: str  # tick | set
     week: dt.date | None  # the list's week, for a tick
     late: bool = False  # said from lunch time on: what is left after that day's cooking
+    frozen: bool = False
+    at: str = ""  # when it was stored: the parts of one thing the chat said share it
+
+
+@dataclass
+class Part:
+    """Some of an ingredient the chat says is at home: its amount, the last day its label says it
+    is good (None: its keeps_days decide), and whether it is in the freezer."""
+
+    qty: float
+    use_by: dt.date | None = None
+    frozen: bool = False
 
 
 @dataclass
@@ -57,6 +73,8 @@ class Item:
     amount: str
     since: dt.date
     expires: dt.date | None
+    frozen: float = 0  # how much of it is in the freezer
+    frozen_amount: str = ""  # the same, as the page writes it
 
 
 def at_home(data: Data, db: DB, today: dt.date) -> set[str]:
@@ -90,10 +108,33 @@ def _lots(data: Data, db: DB, skip_from: dt.date | None = None) -> list[Lot]:
             continue
         when = dt.datetime.fromisoformat(r["at"]).astimezone(zone)
         day, keeps = when.date(), ing.keeps_days
-        expires = day + dt.timedelta(days=keeps) if keeps else None
+        frozen = bool(r.get("frozen"))
+        if r.get("use_by"):  # the label's last good day
+            expires = dt.date.fromisoformat(r["use_by"]) + dt.timedelta(days=1)
+        elif frozen:
+            expires = day + dt.timedelta(days=FROZEN_DAYS)
+        else:
+            expires = day + dt.timedelta(days=keeps) if keeps else None
         late = r["source"] == "set" and f"{when:%H:%M}" >= data.household.lunch_time
-        out.append(Lot(r["ingredient"], float(r["qty"]), day, expires, r["source"], week, late))
+        out.append(
+            Lot(
+                r["ingredient"],
+                float(r["qty"]),
+                day,
+                expires,
+                r["source"],
+                week,
+                late,
+                frozen,
+                r["at"],
+            )
+        )
     return out
+
+
+def _first(lot: Lot) -> tuple[bool, dt.date]:
+    """The order the cooking takes lots in: out of the freezer last, what goes off first first."""
+    return lot.frozen, lot.expires or dt.date.max
 
 
 class Walk:
@@ -143,7 +184,8 @@ class Walk:
                 self._put(stock, lot)
             if d < until:
                 for iid, q in self.uses(d).items():
-                    for lot in stock.get(iid, []):
+                    # what goes off first is cooked first; the freezer waits
+                    for lot in sorted(stock.get(iid, []), key=_first):
                         take = min(lot.qty, q)
                         lot.qty -= take
                         q -= take
@@ -158,7 +200,9 @@ class Walk:
     @staticmethod
     def _put(stock: dict[str, list[Lot]], lot: Lot) -> None:
         lot = Lot(**vars(lot))  # a walk never changes the lots another walk reads
-        if lot.source == "set":  # what the chat says is there replaces what was
+        kept = stock.get(lot.ingredient, [])
+        # what the chat says is there replaces what was, all its parts together
+        if lot.source == "set" and not any(x.source == "set" and x.at == lot.at for x in kept):
             stock[lot.ingredient] = []
         stock.setdefault(lot.ingredient, []).append(lot)
 
@@ -171,6 +215,7 @@ def now(data: Data, db: DB, today: dt.date, walk: Walk | None = None) -> list[It
         ing = data.ingredients[iid]
         qty = sum(x.qty for x in lots)
         ends = [x.expires for x in lots if x.expires]
+        cold = sum(x.qty for x in lots if x.frozen)
         out.append(
             Item(
                 iid,
@@ -179,6 +224,8 @@ def now(data: Data, db: DB, today: dt.date, walk: Walk | None = None) -> list[It
                 fmt_qty(ing, qty, data.locale),
                 min(x.day for x in lots),
                 min(ends) if ends else None,
+                cold,
+                fmt_qty(ing, cold, data.locale) if cold > EPS else "",
             )
         )
     return sorted(out, key=lambda x: x.name)
@@ -285,11 +332,19 @@ def tick(
         db.drop_tick_lot(monday, iid)
 
 
-def correct(data: Data, db: DB, amounts: dict[str, float], at: dt.datetime | None = None) -> None:
-    """What the chat says is at home now, by ingredient, in its unit. 0: it ran out, which also
-    takes it off «I have it», so the list asks for it again."""
+def correct(
+    data: Data,
+    db: DB,
+    amounts: dict[str, float | list[Part]],
+    at: dt.datetime | None = None,
+) -> None:
+    """What the chat says is at home now, by ingredient, in its unit: an amount, or its parts with
+    their use-by or frozen. Nothing (0): it ran out, which also takes it off «I have it», so the
+    list asks for it again."""
     at = at or dt.datetime.now(dt.UTC)
-    for iid, qty in amounts.items():
-        db.add_lot(iid, float(qty), at, "set")
-        if qty == 0:
+    for iid, said in amounts.items():
+        parts = said if isinstance(said, list) else [Part(float(said))]
+        for p in parts:
+            db.add_lot(iid, float(p.qty), at, "set", use_by=p.use_by, frozen=p.frozen)
+        if not sum(p.qty for p in parts):
             db.set_have(iid, False)
