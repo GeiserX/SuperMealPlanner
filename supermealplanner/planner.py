@@ -351,6 +351,36 @@ def live_swaps(data: Data, day: Day, meal: str) -> list[Swap]:
     ]
 
 
+WEEKLY_FLAGS = ("legume", "fish", "oily-fish")  # what the weekly rules count, as ingredient flags
+
+
+def swap_breaks(data: Data, day: Day, x: Swap) -> str | None:
+    """Why a swap of that day breaks a hard rule, or None: at dinner it brings in a flag someone
+    avoids at dinner; it takes out of its meal a legume, fish or oily fish the recipe is counted
+    for in the weekly rules (the flag the ingredient replaced has and the one used lacks); or it
+    takes out a flag a person keeps eating (`keep_flags`, such as gluten before a coeliac test).
+    An avoided food is the dish's own check (validate, repair)."""
+    use, out = data.ingredients.get(x.use), data.ingredients.get(x.out)
+    if use is None:
+        return f"unknown ingredient {x.use}"
+    hh = data.household
+    if x.meal == "dinner":
+        for p in hh.people:
+            bad = sorted(set(use.flags) & set(p.avoid_flags_at_dinner))
+            if bad:
+                return f"{x.use} is {bad}, {p.name} avoids it at dinner"
+    lost = set(out.flags if out else ()) - set(use.flags)
+    r = data.recipes.get(getattr(day, x.meal) or "")
+    for flag in WEEKLY_FLAGS:
+        if flag in lost and r is not None and r.has(flag):
+            return f"{x.use} instead of {x.out} takes the {flag} out of {r.id}"
+    for p in hh.people:
+        kept = sorted(lost & set(p.keep_flags))
+        if kept:
+            return f"{x.use} instead of {x.out} takes {kept} out, which {p.name} keeps eating"
+    return None
+
+
 def served(data: Data, day: Day | None, meal: str) -> Recipe | None:
     """The recipe of one planned meal as that day serves it: with the day's ingredient swaps for
     that meal (Day.swaps), the recipe file untouched. Everything that reads what a planned meal
@@ -782,6 +812,23 @@ def repair(
         return best
 
     changed, cooked_bad = 0, 0
+    # an ingredient swap that now brings in an avoided food or breaks a swap rule goes, from today
+    # on, so the meal eats its recipe again (whose own check follows); a lunch already cooked keeps
+    # what is in its pot, so only a swap of a food served at the meal (frozen) goes there
+    avoided = data.household.avoided()
+    for d in plan.days:
+        if d.date < today:
+            continue
+        keep = []
+        for x in d.swaps:
+            served_at_meal = x.out in data.ingredients and data.ingredients[x.out].frozen
+            cooked = x.meal == "lunch" and d.lunch_cook < today and not served_at_meal
+            live = x in live_swaps(data, d, x.meal)
+            if live and not cooked and (x.use in avoided or swap_breaks(data, d, x)):
+                changed += 1
+                continue
+            keep.append(x)
+        d.swaps = keep
     # lunches: one container group = (recipe, cook date), shared by its days and its session dish
     groups: dict[tuple[str, dt.date], list[Day]] = {}
     for d in plan.days:
@@ -848,15 +895,14 @@ def validate(data: Data, plan: Plan, repeats: bool = True) -> list[str]:
                 continue
             if any(i.id in avoided for i in r.ingredients):
                 errs.append(f"{d.date} {meal}: {rid} uses an avoided ingredient")
-        for x in d.swaps:  # a swap never brings in what a person may not have at that meal
-            ing = data.ingredients.get(x.use)
-            if ing is None:
+        for x in d.swaps:
+            if x.use not in data.ingredients:
                 errs.append(f"{d.date} {x.meal}: unknown ingredient {x.use}")
-            elif x.meal == "dinner":
-                for p in hh.people:
-                    bad = sorted(set(ing.flags) & set(p.avoid_flags_at_dinner))
-                    if bad:
-                        errs.append(f"{d.date} dinner: {x.use} is {bad}, {p.name} avoids it")
+        for meal in MEALS:  # a swap never breaks what a person may or must have at that meal
+            for x in live_swaps(data, d, meal):
+                why = swap_breaks(data, d, x)
+                if why:
+                    errs.append(f"{d.date} {meal}: {why}")
         if d.lunch not in data.recipes or d.dinner not in data.recipes:
             continue  # reported as unknown above
         dinner = data.recipes[d.dinner]

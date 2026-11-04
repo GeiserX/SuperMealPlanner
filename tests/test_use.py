@@ -305,3 +305,174 @@ def test_a_bad_swap_never_breaks_a_page_or_a_change(data_dir):
     # own ingredients check says why it is refused
     ops = [use(D(2), "dinner", ingredient="quinoa", instead_of="pan")]
     assert menu.parse(ops, data, None, {"quinoa": 42})[0].kind == "use"
+
+
+# ---------------------------------------------------------------- review round 2
+
+
+def avoid(data_dir, person: int, iid: str):
+    raw = yaml.safe_load((data_dir / "household.yaml").read_text())
+    raw["people"][person].setdefault("avoid_ingredients", []).append(iid)
+    (data_dir / "household.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    return load(data_dir)
+
+
+def test_a_swap_of_a_food_someone_starts_avoiding_is_dropped_by_the_hourly_repair(data_dir):
+    from supermealplanner.planner import repair
+
+    data = bread(data_dir)
+    salad_dinner(data, D(2))
+    change(data, use(D(2), "dinner"))
+    data = avoid(data_dir, 0, "bulgur")
+    plan = plan_for(data, D(2))
+    changed, _ = repair(data, plan, MONDAY)
+    assert changed >= 1 and plan.day(D(2)).swaps == []
+    dinner = dict(day_menu(data, plan.day(D(2))))["dinner"]
+    assert "bulgur" not in {i.id for i in dinner.ingredients}
+
+
+def keeping(data_dir, flag="gluten"):
+    """Both people keep eating gluten; the bread has it, and so does the bulgur."""
+    raw = yaml.safe_load((data_dir / "household.yaml").read_text())
+    for p in raw["people"]:
+        p["keep_flags"] = [flag]
+    (data_dir / "household.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    bread(data_dir)
+    raw = yaml.safe_load((data_dir / "ingredients.yaml").read_text())
+    raw["pan"]["flags"] = [flag]
+    (data_dir / "ingredients.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    return load(data_dir)
+
+
+def test_a_swap_never_takes_out_a_flag_a_person_keeps_eating(data_dir):
+    data = keeping(data_dir)
+    raw = {"from": str(D(0)), "to": str(D(6)), "ingredient": "tomate", "instead_of": "pan"}
+    before = (plans_dir(data) / f"{MONDAY}.yaml").read_text()
+    with pytest.raises(menu.MenuError, match="takes \\['gluten'\\] out, which .* keeps eating"):
+        change(data, {"use": raw})
+    assert (plans_dir(data) / f"{MONDAY}.yaml").read_text() == before
+    change(data, {"use": {**raw, "ingredient": "bulgur"}})  # control: wheat for wheat
+
+
+def test_a_swap_never_takes_the_legume_out_of_a_week(data_dir):
+    data = bread(data_dir)
+    raw = {"from": str(D(0)), "to": str(D(6)), "ingredient": "bulgur", "instead_of": "lenteja"}
+    with pytest.raises(menu.MenuError, match="takes the legume out of"):
+        change(data, {"use": {**raw, "qty": 50}})
+    change(data, {"use": {**raw, "ingredient": "garbanzo"}})  # control: a legume for a legume
+
+
+def cooked_lunch(data):
+    """A lunch eaten the day after the session that cooked it."""
+    plan = plan_for(data, MONDAY)
+    return next(
+        d
+        for d in plan.days
+        if (d.date - d.lunch_cook).days >= 1
+        and d.lunch_cook >= MONDAY
+        and {"lenteja", "garbanzo"} & {i.id for i in data.recipes[d.lunch].ingredients}
+    )
+
+
+def test_a_lunch_already_cooked_keeps_its_pot_but_not_its_bread(data_dir):
+    data = bread(data_dir)
+    d = cooked_lunch(data)
+    pulse = next(i.id for i in data.recipes[d.lunch].ingredients if i.id in ("lenteja", "garbanzo"))
+    other = "garbanzo" if pulse == "lenteja" else "lenteja"
+    with pytest.raises(menu.MenuError, match="already cooked"):
+        change(data, use(d.date, "lunch", ingredient=other, instead_of=pulse), today=d.date)
+    # control: the same swap before the session cooks it
+    change(data, use(d.date, "lunch", ingredient=other, instead_of=pulse), today=d.lunch_cook)
+    change(data, {"undo": True})
+    # bread is served at the meal: it is swapped in a cooked lunch too
+    change(data, use(d.date, "lunch"), today=d.date)
+    assert [(x.meal, x.use) for x in plan_for(data, d.date).day(d.date).swaps] == [
+        ("lunch", "bulgur")
+    ]
+
+
+def test_days_already_eaten_stay_as_they_were(data_dir):
+    data = bread(data_dir)
+    raw = {"from": str(D(0)), "to": str(D(6)), "ingredient": "bulgur", "instead_of": "pan"}
+    change(data, {"use": raw}, today=D(3))
+    swapped = [i for i in range(7) if plan_for(data, D(i)).day(D(i)).swaps]
+    assert swapped and min(swapped) >= 3
+    with pytest.raises(menu.MenuError, match="already past"):
+        change(data, {"use": {**raw, "to": str(D(2))}}, today=D(3))
+
+
+def test_a_restore_named_by_the_swapped_in_food_says_the_recipes_own_comes_back(data_dir):
+    data = bread(data_dir)
+    salad_dinner(data, D(2))
+    change(data, use(D(2), "dinner"))
+    t = Translator("es")
+    ops = menu.parse([{"restore": {"date": str(D(2)), "ingredient": "bulgur"}}], data)
+    (line,) = menu.describe(ops, data, t)
+    assert "otra vez Pan" in line and "Bulgur" not in line
+
+
+def test_the_bot_undoes_only_a_menu_change_of_its_own(data_dir):
+    data = bread(data_dir)
+    salad_dinner(data, D(2))  # the household's change
+    with pytest.raises(menu.MenuError, match="household's: only they undo it"):
+        menu.apply(data, menu.parse([{"undo": True}], data), MONDAY, by="bot")
+    assert plan_for(data, D(2)).day(D(2)).dinner == "ensalada-0"
+    menu.apply(data, menu.parse([use(D(2), "dinner")], data), MONDAY, by="bot")
+    menu.apply(data, menu.parse([{"undo": True}], data), MONDAY, by="bot")
+    assert plan_for(data, D(2)).day(D(2)).swaps == []
+    change(data, use(D(2), "dinner"))
+    change(data, {"undo": True})  # control: the household undoes its own
+
+
+def test_the_unbought_check_names_a_swapped_in_food(data_dir, tmp_path):
+    from supermealplanner import pantry
+
+    data = bread(data_dir)
+    base = db(tmp_path)
+    salad_dinner(data, D(2))
+    change(data, use(D(2), "dinner"))
+    missing = {i.id for i, _ in pantry.unbought(data, base, plan_for(data, D(2)), D(2))}
+    assert "bulgur" in missing and "lechuga" in missing
+
+
+def test_the_day_page_total_and_the_api_recipe_follow_the_swap(data_dir, monkeypatch):
+    from supermealplanner.portions import together
+
+    from .test_app_api import auth, pair
+
+    monkeypatch.setenv("SMP_SCHEDULER", "0")
+    monkeypatch.setenv("SMP_BOT", "0")
+    data = bread(data_dir)
+    salad_dinner(data, D(2))
+    change(data, use(D(2), "dinner", qty=30))
+    from supermealplanner.web import create_app
+
+    base = DB(data.state / "supermealplanner.db")
+    plan = plan_for(data, D(2))
+    f = {pd.person_id: pd.factor for pd in person_days(data, base, plan, D(2))}
+    dinner = dict(day_menu(data, plan.day(D(2))))["dinner"]
+    total = [x for x in together(data, dinner, f).lines if x.startswith("Bulgur")]
+    assert total
+    with TestClient(create_app(data_dir)) as c:
+        page = c.get(f"/?d={D(2)}").text.split("/recipe/ensalada-0", 1)[1]
+        assert total[0] in page
+        h = auth(pair(c, data_dir)["token"])
+        r = c.get(f"/api/v1/recipe/ensalada-0?d={D(2)}", headers=h).json()
+        text = str(r)
+        assert "bulgur" in text and "'pan'" not in text
+
+
+def test_a_block_that_adds_an_ingredient_can_use_it_at_once(data_dir):
+    from supermealplanner import changes
+
+    data = bread(data_dir)
+    salad_dinner(data, D(2))
+    raw = {
+        "ingredients": {
+            "quinoa": {"name": "Quinoa", "section": "despensa", "store": "mercado", "unit": "g"}
+        },
+        "plan": [use(D(2), "dinner", ingredient="quinoa")],
+        "asked": True,
+    }
+    p = changes.parse(raw, data, "ana")
+    assert [op.kind for op in p.plan] == ["use"] and "quinoa" in p.ingredients

@@ -245,7 +245,10 @@ def describe(ops: list[Op], data: Data, t, names: dict[str, str] | None = None) 
                 else t("change_plan_days", first=t.date(a["from"]), last=t.date(a["to"]))
             )
             meal = t("meal_" + a["meal"]).lower() if a["meal"] else t("change_plan_every_meal")
-            words = {"days": days, "meal": meal, "food": food(a["ingredient"])}
+            back = a["ingredient"]
+            if op.kind == "restore":  # named as the swap uses it: the meal goes back to its own
+                back = _restored(data, a)
+            words = {"days": days, "meal": meal, "food": food(back)}
             if op.kind == "use":
                 words["old"] = food(a["instead_of"])
                 unit = (
@@ -270,6 +273,19 @@ def describe(ops: list[Op], data: Data, t, names: dict[str, str] | None = None) 
             key = f"change_plan_{op.kind}"
             lines.append(t(key, first=t.date(a["from"]), last=t.date(a["to"])))
     return [f"• {x}" for x in lines]
+
+
+def _restored(data: Data, a: dict) -> str:
+    """The recipe's own ingredient a `restore` brings back: the one its swaps replaced."""
+    plans = _load(data)
+    day = a["from"]
+    while day <= a["to"]:
+        hit = _find(plans, day, missing_ok=True)
+        day += dt.timedelta(days=1)
+        for x in hit[2].swaps if hit else []:
+            if (a["meal"] in (None, x.meal)) and a["ingredient"] in (x.out, x.use):
+                return x.out
+    return a["ingredient"]
 
 
 # ---------------------------------------------------------------- apply
@@ -388,15 +404,19 @@ def _swap(data: Data, plans, op: Op) -> set[Path]:
     return {pa, pb}
 
 
-def _use(data: Data, plans, op: Op) -> set[Path]:
+def _use(data: Data, plans, op: Op, today: dt.date) -> set[Path]:
     """`use` and `restore`: the ingredient swaps of every planned meal from `from` to `to` (one
     meal, or each meal whose recipe lists the ingredient). use: that meal eats `ingredient`
     instead of `instead_of`, which its recipe lists or an earlier swap brought in (that swap is
     replaced, so bread -> couscous -> bulgur is one swap of the bread). restore: the swaps of
-    `ingredient` go, so the meal eats its recipe as written."""
+    `ingredient` go, so the meal eats its recipe as written. Days already eaten stay as they
+    were, and so does a lunch already cooked, except a food served at the meal (`frozen`, like
+    bread): the rest is in the pot."""
     a = op.args
-    touched, hits = set(), 0
-    day = a["from"]
+    if a["to"] < today:
+        raise MenuError(f"{a['to']} is already past: its meals were eaten as they were")
+    touched, hits, cooked = set(), 0, []
+    day = max(a["from"], today)
     while day <= a["to"]:
         hit = _find(plans, day, missing_ok=True)
         day += dt.timedelta(days=1)
@@ -412,20 +432,25 @@ def _use(data: Data, plans, op: Op) -> set[Path]:
             gone = [
                 x for x in d.swaps if x.meal == meal and x.out in listed and name in (x.out, x.use)
             ]
+            was = gone[0].out if gone else name if name in listed else None
+            if was is None or (op.kind == "restore" and not gone):
+                continue
+            if meal == "lunch" and d.lunch_cook < today and not data.ingredients[was].frozen:
+                cooked.append(d.date)
+                continue
             if op.kind == "restore":
-                if not gone:
-                    continue
                 d.swaps = [x for x in d.swaps if x not in gone]
             else:
-                was = gone[0].out if gone else name if name in listed else None
-                if was is None:
-                    continue
                 _amount(data, was, a)
                 d.swaps = [x for x in d.swaps if x not in gone]
                 if was != a["ingredient"]:  # else: back to the recipe's own ingredient
                     d.swaps.append(Swap(meal, was, a["ingredient"], a["qty"]))
             touched.add(path)
             hits += 1
+    if not hits and cooked:
+        raise MenuError(
+            f"the lunch of {cooked[0]} is already cooked: what is in the pot cannot change"
+        )
     if not hits:
         what = a["instead_of"] if op.kind == "use" else a["ingredient"]
         where = f"the {a['meal']}" if a["meal"] else "a meal"
@@ -537,11 +562,13 @@ def _undo_dir(data: Data) -> Path:
     return data.state / "menu-undo"
 
 
-def _snapshot(data: Data) -> None:
-    """Keep the plans and the paused days as they are now, replacing the last copy."""
+def _snapshot(data: Data, by: str = "person") -> None:
+    """Keep the plans and the paused days as they are now, replacing the last copy. by: who made
+    the change it is kept for ("bot": an automatic turn), so the bot undoes only its own."""
     keep = _undo_dir(data)
     shutil.rmtree(keep, ignore_errors=True)
     (keep / "plans").mkdir(parents=True)
+    (keep / "by").write_text(by, encoding="utf-8")
     for p in plans_dir(data).glob("*.yaml"):
         shutil.copy2(p, keep / "plans" / p.name)
     paused = data.state / "paused.yaml"
@@ -549,10 +576,13 @@ def _snapshot(data: Data) -> None:
         shutil.copy2(paused, keep / "paused.yaml")
 
 
-def _undo(data: Data) -> None:
+def _undo(data: Data, by: str = "person") -> None:
     keep = _undo_dir(data)
     if not (keep / "plans").is_dir():
         raise MenuError("there is no menu change to undo")
+    made = (keep / "by").read_text(encoding="utf-8") if (keep / "by").exists() else "person"
+    if by == "bot" and made != "bot":
+        raise MenuError("the last menu change was the household's: only they undo it")
     for p in plans_dir(data).glob("*.yaml"):
         p.unlink()
     plans_dir(data).mkdir(parents=True, exist_ok=True)
@@ -584,13 +614,14 @@ def retire(data: Data, pairs: set[tuple[str, str]], start: dt.date) -> int:
         return days
 
 
-def apply(data: Data, ops: list[Op], today: dt.date) -> None:
+def apply(data: Data, ops: list[Op], today: dt.date, by: str = "person") -> None:
     """Make the menu changes, all or none. Raises MenuError when a day has no plan or a hard rule
     of the validator would newly break; then nothing is written. The limit on how often a dish
-    is cooked is not one of them here: it shapes a draw, and this dish was asked for."""
+    is cooked is not one of them here: it shapes a draw, and this dish was asked for. by: "bot"
+    for an automatic turn's change, which may undo only a change of its own."""
     with PLAN_LOCK:
         if [op.kind for op in ops] == ["undo"]:
-            _undo(data)
+            _undo(data, by)
             return
         plans = _load(data)
         known = {p: set(validate(data, plan, repeats=False)) for p, plan in plans.items()}
@@ -603,7 +634,7 @@ def apply(data: Data, ops: list[Op], today: dt.date) -> None:
             elif op.kind == "swap":
                 touched |= _swap(data, plans, op)
             elif op.kind in ("use", "restore"):
-                touched |= _use(data, plans, op)
+                touched |= _use(data, plans, op, today)
             elif op.kind == "regenerate":
                 touched |= _regenerate(data, plans, op)
             elif op.kind == "shift":
@@ -629,7 +660,7 @@ def apply(data: Data, ops: list[Op], today: dt.date) -> None:
                 raise MenuError("; ".join(new[:3]))
         if not touched and paused == was:
             return  # nothing changes: the copy for undo stays the one of the last real change
-        _snapshot(data)
+        _snapshot(data, by)
         for p in touched:
             if p in plans:
                 plans[p].save(p)

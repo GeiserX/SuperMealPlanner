@@ -1488,13 +1488,18 @@ class Bot:
             # copy first, and a change that would leave the week worse is not made (pre_check)
             held = await self.pre_check(chat_id, change, offering)
             if held:
-                # only the menu waits: the pantry still goes; the reminders written for the
-                # menu that is not made would be wrong, so the follow-up lists them again
+                # only the menu waits: the pantry still goes, and so do the cancels of stale
+                # reminders; the new reminders may be written for the menu that is not made, so
+                # the follow-up is told to list again the ones still needed. The answer's own
+                # words tell of the change as made: the held line says it instead
                 change = {k: v for k, v in change.items() if k not in ("plan", "asked")}
                 change = {**change, "asked": True} if change else None
-                listed, offering = [], []
-                tail.append(self.t("auto_check_held"))
-                if not followup:  # fixed once, in a turn of its own that is checked the same way
+                listed, offering = [r for r in listed if "cancel" in r], []
+                text = ""
+                if followup:  # the fix was held too: the household decides, never silence
+                    tail.append(self.t("auto_check_held_last"))
+                else:  # fixed once, in a turn of its own that is checked the same way
+                    tail.append(self.t("auto_check_held"))
                     self.follow_up(client, chat_id, {}, held)
         if change is not None and now:
             made = await self.propose(
@@ -1733,16 +1738,17 @@ class Bot:
             return []
         problems = found[0]
         log.info("the bot's own menu change was not made: %d problems", len(problems))
+        # what happened, in the chat's history; the problems themselves go to the follow-up turn
         self.state.db.add_chat(
             chat_id,
             "assistant",
             None,
-            # a count only: a problem's text may name someone's avoided food
             f"[the menu change was not made: the check found {len(problems)} problems in it]",
         )
         said = (
             "Your last menu change was NOT made: checked on a copy before making it, it adds these "
-            "problems to the week. Make a change that fixes what you wanted without them."
+            "problems to the week. Make a change that fixes what you wanted without them. The new "
+            "reminders of that answer were not set either: list again the ones still needed."
         )
         return [said, *problems]
 
@@ -1968,7 +1974,8 @@ class Bot:
             return False
         name = self.data.household.person(asker).name if asker else t("plan_check_who")
         if proposal.asked and (not own or self.direct):
-            item = {**pending, "name": name}
+            # the bot's own change made at once: its snapshot says so, so it undoes only its own
+            item = {**pending, "name": name, **({"author": "bot"} if quiet else {})}
             before = await self.problem_keys(offered)
             line = await self.apply(item, asked=True)
             # the bot's own turn making its change at once: a refusal is the AI's to hear only
@@ -2591,7 +2598,11 @@ class Bot:
             try:
                 async with self.writing:
                     await asyncio.to_thread(
-                        menu.apply, self.data, proposal.plan, self.state.today()
+                        menu.apply,
+                        self.data,
+                        proposal.plan,
+                        self.state.today(),
+                        pending.get("author", "person"),
                     )
             except menu.MenuError as e:
                 return "\n".join([*out, self.refused(pending, e)])

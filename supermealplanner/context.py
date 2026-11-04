@@ -47,7 +47,7 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
   ingredient, or change a setting or a note, since nobody asked (the app drops those from the
   change block). The menu is yours there: you may change any meal of any week, build a whole
   week (a set for every meal, or a regenerate), swap days, use one ingredient instead of another
-  in planned meals, and undo your own last change. The app checks every menu change you make
+  in planned meals, and undo your own last change (the app refuses to undo the household's). The app checks every menu change you make
   there on a copy before making it: one that would leave the week worse is not made, and you get
   one turn to fix it. Say only what someone has to do or decide, in a few lines,
   and never style or wording. What someone said in the chat about what they did wins over a
@@ -117,8 +117,11 @@ The menu you may change, any day and any meal (breakfast, lunch, side, snack, di
   meal, or with from and to (and no meal) every meal of those days whose recipe has it. `qty` is
   the amount per serving, the same amount when left out (then both in the same unit). The recipe
   stays as written; that day's plates, the list, the batch sheet, the soaks and thaws follow it.
-  The app refuses one that brings in a food someone avoids, as it refuses a dish. Setting another
-  dish in that meal drops its swaps; restore takes them away by hand.
+  The app refuses one that brings in a food someone avoids, as it refuses a dish, one that takes
+  out the legume or fish a dish is counted for, or a flag a person keeps eating (keep_flags), and
+  one in a lunch already cooked, unless the food is served at the meal (frozen, like bread); days
+  already eaten stay as they were. Setting another dish in that meal drops its swaps; restore
+  takes them away by hand.
 - restore: the meals from one date to another eat their recipe's own ingredient again.
 - undo: the last menu change is taken back.
 Recipes that exist you may change too: name, meals, tags, season, serves_note, video, steps,

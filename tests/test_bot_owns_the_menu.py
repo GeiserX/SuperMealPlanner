@@ -14,6 +14,7 @@ from supermealplanner.planner import plan_for
 from .conftest import MONDAY
 from .test_act_without_asking import direct
 from .test_quiet_turns import own_turn
+from .test_reminders import ahead
 from .test_turns import cfg, sends
 from .test_verifier import lines, say, vsetup
 
@@ -81,6 +82,21 @@ def test_the_bots_own_turn_redraws_a_week_and_undoes_its_own_change(data_dir, tm
     assert plan_for(b.data, nxt).start == MONDAY and plan_for(b.data, nxt).days == before
 
 
+def test_the_bots_own_turn_never_undoes_the_households_change(data_dir, tmp_path):
+    from supermealplanner import menu
+
+    b, _db = vsetup(data_dir, tmp_path)
+    direct(b)
+    menu.apply(
+        b.data,
+        menu.parse([{"set": {"date": str(WED), "meal": "dinner", "recipe": HAKE}}], b.data),
+        MONDAY,
+    )
+    cfg(data_dir, text="Lo deshago.\n" + block({"undo": True}))
+    plan_check(b)
+    assert doctor.serves(b.data, HAKE, WED)  # the household's change stays
+
+
 def test_a_menu_change_of_its_own_that_adds_a_problem_is_not_made(data_dir, tmp_path):
     """Friday's dinner moved to a salad of dried chickpeas that nothing soaks or cooks: the check on
     a copy finds it, the menu stays as it was, and one follow-up turn (checked the same way) tries
@@ -92,33 +108,50 @@ def test_a_menu_change_of_its_own_that_adds_a_problem_is_not_made(data_dir, tmp_
     cfg(data_dir, text="Ensalada de garbanzos el viernes.\n" + bad)
     plan_check(b)
     assert not doctor.serves(b.data, "ensalada-garbanzos", friday)
-    held = [p for p in sends(b, -100) if b.t("auto_check_held") in p["text"]]
-    assert len(held) == 2  # the turn and its one follow-up
+    texts = [p["text"] for p in sends(b, -100)]
+    # the turn says a fix follows; its follow-up, held too, asks the household
+    assert [x for x in texts if b.t("auto_check_held") in x] == [b.t("auto_check_held")]
+    assert [x for x in texts if b.t("auto_check_held_last") in x] == [b.t("auto_check_held_last")]
+    assert not any("Ensalada de garbanzos el viernes" in x for x in texts)  # never told as made
     turns = lines(data_dir, "turns.jsonl")
     assert len(turns) == 2
     said = "\n".join(turns[1]["new"])
     assert "was NOT made" in said and "nothing cooks it" in said
+    assert "reminders of that answer were not set" in said
     assert not b.pending(-100)  # never left waiting for the tick to accept it
 
 
-def test_a_held_change_keeps_its_pantry_drops_its_reminders_and_logs_no_problem_text(
-    data_dir, tmp_path
-):
+def held_with_a_reminder(data_dir, tmp_path, recipe):
     b, db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
     direct(b)
-    friday = dt.date(2026, 10, 16)
+    stale = db.add_reminder(-100, None, ahead(3, 9)[1], "Sacar la merluza", 7)
     raw = {
-        "plan": [{"set": {"date": str(friday), "meal": "dinner", "recipe": "ensalada-garbanzos"}}],
+        "plan": [{"set": {"date": "2026-10-16", "meal": "dinner", "recipe": recipe}}],
         "pantry": {"lechuga": 300},
     }
-    reminder = "```reminders\n- 2026-10-15 20:00 | Remojar los garbanzos\n```"
+    when, _ = ahead(2, 20)
+    reminder = f"```reminders\n- {when} | Remojar los garbanzos\n- cancel | {stale}\n```"
     cfg(data_dir, text="Hecho.\n```change\n" + yaml.safe_dump(raw) + "```\n" + reminder)
     plan_check(b)
-    assert not doctor.serves(b.data, "ensalada-garbanzos", friday)
+    return b, db, stale
+
+
+def test_a_held_change_keeps_its_pantry_and_cancels_and_drops_its_new_reminders(data_dir, tmp_path):
+    b, db, stale = held_with_a_reminder(data_dir, tmp_path, "ensalada-garbanzos")
+    assert not doctor.serves(b.data, "ensalada-garbanzos", dt.date(2026, 10, 16))
     assert {x["ingredient"] for x in db.lots()} == {"lechuga"}  # the pantry part is made
-    assert not db.reminders(-100)  # written for the menu that was not made
+    assert db.reminder(stale)["state"] == "cancelled"  # a stale one goes all the same
+    texts = [r["text"] for r in db.reminders(-100)]
+    assert "Remojar los garbanzos" not in texts  # may be written for the menu not made
     logged = "\n".join(r["text"] for r in db.chat_rows(-100, 50) if r["role"] == "assistant")
-    assert "the check found 2 problems" in logged and "nothing cooks it" not in logged
+    assert "the check found 2 problems" in logged
+
+
+def test_control_a_change_that_passes_sets_its_reminders(data_dir, tmp_path):
+    b, db, stale = held_with_a_reminder(data_dir, tmp_path, HAKE)
+    assert doctor.serves(b.data, HAKE, dt.date(2026, 10, 16))
+    assert "Remojar los garbanzos" in [r["text"] for r in db.reminders(-100)]
+    assert db.reminder(stale)["state"] == "cancelled"
 
 
 def test_control_the_same_change_asked_for_by_a_person_is_made(data_dir, tmp_path):
