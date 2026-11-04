@@ -74,7 +74,7 @@ from . import changes, doctor, llm, menu, tasks
 from .db import DB
 from .i18n import Translator
 from .model import WEEKDAYS, Data, DataError, load
-from .planner import MEALS, Plans
+from .planner import MEALS, Plans, served
 from .portions import MORNING, session_at
 
 log = logging.getLogger(__name__)
@@ -409,17 +409,21 @@ def week(
     plans = Plans(sim)
     monday = today - dt.timedelta(days=today.weekday())
     dishes: set[str] = set()
+    served_ = []
     for i in range(14):
         d = plans.day(monday + dt.timedelta(days=i))
         if d:
             dishes |= {getattr(d, m) for m in MEALS}
+            served_ += [r for m in MEALS if (r := served(sim, d, m))]
+    edited: set[str] = set()  # the recipes the change edits or adds
     if change:
-        dishes |= set(
+        edited |= set(
             (change.get("recipes") or {}) if isinstance(change.get("recipes"), dict) else ()
         )
         rec = change.get("recipe")
         if isinstance(rec, dict) and rec.get("id"):
-            dishes.add(str(rec["id"]))
+            edited.add(str(rec["id"]))
+    dishes |= edited
     from .context import pantry_now
 
     if found is None:
@@ -433,7 +437,7 @@ def week(
         "menu": doctor_menu(sim, t, today),
         "sessions": sessions_now(sim, plans, monday),
         "reminders": tasks.tasks_now(sim, db, monday, monday + dt.timedelta(days=13))
-        + thaw_now(sim, dishes),
+        + thaw_now(sim, [*served_, *(sim.recipes[x] for x in sorted(edited) if x in sim.recipes)]),
         "pantry": pantry_now(sim, db, today),
         "standing": [p.text for p in shown if p.key in before],
         "new": [p.text for p in shown if p.key not in before],
@@ -512,16 +516,18 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
     monday = today - dt.timedelta(days=today.weekday())
     plans = Plans(data)
     dishes: set[str] = set()
+    served_ = []
     for i in range(14):
         day = plans.day(monday + dt.timedelta(days=i))
         if day:
             dishes |= {getattr(day, m) for m in MEALS}
+            served_ += [r for m in MEALS if (r := served(data, day, m))]
     after = {
         "menu": doctor_menu(data, t, today),
         "sessions": sessions_now(data, plans, monday),
         # every task of the two weeks with what was said of it: the chat's reminders among them
         "reminders": tasks.tasks_now(data, db, monday, monday + dt.timedelta(days=13))
-        + thaw_now(data, dishes),
+        + thaw_now(data, served_),
         "recipes": recipe_texts(data, dishes),
     }
     text = brief(data, today, PLAN_ANSWER, problems, after, None)
@@ -561,10 +567,11 @@ def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:
     return ["", "## Cooking sessions (each lunch is cooked in the one that lists its day)", *out]
 
 
-def thaw_now(data: Data, dishes: set[str]) -> list[str]:
+def thaw_now(data: Data, dishes: list) -> list[str]:
     """What the app's own cooking reminder says every evening without a chat reminder: what to
     take out of the freezer for the next day's meals. A thaw it says is not missing. A reminder
-    set for some weekdays only counts on those days (a later time on one day, none on another)."""
+    set for some weekdays only counts on those days (a later time on one day, none on another).
+    dishes: the recipes on the menu as their days serve them (planner.served)."""
     by_day = {
         w: tuple(
             sorted(
@@ -581,10 +588,9 @@ def thaw_now(data: Data, dishes: set[str]) -> list[str]:
     frozen = sorted(
         {
             data.ingredients[i.id].name
-            for rid in dishes
-            if rid in data.recipes
-            for i in data.recipes[rid].ingredients
-            if data.ingredients[i.id].frozen
+            for r in dishes
+            for i in r.ingredients
+            if i.id in data.ingredients and data.ingredients[i.id].frozen
         }
     )
     if not any(by_day.values()) or not frozen:

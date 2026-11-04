@@ -263,7 +263,7 @@ def unbought(data: Data, db: DB, plan, day: dt.date) -> list[tuple[Ingredient, R
     shopping day has passed, and that the pantry does not hold enough of for that day's cooking:
     the shop came and went without it. With the recipe it is for, the first one that day that uses
     it."""
-    from .portions import amounts, shopping_list
+    from .portions import amounts, recipe_of, shopping_list
 
     monday = day - dt.timedelta(days=day.weekday())
     shop_day = monday + dt.timedelta(days=WEEKDAYS.index(data.household.shopping_day))
@@ -279,7 +279,7 @@ def unbought(data: Data, db: DB, plan, day: dt.date) -> list[tuple[Ingredient, R
     }
     out: dict[str, tuple[Ingredient, Recipe]] = {}
     for rid, row in servings_on(data, db, plan, {day}).items():
-        rec = data.recipes.get(rid)
+        rec = recipe_of(data, rid)
         if rec is None:
             continue
         for iid in amounts(data, rec, row):

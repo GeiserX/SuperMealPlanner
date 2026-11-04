@@ -49,6 +49,17 @@ class Session:
 
 
 @dataclass
+class Swap:
+    """One planned meal eats `use` instead of `out`, an ingredient its recipe lists: the plan's
+    state, never the recipe. qty: per reference serving; None keeps the recipe's amount."""
+
+    meal: str
+    out: str
+    use: str
+    qty: float | None = None
+
+
+@dataclass
 class Day:
     date: dt.date
     breakfast: str
@@ -58,6 +69,7 @@ class Day:
     snack: str
     side: str | None = None
     busy: list[str] = field(default_factory=list)
+    swaps: list[Swap] = field(default_factory=list)  # ingredient swaps of this day's meals
 
     def storage(self, data: Data) -> str:
         gap = (self.date - self.lunch_cook).days
@@ -102,7 +114,10 @@ class Plan:
                 "weeks": self.weeks,
                 "seed": self.seed,
                 "sessions": [asdict(s) for s in self.sessions],
-                "days": [asdict(d) for d in self.days],
+                # a day without ingredient swaps is written as it always was
+                "days": [
+                    {k: v for k, v in asdict(d).items() if k != "swaps" or v} for d in self.days
+                ],
             }
         )
 
@@ -131,6 +146,7 @@ class Plan:
                 snack=d["snack"],
                 side=d.get("side"),
                 busy=d.get("busy", []),
+                swaps=[Swap(**x) for x in d.get("swaps") or []],
             )
             for d in raw["days"]
         ]
@@ -319,15 +335,89 @@ ICONS = {
 }
 
 
+def live_swaps(data: Data, day: Day, meal: str) -> list[Swap]:
+    """The day's swaps of that meal that apply: its recipe lists the ingredient replaced, the one
+    used is in the data, and the amount is a number (a plan file edited by hand may hold a bad
+    one: that swap does nothing)."""
+    r = data.recipes.get(getattr(day, meal) or "")
+    listed = {i.id for i in r.ingredients} if r else set()
+    return [
+        s
+        for s in day.swaps
+        if s.meal == meal
+        and s.out in listed
+        and s.use in data.ingredients
+        and (s.qty is None or (type(s.qty) in (int, float) and s.qty > 0))
+    ]
+
+
+WEEKLY_FLAGS = ("legume", "fish", "oily-fish")  # what the weekly rules count, as ingredient flags
+
+
+def swap_breaks(data: Data, day: Day, x: Swap) -> str | None:
+    """Why a swap of that day breaks a hard rule, or None: at dinner it brings in a flag someone
+    avoids at dinner; it takes out of its meal a legume, fish or oily fish the recipe is counted
+    for in the weekly rules (the flag the ingredient replaced has and the one used lacks); or it
+    takes out a flag a person keeps eating (`keep_flags`, such as one a doctor asks for).
+    An avoided food is the dish's own check (validate, repair)."""
+    use, out = data.ingredients.get(x.use), data.ingredients.get(x.out)
+    if use is None:
+        return f"unknown ingredient {x.use}"
+    hh = data.household
+    if x.meal == "dinner":
+        for p in hh.people:
+            bad = sorted(set(use.flags) & set(p.avoid_flags_at_dinner))
+            if bad:
+                return f"{x.use} is {bad}, {p.name} avoids it at dinner"
+    lost = set(out.flags if out else ()) - set(use.flags)
+    r = data.recipes.get(getattr(day, x.meal) or "")
+    for flag in WEEKLY_FLAGS:
+        if flag in lost and r is not None and r.has(flag):
+            return f"{x.use} instead of {x.out} takes the {flag} out of {r.id}"
+    for p in hh.people:
+        kept = sorted(lost & set(p.keep_flags))
+        if kept:
+            return f"{x.use} instead of {x.out} takes {kept} out, which {p.name} keeps eating"
+    return None
+
+
+def served(data: Data, day: Day | None, meal: str) -> Recipe | None:
+    """The recipe of one planned meal as that day serves it: with the day's ingredient swaps for
+    that meal (Day.swaps), the recipe file untouched. Everything that reads what a planned meal
+    uses (plates, the list, the batch sheet, soaks, thaws, the checks) reads it here. A swap whose
+    ingredient the recipe no longer lists, or whose ingredient left the data, does nothing."""
+    if day is None:
+        return None
+    r = data.recipes.get(getattr(day, meal) or "")
+    if r is None:
+        return None
+    mine = {s.out: s for s in live_swaps(data, day, meal)}
+    if not mine or not any(i.id in mine for i in r.ingredients):
+        return r
+    items = [
+        i.model_copy(update={"id": s.use, "qty": i.qty if s.qty is None else s.qty})
+        if (s := mine.get(i.id))
+        else i
+        for i in r.ingredients
+    ]
+    return r.model_copy(update={"ingredients": items})
+
+
+def served_as(data: Data, day: Day | None, rid: str) -> Recipe | None:
+    """A recipe as `day` serves it, in the first of its meals that has it (a recipe page opened
+    for that day); the recipe as written when the day does not have it."""
+    for meal in MEALS:
+        if day is not None and getattr(day, meal) == rid:
+            return served(data, day, meal)
+    return data.recipes.get(rid)
+
+
 def day_menu(data: Data, day: Day) -> list[tuple[str, Recipe]]:
     """The whole day in eating order: (meal, recipe) for breakfast, lunch, its side salad, the
     afternoon snack and dinner, then each snack to nibble on as ("nibble", recipe). The one list the
-    web pages, the bot and the daily reminder all read, so none of them leaves a meal out."""
-    out = [
-        (meal, data.recipes[rid])
-        for meal in MEALS
-        if (rid := getattr(day, meal)) and rid in data.recipes
-    ]
+    web pages, the bot and the daily reminder all read, so none of them leaves a meal out. Each
+    recipe as the day serves it (served)."""
+    out = [(meal, r) for meal in MEALS if (r := served(data, day, meal)) is not None]
     return out + [("nibble", r) for r in nibbles(data, day)]
 
 
@@ -722,6 +812,23 @@ def repair(
         return best
 
     changed, cooked_bad = 0, 0
+    # an ingredient swap that now brings in an avoided food or breaks a swap rule goes, from today
+    # on, so the meal eats its recipe again (whose own check follows); a lunch already cooked keeps
+    # what is in its pot, so only a swap of a food served at the meal (frozen) goes there
+    avoided = data.household.avoided()
+    for d in plan.days:
+        if d.date < today:
+            continue
+        keep = []
+        for x in d.swaps:
+            served_at_meal = x.out in data.ingredients and data.ingredients[x.out].frozen
+            cooked = x.meal == "lunch" and d.lunch_cook < today and not served_at_meal
+            live = x in live_swaps(data, d, x.meal)
+            if live and not cooked and (x.use in avoided or swap_breaks(data, d, x)):
+                changed += 1
+                continue
+            keep.append(x)
+        d.swaps = keep
     # lunches: one container group = (recipe, cook date), shared by its days and its session dish
     groups: dict[tuple[str, dt.date], list[Day]] = {}
     for d in plan.days:
@@ -782,12 +889,20 @@ def validate(data: Data, plan: Plan, repeats: bool = True) -> list[str]:
             rid = getattr(d, meal)
             if not rid:
                 continue
-            r = data.recipes.get(rid)
+            r = served(data, d, meal)
             if r is None:
                 errs.append(f"{d.date} {meal}: unknown recipe {rid}")
                 continue
             if any(i.id in avoided for i in r.ingredients):
                 errs.append(f"{d.date} {meal}: {rid} uses an avoided ingredient")
+        for x in d.swaps:
+            if x.use not in data.ingredients:
+                errs.append(f"{d.date} {x.meal}: unknown ingredient {x.use}")
+        for meal in MEALS:  # a swap never breaks what a person may or must have at that meal
+            for x in live_swaps(data, d, meal):
+                why = swap_breaks(data, d, x)
+                if why:
+                    errs.append(f"{d.date} {meal}: {why}")
         if d.lunch not in data.recipes or d.dinner not in data.recipes:
             continue  # reported as unknown above
         dinner = data.recipes[d.dinner]

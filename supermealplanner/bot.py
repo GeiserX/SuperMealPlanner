@@ -25,7 +25,9 @@ that covers several is sent plainly. An answer that changes anything goes out at
 reviewed afterwards (verifier.after); what the review finds that would go wrong in the kitchen or
 for health, the bot fixes in one follow-up turn of its own. The answer of a turn the bot asked
 itself (a follow-up, the plan check, the weekly review, a step not done) is never reviewed, so
-automatic turns never chain, and it never edits a recipe or a setting (AUTO_KEYS). A change that waits for a yes waits for the person whose request it answers. An edited
+automatic turns never chain, and it never edits a recipe or a setting (AUTO_KEYS). With bot.ask_first
+off, a menu change of the bot's own turn is checked on a copy before it is made (pre_check): one
+that adds a problem is not made, and one follow-up turn, checked the same way, fixes it. A change that waits for a yes waits for the person whose request it answers. An edited
 message is handled by where it is: still waiting, its new text goes; in the running answer, a
 correction joins it; already answered, the correction starts a new answer; an edit that adds the
 mention is a new message. Changes, proposals and the provider's asks come with inline buttons; a
@@ -1481,6 +1483,24 @@ class Bot:
         # the reminders this answer offers: the checkups it brings count them as set, so a step
         # it is offering is never said to be missing
         offering = [r for r in listed if "cancel" not in r]
+        if automatic and direct and now and isinstance(change, dict) and change.get("plan"):
+            # the bot's own menu change, made with nobody's yes: the structural check runs on a
+            # copy first, and a change that would leave the week worse is not made (pre_check)
+            held = await self.pre_check(chat_id, change, offering)
+            if held:
+                # only the menu waits: the pantry still goes, and so do the cancels of stale
+                # reminders; the new reminders may be written for the menu that is not made, so
+                # the follow-up is told to list again the ones still needed. The answer's own
+                # words tell of the change as made: the held line says it instead
+                change = {k: v for k, v in change.items() if k not in ("plan", "asked")}
+                change = {**change, "asked": True} if change else None
+                listed, offering = [r for r in listed if "cancel" in r], []
+                text = ""
+                if followup:  # the fix was held too: the household decides, never silence
+                    tail.append(self.t("auto_check_held_last"))
+                else:  # fixed once, in a turn of its own that is checked the same way
+                    tail.append(self.t("auto_check_held"))
+                    self.follow_up(client, chat_id, {}, held)
         if change is not None and now:
             made = await self.propose(
                 client,
@@ -1493,6 +1513,9 @@ class Bot:
                 offered=offering,
                 quiet=automatic,
             )
+            if automatic and made and isinstance(change, dict) and change.get("plan"):
+                # its judgment: the plan check of the changed plan, at the next tick
+                db.set_kv(verifier.PLAN_RETRY, True)
         items: list[dict] = []
         cancels: list = []  # what a change that waits for a yes cancels, once it is made
         if listed:
@@ -1693,6 +1716,41 @@ class Bot:
         if self.settled.pop(key, False):
             return {**answer, "made": True, "key": None}
         return {**answer, "change": None, "key": None}
+
+    async def pre_check(self, chat_id: int, change: dict, offered: list[dict]) -> list[str]:
+        """The bot's own menu change, before it is made: the structural check (verifier.structural:
+        the change made on a copy of the data, the consistency check run there) against the
+        problems there now. Returns what the change would add, first a line saying it was not
+        made; [] when it adds nothing, or when the app refuses it anyway (the apply says why). Its
+        judgment comes after it is made: the plan check judges every changed plan, at once."""
+        before = await self.problem_keys()
+        found = await asyncio.to_thread(
+            verifier.structural,
+            self.data,
+            self.state.db,
+            self.state.today(),
+            change,
+            None,
+            offered,
+            before,
+        )
+        if not found or not found[0]:
+            return []
+        problems = found[0]
+        log.info("the bot's own menu change was not made: %d problems", len(problems))
+        # what happened, in the chat's history; the problems themselves go to the follow-up turn
+        self.state.db.add_chat(
+            chat_id,
+            "assistant",
+            None,
+            f"[the menu change was not made: the check found {len(problems)} problems in it]",
+        )
+        said = (
+            "Your last menu change was NOT made: checked on a copy before making it, it adds these "
+            "problems to the week. Make a change that fixes what you wanted without them. The new "
+            "reminders of that answer were not set either: list again the ones still needed."
+        )
+        return [said, *problems]
 
     def follow_up(self, client, chat_id: int, answer: dict, found: list[str]) -> None:
         """The bot's own turn that fixes what the review found in an answer it sent, for the person
@@ -1916,7 +1974,8 @@ class Bot:
             return False
         name = self.data.household.person(asker).name if asker else t("plan_check_who")
         if proposal.asked and (not own or self.direct):
-            item = {**pending, "name": name}
+            # the bot's own change made at once: its snapshot says so, so it undoes only its own
+            item = {**pending, "name": name, **({"author": "bot"} if quiet else {})}
             before = await self.problem_keys(offered)
             line = await self.apply(item, asked=True)
             # the bot's own turn making its change at once: a refusal is the AI's to hear only
@@ -2539,7 +2598,11 @@ class Bot:
             try:
                 async with self.writing:
                     await asyncio.to_thread(
-                        menu.apply, self.data, proposal.plan, self.state.today()
+                        menu.apply,
+                        self.data,
+                        proposal.plan,
+                        self.state.today(),
+                        pending.get("author", "person"),
                     )
             except menu.MenuError as e:
                 return "\n".join([*out, self.refused(pending, e)])

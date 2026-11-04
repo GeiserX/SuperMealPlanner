@@ -201,6 +201,9 @@ class Person(Loose):
     packs: list[str] = []
     avoid_ingredients: list[str] = []
     avoid_flags_at_dinner: list[str] = []
+    # ingredient flags this person must keep eating (one a doctor asks for): an
+    # ingredient swap in a planned meal never takes one out
+    keep_flags: list[str] = []
     avoid_tags_at_dinner: list[str] = []
     pills: dict[str, list[Pill]] = {}
     notes: list[str] = []
