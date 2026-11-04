@@ -21,7 +21,7 @@ from .api import router as api_router
 from .db import DB
 from .i18n import Translator
 from .model import Data, load
-from .planner import ICONS, Plans, day_menu, meals_now, paused_days, plan_for
+from .planner import ICONS, Plans, day_menu, meals_now, paused_days, plan_for, served_as
 from .portions import (
     MEAL_ORDER,
     batch_for_text,
@@ -152,11 +152,7 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             if meal == "nibble"
         ]
         eaters = {pd.person_id: pd.factor for pd in people}
-        totals = {
-            meal: together(state.data, state.data.recipes[getattr(pday, meal)], eaters)
-            for meal in MEAL_ORDER
-            if pday and getattr(pday, meal) in state.data.recipes
-        }
+        totals = {meal: together(state.data, r, eaters) for meal, r in menu if meal != "nibble"}
         return tpl.TemplateResponse(
             request,
             "today.html",
@@ -336,10 +332,11 @@ def create_app(root: str | Path | None = None) -> FastAPI:
 
     @app.get("/recipe/{rid}", response_class=HTMLResponse)
     def recipe(request: Request, rid: str, d: str | None = None):
-        r = state.data.recipes.get(rid)
-        if not r:
+        if rid not in state.data.recipes:
             raise HTTPException(404)
         day = parse_day(d)
+        plan = plan_for(state.data, day)
+        r = served_as(state.data, plan.day(day) if plan else None, rid)  # as that day serves it
         plates = []
         for p in state.data.household.people:
             f = day_factor(state.data.household, p, current_kcal(state.db, p), day)

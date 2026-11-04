@@ -303,7 +303,9 @@ def parse(raw: dict, data: Data, asker: str | None = None) -> Proposal:
     out.notes = _notes(raw.get("notes"), data)
     if raw.get("plan") is not None:
         try:
-            out.plan = menu.parse(raw["plan"], data, (out.recipe or {}).get("id"))
+            out.plan = menu.parse(
+                raw["plan"], data, (out.recipe or {}).get("id"), raw.get("ingredients")
+            )
         except menu.MenuError as e:
             raise ChangeError(str(e)) from None
     out.ingredients = _ingredients(raw.get("ingredients"), data)
@@ -604,8 +606,9 @@ def describe(p: Proposal, data: Data, t) -> list[str]:
         lines.append("• " + t(f"change_note_{op}", name=name, text=text))
     for fields in p.ingredients.values():
         lines.append("• " + t("change_ingredient", name=fields["name"]))
-    new = {p.recipe["id"]: p.recipe.get("name")} if p.recipe else None
-    lines += menu.describe(p.plan, data, t, new)
+    new = {p.recipe["id"]: p.recipe.get("name")} if p.recipe else {}
+    new |= {iid: fields.get("name") for iid, fields in p.ingredients.items()}
+    lines += menu.describe(p.plan, data, t, new or None)
     from .portions import fmt_qty
 
     for iid, parts in p.pantry.items():  # last: these, like the menu, are not part of a commit

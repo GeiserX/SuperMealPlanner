@@ -76,6 +76,7 @@ from .planner import (
     Day,
     Plans,
     _choose_sessions,
+    served,
 )
 from .portions import needs
 
@@ -407,7 +408,7 @@ def _prep(data: Data, db: DB, plans: Plans, dates: list[dt.date], offered) -> li
         if day is None:
             continue
         for meal in MEALS:
-            r = data.recipes.get(getattr(day, meal) or "")
+            r = served(data, day, meal)
             if r is None or not r.ahead or (meal == "lunch" and _cooked(plans, day)):
                 continue  # a dried pulse's soak and cook are the chain checks' (_chains)
             session = [a.step for a in r.ahead if a.session]
@@ -533,7 +534,7 @@ def _chains(
         if day is None:
             continue
         for meal in MEALS:
-            r = data.recipes.get(getattr(day, meal) or "")
+            r = served(data, day, meal)  # a swapped-in dried pulse is a chain too
             if r is None:
                 continue
             eat = at(d, _eaten(data, meal))

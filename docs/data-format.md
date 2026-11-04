@@ -246,8 +246,23 @@ plan:
   - resume: {from: 2026-01-15, to: 2026-01-18}
   - regenerate: {from: 2026-01-19}                              # a Monday
   - shift: {from: 2026-01-13, weeks: 1}                         # 1 to 4 weeks; the gap is paused
+  - use: {date: 2026-01-14, meal: lunch, ingredient: bulgur, instead_of: bread, qty: 60}   # one planned meal
+  - use: {from: 2026-01-12, to: 2026-01-18, ingredient: bulgur, instead_of: bread}       # every meal with it
+  - restore: {from: 2026-01-12, to: 2026-01-18, ingredient: bread}   # the recipe's own ingredient again
   - undo: true                                                  # the last menu change, alone in the list
 ```
+
+`use` swaps an ingredient in planned meals, never in the recipe file: on one day's meal (`date` and `meal`), or with `from` and `to` (both included, up to 92 days) on every meal of those days whose recipe lists `instead_of` (or only that `meal`). `qty` is the amount per reference serving; left out, the meal keeps the recipe's amount, and then both ingredients must be in the same unit. The swap is stored on the day in the plan file:
+
+```yaml
+- date: 2026-01-14
+  lunch: lentils
+  # ...
+  swaps:
+    - {meal: lunch, out: bread, use: bulgur, qty: 60}   # qty: null keeps the recipe's amount
+```
+
+Everything that reads a planned meal reads it with its swaps: each person's plate (a person's own `swaps` still apply on top in the dishes plated per person), the day and recipe pages for that day, the shopping list, the batch sheet (each container with its own day's swaps), the soak and thaw tasks and the cooking reminder, the consistency check and the reviewer. A swap is refused, like a dish, when it brings in a food someone avoids, or at dinner a food with a flag someone avoids at dinner (`avoid_flags_at_dinner`). A `use` of an ingredient an earlier swap brought in replaces that swap (bread to couscous, then couscous to bulgur, is one swap of the bread); naming the recipe's own ingredient again removes it. Setting another dish in that meal drops its swaps, swapping two days moves them with the meal, and undo takes a swap back like any menu change. `restore` removes the swaps of that ingredient (named as the recipe lists it or as the swap uses it) from those days. The recipe's nutrition stays as written: the swap changes what is bought and plated, not the day's kcal and protein figures.
 
 The same block says what is at home with `pantry`: the amount at home now of each ingredient, in its unit (g, ml or units), `0` when it ran out. It is written to the database, not to git, so it needs no token either. It replaces whatever the pantry had of that ingredient; `0` also takes it off «I have it», so the list asks for it again ([how it works](how-it-works.md#the-pantry)).
 

@@ -27,7 +27,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from . import __version__, llm, pantry
 from .i18n import Translator
-from .planner import MEAL_HOURS, Plans, day_menu, meals_now, paused_days, plan_for
+from .planner import MEAL_HOURS, Plans, day_menu, meals_now, paused_days, plan_for, served_as
 from .portions import (
     MEAL_ORDER,
     batch_for_text,
@@ -432,11 +432,12 @@ def router(state) -> APIRouter:
         """A whole recipe, with this person's plate when there is a plan for the day, every
         person's plate that day as the recipe page shows them, and the dish for all of them."""
         row = device(request)
-        r = state.data.recipes.get(rid)
-        if r is None:
+        if rid not in state.data.recipes:
             raise HTTPException(404, "no such recipe")
         who = whose(row, person)
         date = _day(d, state.today())
+        day_plan = plan_for(state.data, date)
+        r = served_as(state.data, day_plan.day(date) if day_plan else None, rid)
         mine = None
         if who:
             plan = plan_for(state.data, date)

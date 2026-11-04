@@ -45,9 +45,17 @@ RULES = """You are the household's meal-planning assistant inside a family chat.
   the household's language), is the app's own turn, not a request. There you fix only the menu,
   the reminders and the pantry of the days ahead: never rewrite, rename or reword a recipe, add an
   ingredient, or change a setting or a note, since nobody asked (the app drops those from the
-  change block). Say only what someone has to do or decide, in a few lines,
+  change block). The menu is yours there: you may change any meal of any week, build a whole
+  week (a set for every meal, or a regenerate), swap days, use one ingredient instead of another
+  in planned meals, and undo your own last change. The app checks every menu change you make
+  there on a copy before making it: one that would leave the week worse is not made, and you get
+  one turn to fix it. Say only what someone has to do or decide, in a few lines,
   and never style or wording. What someone said in the chat about what they did wins over a
   task's state or a check's finding.
+- When a fix is about what is eaten (a food that is not at home or no longer bought, one to use
+  up), change the menu (set, use, regenerate) instead of setting a reminder that says to eat
+  something else: a reminder changes neither the plates, nor the list, nor the tasks, so the
+  day's page keeps asking for the old food.
 """
 
 WEB = """
@@ -105,6 +113,13 @@ The menu you may change, any day and any meal (breakfast, lunch, side, snack, di
 - regenerate: a new draw of the plan from a Monday on; the days before it stay.
 - shift: the menu from a day on moves 1 to 4 whole weeks later, dishes and batch days with it; the
   days it leaves are paused.
+- use: in planned meals, one ingredient instead of another (bulgur instead of bread): one day's
+  meal, or with from and to (and no meal) every meal of those days whose recipe has it. `qty` is
+  the amount per serving, the same amount when left out (then both in the same unit). The recipe
+  stays as written; that day's plates, the list, the batch sheet, the soaks and thaws follow it.
+  The app refuses one that brings in a food someone avoids, as it refuses a dish. Setting another
+  dish in that meal drops its swaps; restore takes them away by hand.
+- restore: the meals from one date to another eat their recipe's own ingredient again.
 - undo: the last menu change is taken back.
 Recipes that exist you may change too: name, meals, tags, season, serves_note, video, steps,
 ingredients and nutrition (not id, kind or how long it keeps). "No porridge at breakfast" is taking
@@ -197,6 +212,9 @@ plan:
   - resume: {from: 2026-01-15, to: 2026-01-18}
   - regenerate: {from: 2026-01-19}
   - shift: {from: 2026-01-13, weeks: 1}
+  - use: {date: 2026-01-14, meal: lunch, ingredient: <ingredient id>, instead_of: <ingredient id>, qty: 60}
+  - use: {from: 2026-01-12, to: 2026-01-18, ingredient: <ingredient id>, instead_of: <ingredient id>}   # every meal with it
+  - restore: {from: 2026-01-12, to: 2026-01-18, ingredient: <the recipe's own ingredient id>}
   - undo: true                                           # alone in the list
 ```
 
@@ -563,6 +581,24 @@ def menu_now(data: Data, t: Translator, today: dt.date) -> list[str]:
     def dish(rid: str | None) -> str:
         return f"{data.recipes[rid].name if rid in data.recipes else '?'} [{rid}]"
 
+    def swapped(d, meal: str) -> str:
+        """The meal's ingredient swaps (a `use` change), as the plates and the list follow them."""
+        r = data.recipes.get(getattr(d, meal) or "")
+        mine = [
+            x for x in d.swaps if x.meal == meal and r and any(i.id == x.out for i in r.ingredients)
+        ]
+        if not mine:
+            return ""
+
+        def name(iid: str) -> str:
+            return f"{data.ingredients[iid].name if iid in data.ingredients else '?'} [{iid}]"
+
+        said = "; ".join(
+            f"{name(x.use)}{'' if x.qty is None else f' {x.qty:g} per serving'} instead of {name(x.out)}"
+            for x in mine
+        )
+        return f" (using {said})"
+
     out, plan = [], None
     for week, title in ((0, "This week"), (1, "Next week")):
         lines = []
@@ -575,10 +611,12 @@ def menu_now(data: Data, t: Translator, today: dt.date) -> list[str]:
             if day in paused:
                 lines.append(f"{head}: paused, the household eats off the plan")
             elif d:
-                side = f" + {dish(d.side)}" if d.side else ""
+                side = f" + {dish(d.side)}{swapped(d, 'side')}" if d.side else ""
                 lines.append(
-                    f"{head}: breakfast {dish(d.breakfast)}; lunch {dish(d.lunch)}{side}; "
-                    f"snack {dish(d.snack)}; dinner {dish(d.dinner)}"
+                    f"{head}: breakfast {dish(d.breakfast)}{swapped(d, 'breakfast')}; "
+                    f"lunch {dish(d.lunch)}{swapped(d, 'lunch')}{side}; "
+                    f"snack {dish(d.snack)}{swapped(d, 'snack')}; "
+                    f"dinner {dish(d.dinner)}{swapped(d, 'dinner')}"
                 )
         if lines:
             out += [f"\n## {title}", *lines]

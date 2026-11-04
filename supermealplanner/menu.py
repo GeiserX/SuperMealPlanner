@@ -7,7 +7,16 @@
       - resume: {from: 2026-01-15, to: 2026-01-18}
       - regenerate: {from: 2026-01-19}                       # a new draw from that Monday
       - shift: {from: 2026-01-12, weeks: 1}                  # the menu from that day on, later
+      - use: {date: 2026-01-14, meal: lunch, ingredient: bulgur, instead_of: bread, qty: 60}
+      - use: {from: 2026-01-12, to: 2026-01-18, ingredient: bulgur, instead_of: bread}
+      - restore: {from: 2026-01-12, to: 2026-01-18, ingredient: bread}  # the recipe's own again
       - undo: true                                           # the last menu change
+
+`use` swaps an ingredient in planned meals, not in the recipe: on one day's meal, or on every meal
+of those days whose recipe lists it (meal left out), the meal eats `ingredient` instead of
+`instead_of`, `qty` per reference serving or the same amount when left out. The plates, the list,
+the batch sheet, the soaks and thaws and the checks all follow it (planner.served). Setting another
+dish in that meal drops its swaps; `restore` drops them by hand.
 
 Plans are generated files under state/, outside the data repo's git, so a menu change needs no
 token: it is written there, after the planner's validator found no hard rule newly broken. The
@@ -31,6 +40,7 @@ from .planner import (
     Plan,
     PlanError,
     Session,
+    Swap,
     _eligible,
     generate,
     load_plan,
@@ -51,7 +61,10 @@ FIELDS = {
     "resume": {"from", "to"},
     "regenerate": {"from"},
     "shift": {"from", "weeks"},
+    "use": {"date", "from", "to", "meal", "ingredient", "instead_of", "qty"},
+    "restore": {"date", "from", "to", "meal", "ingredient"},
 }
+USE_MAX = 1000  # g, ml or units per reference serving: more is a typo
 SHIFT_MAX = 4  # weeks one shift may move the menu
 PAUSE_MAX = 92  # days in one pause: a mistyped year must not silence the plan for good
 
@@ -62,7 +75,7 @@ class MenuError(Exception):
 
 @dataclass
 class Op:
-    kind: str  # set, swap, pause, resume, regenerate, undo
+    kind: str  # set, swap, pause, resume, regenerate, shift, use, restore, undo
     args: dict  # dates already parsed
 
 
@@ -73,15 +86,38 @@ def _date(value, what: str) -> dt.date:
         raise MenuError(f"{what} must be a date like 2026-01-14") from None
 
 
-def parse(raw, data: Data, new_recipe: str | None = None) -> list[Op]:
+def _days(args: dict, kind: str) -> tuple[dt.date, dt.date]:
+    """One `date`, or `from` and `to` (both included)."""
+    if "date" in args:
+        if "from" in args or "to" in args:
+            raise MenuError(f"{kind} takes a date, or from and to, not both")
+        day = _date(args["date"], "date")
+        return day, day
+    first, last = _date(args.get("from"), "from"), _date(args.get("to"), "to")
+    if not first <= last or (last - first).days >= PAUSE_MAX:
+        raise MenuError(f"{kind}: from {first} to {last} is not 1 to {PAUSE_MAX} days")
+    return first, last
+
+
+def _unit(data: Data, iid: str, new: dict) -> str | None:
+    if iid in data.ingredients:
+        return data.ingredients[iid].unit
+    return (new.get(iid) or {}).get("unit", "g") if iid in new else None
+
+
+def parse(
+    raw, data: Data, new_recipe: str | None = None, new_ingredients: dict | None = None
+) -> list[Op]:
     """Check the `plan:` list of a change block. new_recipe: the id of a recipe the same block
-    adds, which a `set` may already use. Raises MenuError with the reason."""
+    adds, which a `set` may already use; new_ingredients: the ingredients it adds (id -> fields),
+    which a `use` may already use. Raises MenuError with the reason."""
+    new_ingredients = new_ingredients if isinstance(new_ingredients, dict) else {}
     if not isinstance(raw, list) or not raw:
         raise MenuError("plan must be a list of menu changes")
     out = []
     for item in raw:
         if not isinstance(item, dict) or len(item) != 1:
-            raise MenuError("each menu change is one of set, swap, pause, resume, regenerate, undo")
+            raise MenuError(f"each menu change is one of {', '.join([*FIELDS, 'undo'])}")
         kind, args = next(iter(item.items()))
         if kind == "undo":
             if len(raw) > 1:
@@ -119,6 +155,32 @@ def parse(raw, data: Data, new_recipe: str | None = None) -> list[Op]:
             if a == b:
                 raise MenuError("swap needs two different days")
             out.append(Op(kind, {"a": a, "b": b, "meal": meal}))
+        elif kind in ("use", "restore"):
+            first, last = _days(args, kind)
+            iid = str(args.get("ingredient", ""))
+            if _unit(data, iid, new_ingredients) is None:
+                raise MenuError(f"no ingredient {iid}")
+            op = Op(kind, {"from": first, "to": last, "meal": meal, "ingredient": iid})
+            if kind == "use":
+                was = str(args.get("instead_of", ""))
+                if was not in data.ingredients:
+                    raise MenuError(f"no ingredient {was} to use {iid} instead of")
+                if was == iid:
+                    raise MenuError("use needs two different ingredients")
+                qty = args.get("qty")
+                if qty is None:
+                    if _unit(data, iid, new_ingredients) != data.ingredients[was].unit:
+                        raise MenuError(
+                            f"{iid} and {was} are in different units: give qty, per serving"
+                        )
+                elif (
+                    isinstance(qty, bool)
+                    or not isinstance(qty, int | float)
+                    or not 0 < qty <= USE_MAX
+                ):
+                    raise MenuError(f"qty is the amount per serving, above 0 and up to {USE_MAX}")
+                op.args |= {"instead_of": was, "qty": None if qty is None else float(qty)}
+            out.append(op)
         elif kind == "regenerate":
             start = _date(args.get("from"), "from")
             if start.weekday() != 0:
@@ -149,6 +211,11 @@ def describe(ops: list[Op], data: Data, t, names: dict[str, str] | None = None) 
             return data.recipes[rid].name
         return (names or {}).get(rid) or rid or t("change_none")
 
+    def food(iid: str) -> str:
+        if iid in data.ingredients:
+            return data.ingredients[iid].name
+        return (names or {}).get(iid) or iid
+
     lines = []
     for op in ops:
         a = op.args
@@ -168,6 +235,17 @@ def describe(ops: list[Op], data: Data, t, names: dict[str, str] | None = None) 
             key = "change_plan_swap_meal" if a["meal"] else "change_plan_swap"
             meal = t("meal_" + a["meal"]).lower() if a["meal"] else ""
             lines.append(t(key, a=t.date(a["a"]), b=t.date(a["b"]), meal=meal))
+        elif op.kind in ("use", "restore"):
+            days = (
+                t.date(a["from"])
+                if a["from"] == a["to"]
+                else t("change_plan_days", first=t.date(a["from"]), last=t.date(a["to"]))
+            )
+            meal = t("meal_" + a["meal"]).lower() if a["meal"] else t("change_plan_every_meal")
+            words = {"days": days, "meal": meal, "food": food(a["ingredient"])}
+            if op.kind == "use":
+                words["old"] = food(a["instead_of"])
+            lines.append(t(f"change_plan_{op.kind}", **words))
         elif op.kind == "regenerate":
             lines.append(t("change_plan_regenerate", day=t.date(a["from"])))
         elif op.kind == "shift":
@@ -246,6 +324,8 @@ def _set(data: Data, plans, op: Op, today: dt.date) -> set[Path]:
     r = data.recipes.get(a["recipe"])
     if r is None:
         raise MenuError(f"no recipe {a['recipe']}")
+    # the meal's ingredient swaps were about the dish it replaces
+    day.swaps = [x for x in day.swaps if x.meal != a["meal"]]
     if a["meal"] != "lunch":
         setattr(day, a["meal"], r.id)
     else:
@@ -277,6 +357,10 @@ def _set(data: Data, plans, op: Op, today: dt.date) -> set[Path]:
 def _swap(data: Data, plans, op: Op) -> set[Path]:
     (pa, plan_a, a), (pb, plan_b, b) = _find(plans, op.args["a"]), _find(plans, op.args["b"])
     for meal in [op.args["meal"]] if op.args["meal"] else MEALS:
+        # a meal's ingredient swaps go with it to the other day
+        sa, sb = [x for x in a.swaps if x.meal == meal], [x for x in b.swaps if x.meal == meal]
+        a.swaps = [x for x in a.swaps if x.meal != meal] + sb
+        b.swaps = [x for x in b.swaps if x.meal != meal] + sa
         if meal != "lunch":
             va, vb = getattr(a, meal), getattr(b, meal)
             setattr(a, meal, vb)
@@ -289,6 +373,63 @@ def _swap(data: Data, plans, op: Op) -> set[Path]:
     _salad(data, a)
     _salad(data, b)
     return {pa, pb}
+
+
+def _use(data: Data, plans, op: Op) -> set[Path]:
+    """`use` and `restore`: the ingredient swaps of every planned meal from `from` to `to` (one
+    meal, or each meal whose recipe lists the ingredient). use: that meal eats `ingredient`
+    instead of `instead_of`, which its recipe lists or an earlier swap brought in (that swap is
+    replaced, so bread -> couscous -> bulgur is one swap of the bread). restore: the swaps of
+    `ingredient` go, so the meal eats its recipe as written."""
+    a = op.args
+    touched, hits = set(), 0
+    day = a["from"]
+    while day <= a["to"]:
+        hit = _find(plans, day, missing_ok=True)
+        day += dt.timedelta(days=1)
+        if hit is None:
+            continue
+        path, _plan, d = hit
+        for meal in [a["meal"]] if a["meal"] else MEALS:
+            r = data.recipes.get(getattr(d, meal) or "")
+            if r is None:
+                continue
+            listed = {i.id for i in r.ingredients}
+            name = a["ingredient"] if op.kind == "restore" else a["instead_of"]
+            gone = [
+                x for x in d.swaps if x.meal == meal and x.out in listed and name in (x.out, x.use)
+            ]
+            if op.kind == "restore":
+                if not gone:
+                    continue
+                d.swaps = [x for x in d.swaps if x not in gone]
+            else:
+                was = gone[0].out if gone else name if name in listed else None
+                if was is None:
+                    continue
+                _amount(data, was, a)
+                d.swaps = [x for x in d.swaps if x not in gone]
+                if was != a["ingredient"]:  # else: back to the recipe's own ingredient
+                    d.swaps.append(Swap(meal, was, a["ingredient"], a["qty"]))
+            touched.add(path)
+            hits += 1
+    if not hits:
+        what = a["instead_of"] if op.kind == "use" else a["ingredient"]
+        where = f"the {a['meal']}" if a["meal"] else "a meal"
+        raise MenuError(
+            f"{where} planned from {a['from']} to {a['to']} has no {what}"
+            + (" swapped" if op.kind == "restore" else "")
+        )
+    return touched
+
+
+def _amount(data: Data, was: str, a: dict) -> None:
+    """A swap at the same amount needs both ingredients in one unit."""
+    use = data.ingredients.get(a["ingredient"])
+    if use is None:
+        raise MenuError(f"no ingredient {a['ingredient']}")
+    if a["qty"] is None and use.unit != data.ingredients[was].unit:
+        raise MenuError(f"{use.id} and {was} are in different units: give qty, per serving")
 
 
 def _regenerate(data: Data, plans, op: Op) -> set[Path]:
@@ -448,6 +589,8 @@ def apply(data: Data, ops: list[Op], today: dt.date) -> None:
                 touched |= _set(data, plans, op, today)
             elif op.kind == "swap":
                 touched |= _swap(data, plans, op)
+            elif op.kind in ("use", "restore"):
+                touched |= _use(data, plans, op)
             elif op.kind == "regenerate":
                 touched |= _regenerate(data, plans, op)
             elif op.kind == "shift":

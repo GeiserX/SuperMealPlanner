@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 
 from .db import DB
 from .model import WEEKDAYS, Data, Ingredient, Recipe
-from .planner import MEALS, Plan, Session
+from .planner import MEALS, Plan, Session, served
 from .targets import current_kcal, day_factor
 
 MEAL_ORDER = MEALS
@@ -226,9 +226,9 @@ def person_days(data: Data, db: DB, plan: Plan, day: dt.date) -> list[PersonDay]
             days_since_injection=days_since_injection(p, day),
         )
         for meal in MEALS:
-            rid = getattr(d, meal)
-            if rid and rid in data.recipes:
-                pd.plates[meal] = plate(data, data.recipes[rid], f, p.swaps)
+            r = served(data, d, meal)
+            if r is not None:
+                pd.plates[meal] = plate(data, r, f, p.swaps)
         short = p.protein_g.target - pd.protein
         for top in data.settings.toppers:
             if short <= 5:
@@ -301,11 +301,34 @@ def servings_by_eater(
     return servings_on(data, db, plan, {monday + dt.timedelta(days=i) for i in range(7)})
 
 
+class Served(str):
+    """The key of a recipe as some planned meals serve it with ingredient swaps (planner.served):
+    its id plus the swaps, so those servings are counted apart from the recipe as written, and the
+    recipe they use goes with the key (recipe_of)."""
+
+    recipe: Recipe
+
+    @classmethod
+    def of(cls, r: Recipe, plain: Recipe) -> str:
+        if r is plain:
+            return r.id
+        swapped = [f"{i.id}:{i.qty:g}" for i in r.ingredients]
+        key = cls(f"{r.id}~{','.join(swapped)}")
+        key.recipe = r
+        return key
+
+
+def recipe_of(data: Data, key: str) -> Recipe | None:
+    """The recipe a key of servings_on stands for: the recipe as written, or as served."""
+    return getattr(key, "recipe", None) or data.recipes.get(key)
+
+
 def servings_on(
     data: Data, db: DB, plan: Plan, days: set[dt.date], kcal: dict[str, float] | None = None
 ) -> dict[str, dict[str, float]]:
     """servings_by_eater for any set of days: the lunch dishes cooked on them, every other meal
-    eaten on them. One day's is what is cooked that day, which the pantry takes its food from."""
+    eaten on them. One day's is what is cooked that day, which the pantry takes its food from. A
+    meal with ingredient swaps counts under its own key (Served; recipe_of reads it)."""
     hh = data.household
     total: dict[str, dict[str, float]] = {}
 
@@ -315,21 +338,28 @@ def servings_on(
             if n:
                 row[eater] = row.get(eater, 0) + n
 
+    def key(day, meal: str, rid: str) -> str:
+        plain = data.recipes.get(rid)
+        if plain is None or day is None or getattr(day, meal) != rid:
+            return rid
+        return Served.of(served(data, day, meal), plain)
+
     guests = hh.guests.get("sunday_lunch", 0)
     for s in plan.sessions:
         for x in s.dishes:
             if x.cook in days:
                 for e in x.eat:
-                    add(x.recipe, factors(data, db, e, kcal))
+                    k = key(plan.day(e), "lunch", x.recipe)
+                    add(k, factors(data, db, e, kcal))
                     if e.weekday() == 6:
-                        add(x.recipe, {"guests": guests})
+                        add(k, {"guests": guests})
     for d in plan.days:
         if d.date in days:
             f = factors(data, db, d.date, kcal)
             for meal in ("breakfast", "dinner", "snack", "side"):
                 rid = getattr(d, meal)
                 if rid:
-                    add(rid, f)
+                    add(key(d, meal, rid), f)
     return total
 
 
@@ -349,9 +379,10 @@ def ingredients_of(data: Data, servings: dict[str, dict[str, float]]) -> dict[st
     """The ingredient quantities of some servings (recipe -> eater -> servings)."""
     need: dict[str, float] = {}
     for rid, row in servings.items():
-        if rid not in data.recipes:
+        r = recipe_of(data, rid)
+        if r is None:
             continue
-        for iid, q in amounts(data, data.recipes[rid], row).items():
+        for iid, q in amounts(data, r, row).items():
             need[iid] = need.get(iid, 0) + q
     return need
 
@@ -469,6 +500,8 @@ class BatchDish:
     morning: bool = False
     eaters: dict[str, float] = field(default_factory=dict)
     at: str = MORNING  # when its session starts (session_at)
+    # what the whole dish takes, each container's day's ingredient swaps in (planner.served)
+    need: dict[str, float] = field(default_factory=dict)
 
     @property
     def servings(self) -> int:
@@ -489,11 +522,15 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
             r = data.recipes.get(x.recipe)
             if r is None:  # repaired within the hour
                 continue
-            conts, total, eaters = [], 0.0, {}
+            conts, total, eaters, need = [], 0.0, {}, {}
             for e in x.eat:
                 f = factors(data, db, e)
                 if e.weekday() == 6 and data.household.guests.get("sunday_lunch"):
                     f["guests"] = data.household.guests["sunday_lunch"]
+                day = plan.day(e)
+                r_e = served(data, day, "lunch") if day and day.lunch == r.id else r
+                for iid, q in amounts(data, r_e, f).items():
+                    need[iid] = need.get(iid, 0) + q
                 gap = (e - x.cook).days
                 storage = "fresh" if gap == 0 else "fridge" if gap <= r.fridge_days else "freezer"
                 conts.append(
@@ -512,11 +549,12 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
                     recipe=r,
                     total=total,
                     containers=conts,
-                    lines=_lines(data, amounts(data, r, eaters)),
+                    lines=_lines(data, need),
                     cook=s.date,
                     morning=s.morning,
                     eaters=eaters,
                     at=session_at(data, s.date, s.morning),
+                    need=need,
                 )
             )
     return out
@@ -552,7 +590,7 @@ def soaks_in(data: Data, sheet: list[BatchDish]) -> list[Soak]:
     """The ingredients marked `soak` in a batch sheet's dishes, in the quantity each dish needs."""
     out = []
     for b in sheet:
-        for iid, qty in amounts(data, b.recipe, b.eaters).items():
+        for iid, qty in (b.need or amounts(data, b.recipe, b.eaters)).items():
             ing = data.ingredients[iid]
             if ing.soak:
                 out.append(Soak(b.recipe, ing, qty, fmt_qty(ing, qty, data.locale)))
@@ -577,7 +615,7 @@ def thaw_for(data: Data, db: DB, plan: Plan, day: dt.date) -> list[Thaw]:
         return []
     out = []
     for meal in MEALS:
-        r = data.recipes.get(getattr(d, meal) or "")
+        r = served(data, d, meal)
         if r is None:
             continue
         eaters = factors(data, db, day)
