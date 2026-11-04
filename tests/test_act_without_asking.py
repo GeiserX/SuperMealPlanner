@@ -433,3 +433,23 @@ def test_a_waiting_change_made_by_hand_says_how_not_that_it_was_dropped(data_dir
     (said,) = sends(b, -100)
     assert b.t("change_manual") in said["text"]
     assert b.t("auto_accept_dropped") not in said["text"]
+
+
+def test_the_bots_own_turn_moves_a_step_someone_set_instead_of_adding_a_second(data_dir, tmp_path):
+    """The morning plan check lists again a step Luis set the night before, with new amounts: the
+    one reminder takes the new words, never a second one beside it (two cook reminders for one
+    dish, with different amounts, on 4 Nov)."""
+    b, db = vsetup(data_dir, tmp_path)
+    direct(b)
+    when, at = ahead(2, 22)
+    rid, day = served(b, when)
+    db.add_reminder(-100, "luis", at, "Prepara 160 g de cuscús", 7, rid, day, "cook")
+    cfg(
+        data_dir,
+        text="Arreglado.\n"
+        + block((when, "Prepara 240 g de cuscús", "", "", f"dish {rid} {day} cook")),
+    )
+    who = {"first_name": b.t("plan_check_who")}
+    own_turn(b, lambda: b.take(-100, who, None, None, b.tt("plan_check_turn"), True, review=True))
+    (r,) = db.reminders(-100)
+    assert (r["at"], r["text"], r["by"]) == (at, "Prepara 240 g de cuscús", 7)
