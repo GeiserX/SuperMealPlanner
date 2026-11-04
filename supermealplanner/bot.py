@@ -1488,7 +1488,11 @@ class Bot:
             # copy first, and a change that would leave the week worse is not made (pre_check)
             held = await self.pre_check(chat_id, change, offering)
             if held:
-                change, made = None, False
+                # only the menu waits: the pantry still goes; the reminders written for the
+                # menu that is not made would be wrong, so the follow-up lists them again
+                change = {k: v for k, v in change.items() if k not in ("plan", "asked")}
+                change = {**change, "asked": True} if change else None
+                listed, offering = [], []
                 tail.append(self.t("auto_check_held"))
                 if not followup:  # fixed once, in a turn of its own that is checked the same way
                     self.follow_up(client, chat_id, {}, held)
@@ -1733,7 +1737,8 @@ class Bot:
             chat_id,
             "assistant",
             None,
-            "[the menu change was not made: " + "; ".join(problems) + "]",
+            # a count only: a problem's text may name someone's avoided food
+            f"[the menu change was not made: the check found {len(problems)} problems in it]",
         )
         said = (
             "Your last menu change was NOT made: checked on a copy before making it, it adds these "

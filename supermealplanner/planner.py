@@ -335,6 +335,22 @@ ICONS = {
 }
 
 
+def live_swaps(data: Data, day: Day, meal: str) -> list[Swap]:
+    """The day's swaps of that meal that apply: its recipe lists the ingredient replaced, the one
+    used is in the data, and the amount is a number (a plan file edited by hand may hold a bad
+    one: that swap does nothing)."""
+    r = data.recipes.get(getattr(day, meal) or "")
+    listed = {i.id for i in r.ingredients} if r else set()
+    return [
+        s
+        for s in day.swaps
+        if s.meal == meal
+        and s.out in listed
+        and s.use in data.ingredients
+        and (s.qty is None or (type(s.qty) in (int, float) and s.qty > 0))
+    ]
+
+
 def served(data: Data, day: Day | None, meal: str) -> Recipe | None:
     """The recipe of one planned meal as that day serves it: with the day's ingredient swaps for
     that meal (Day.swaps), the recipe file untouched. Everything that reads what a planned meal
@@ -345,7 +361,7 @@ def served(data: Data, day: Day | None, meal: str) -> Recipe | None:
     r = data.recipes.get(getattr(day, meal) or "")
     if r is None:
         return None
-    mine = {s.out: s for s in day.swaps if s.meal == meal and s.use in data.ingredients}
+    mine = {s.out: s for s in live_swaps(data, day, meal)}
     if not mine or not any(i.id in mine for i in r.ingredients):
         return r
     items = [

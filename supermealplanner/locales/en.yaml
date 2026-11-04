@@ -283,7 +283,8 @@ change_plan_resume: "Menu back on from {first} to {last}"
 change_plan_regenerate: "New menu drawn from {day} on; the days before it stay"
 change_plan_shift: "The menu from {day} on moves later and starts again on {back}; the days in between are paused"
 change_plan_undo: The last menu change is taken back
-change_plan_use: "{days}, {meal}: {food} instead of {old}; the recipe stays as it is"
+change_plan_use: "{days}, {meal}: {food}{amount} instead of {old}; the recipe stays as it is"
+change_plan_use_qty: " ({qty} {unit} per serving)"
 change_plan_restore: "{days}, {meal}: {food} again, as the recipe says"
 change_plan_days: "from {first} to {last}"
 change_plan_every_meal: every dish with it

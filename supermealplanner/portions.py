@@ -312,7 +312,7 @@ class Served(str):
     def of(cls, r: Recipe, plain: Recipe) -> str:
         if r is plain:
             return r.id
-        swapped = [f"{i.id}:{i.qty:g}" for i in r.ingredients]
+        swapped = [f"{i.id}:{i.qty!r}" for i in r.ingredients]
         key = cls(f"{r.id}~{','.join(swapped)}")
         key.recipe = r
         return key

@@ -18,7 +18,7 @@ from . import doctor, tasks
 from .db import DB
 from .i18n import Translator
 from .model import Data
-from .planner import paused_days, plan_for
+from .planner import live_swaps, paused_days, plan_for
 from .portions import person_days, shopping_list
 from .targets import current_kcal
 
@@ -583,10 +583,7 @@ def menu_now(data: Data, t: Translator, today: dt.date) -> list[str]:
 
     def swapped(d, meal: str) -> str:
         """The meal's ingredient swaps (a `use` change), as the plates and the list follow them."""
-        r = data.recipes.get(getattr(d, meal) or "")
-        mine = [
-            x for x in d.swaps if x.meal == meal and r and any(i.id == x.out for i in r.ingredients)
-        ]
+        mine = live_swaps(data, d, meal)  # as served() applies them
         if not mine:
             return ""
 

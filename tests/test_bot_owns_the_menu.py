@@ -101,6 +101,26 @@ def test_a_menu_change_of_its_own_that_adds_a_problem_is_not_made(data_dir, tmp_
     assert not b.pending(-100)  # never left waiting for the tick to accept it
 
 
+def test_a_held_change_keeps_its_pantry_drops_its_reminders_and_logs_no_problem_text(
+    data_dir, tmp_path
+):
+    b, db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
+    direct(b)
+    friday = dt.date(2026, 10, 16)
+    raw = {
+        "plan": [{"set": {"date": str(friday), "meal": "dinner", "recipe": "ensalada-garbanzos"}}],
+        "pantry": {"lechuga": 300},
+    }
+    reminder = "```reminders\n- 2026-10-15 20:00 | Remojar los garbanzos\n```"
+    cfg(data_dir, text="Hecho.\n```change\n" + yaml.safe_dump(raw) + "```\n" + reminder)
+    plan_check(b)
+    assert not doctor.serves(b.data, "ensalada-garbanzos", friday)
+    assert {x["ingredient"] for x in db.lots()} == {"lechuga"}  # the pantry part is made
+    assert not db.reminders(-100)  # written for the menu that was not made
+    logged = "\n".join(r["text"] for r in db.chat_rows(-100, 50) if r["role"] == "assistant")
+    assert "the check found 2 problems" in logged and "nothing cooks it" not in logged
+
+
 def test_control_the_same_change_asked_for_by_a_person_is_made(data_dir, tmp_path):
     """Someone's own request is made as asked and reviewed once sent (verifier.after), as before."""
     b, _db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])

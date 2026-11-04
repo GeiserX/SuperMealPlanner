@@ -102,7 +102,10 @@ def _days(args: dict, kind: str) -> tuple[dt.date, dt.date]:
 def _unit(data: Data, iid: str, new: dict) -> str | None:
     if iid in data.ingredients:
         return data.ingredients[iid].unit
-    return (new.get(iid) or {}).get("unit", "g") if iid in new else None
+    if iid not in new:
+        return None
+    fields = new[iid] if isinstance(new[iid], dict) else {}  # refused with its reason later
+    return fields.get("unit", "g")
 
 
 def parse(
@@ -245,6 +248,16 @@ def describe(ops: list[Op], data: Data, t, names: dict[str, str] | None = None) 
             words = {"days": days, "meal": meal, "food": food(a["ingredient"])}
             if op.kind == "use":
                 words["old"] = food(a["instead_of"])
+                unit = (
+                    data.ingredients[a["ingredient"]].unit
+                    if a["ingredient"] in data.ingredients
+                    else ""
+                )
+                words["amount"] = (
+                    ""
+                    if a["qty"] is None
+                    else t("change_plan_use_qty", qty=f"{a['qty']:g}", unit=unit)
+                )
             lines.append(t(f"change_plan_{op.kind}", **words))
         elif op.kind == "regenerate":
             lines.append(t("change_plan_regenerate", day=t.date(a["from"])))

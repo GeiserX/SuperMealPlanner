@@ -248,6 +248,8 @@ def test_the_change_is_said_in_the_households_words(data_dir):
     t = Translator("es")
     (line,) = menu.describe(menu.parse([use(D(2), "dinner")], data), data, t)
     assert "Bulgur en lugar de Pan" in line and "cena" in line
+    (line,) = menu.describe(menu.parse([use(D(2), "dinner", qty=30)], data), data, t)
+    assert "Bulgur (30 g por ración) en lugar de Pan" in line
     raw = {"from": str(D(0)), "to": str(D(6)), "ingredient": "pan"}
     (line,) = menu.describe(menu.parse([{"restore": raw}], data), data, t)
     assert "otra vez Pan" in line and t("change_plan_every_meal") in line
@@ -281,3 +283,25 @@ def test_the_day_and_recipe_pages_show_the_meal_as_that_day_serves_it(data_dir, 
         assert "Bulgur" in page and "Pan:" not in page
         assert "Pan" in c.get(f"/recipe/ensalada-0?d={D(3)}").text  # control: another day
         assert "Bulgur" in c.get(f"/?d={D(2)}").text
+
+
+def test_a_bad_swap_never_breaks_a_page_or_a_change(data_dir):
+    data = bread(data_dir)
+    salad_dinner(data, D(2))
+    change(data, use(D(2), "dinner"))
+    path = plans_dir(data) / f"{MONDAY}.yaml"
+    raw = yaml.safe_load(path.read_text())
+    (day,) = [d for d in raw["days"] if d["date"] == str(D(2))]
+    day["swaps"] = [
+        {"meal": "dinner", "out": "pan", "use": "bulgur", "qty": "plenty"},  # edited by hand
+        {"meal": "dinner", "out": "lechuga", "use": "gone-food", "qty": None},  # left the data
+    ]
+    path.write_text(yaml.safe_dump(raw, allow_unicode=True))
+    dinner = dict(day_menu(data, plan_for(data, D(2)).day(D(2))))["dinner"]
+    assert [i.id for i in dinner.ingredients] == ["lechuga", "egg", "pan"]  # as written
+    lines = context.menu_now(data, Translator("en"), MONDAY)
+    assert "gone-food" not in "\n".join(lines)
+    # a new ingredient given as something other than its fields: no crash here, the change's
+    # own ingredients check says why it is refused
+    ops = [use(D(2), "dinner", ingredient="quinoa", instead_of="pan")]
+    assert menu.parse(ops, data, None, {"quinoa": 42})[0].kind == "use"
