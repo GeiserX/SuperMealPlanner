@@ -34,7 +34,16 @@ from zoneinfo import ZoneInfo
 from .db import DB
 from .model import WEEKDAYS, Data
 from .planner import Plans
-from .portions import EVENING, session_at, session_sheets, session_when, soaks_in, thaw_for, times
+from .portions import (
+    EVENING,
+    fmt_qty,
+    session_at,
+    session_sheets,
+    session_when,
+    soaks_in,
+    thaw_for,
+    times,
+)
 
 DONE, NOT_DONE, UNKNOWN = "done", "not_done", "unknown"
 # the steps something later hangs on: not done, or not answered by the next morning, the rest of
@@ -227,15 +236,29 @@ def _day(data: Data, db: DB, plans: Plans, day: dt.date, bot) -> list[Task]:
             )
     later = plans.plan(tomorrow)
     if later and tomorrow not in plans.paused:
+        # one food for several of tomorrow's meals is one step: one line, the whole amount, each
+        # meal named, under the first meal's key (the key a single meal always had)
+        same: dict[str, list] = {}
         for x in thaw_for(data, db, later, tomorrow):
+            same.setdefault(x.ingredient.id, []).append(x)
+        for xs in same.values():
+            x = xs[0]
             text = line = ""
             if bot:
-                words = {
-                    "name": x.ingredient.name,
-                    "amount": x.amount,
-                    "meal": t("meal_" + x.meal),
-                    "dish": bot.recipe_url(x.recipe.id, tomorrow, x.recipe.name),
-                }
+                amount = (
+                    x.amount
+                    if len(xs) == 1
+                    else fmt_qty(x.ingredient, sum(y.qty for y in xs), data.locale)
+                )
+                meals = [
+                    t(
+                        "task_thaw_meal",
+                        meal=t("meal_" + y.meal),
+                        dish=bot.recipe_url(y.recipe.id, tomorrow, y.recipe.name),
+                    )
+                    for y in xs
+                ]
+                words = {"name": x.ingredient.name, "amount": amount, "meals": " · ".join(meals)}
                 text, line = t("task_thaw", **words), t("reminder_thaw_item", **words)
             out.append(
                 Task(
