@@ -35,7 +35,7 @@ The menu can be changed from the chat (see the bot below). Plans are generated f
 - A new draw starts on a Monday. The days before it stay as they are, the earlier plan stops cooking for the days it lost, and asking again gives another draw.
 - An ingredient can be swapped in planned meals without touching the recipe (`use`: bulgur instead of bread, on one meal or on every meal of some days that has it). The plates, the list, the batch sheet, the soak and thaw tasks and the checks all follow it, and `restore` or undo takes it back ([data format](data-format.md#changes-from-the-chat)).
 - Every change runs through the validator first. One that would newly break a hard rule (an avoided ingredient, a dinner rule, a weekly minimum, a lunch that would not keep) is refused with the reason and nothing is written. The limit on how often a dish repeats only shapes a draw: a dish someone asked for may go over it.
-- The plans and paused days as they were before the last change are kept in `state/menu-undo/`, so the last menu change can be undone once.
+- The plans and paused days as they were before the last change are kept in `state/menu-undo/`, so the last menu change can be undone once. The undo is refused while a plan was written after that change without a copy (the next 4-week plan, an hourly repair): putting the old copy back would delete what they wrote.
 
 ## Portions
 

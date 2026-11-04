@@ -123,7 +123,8 @@ The menu you may change, any day and any meal (breakfast, lunch, side, snack, di
   already eaten stay as they were. Setting another dish in that meal drops its swaps; restore
   takes them away by hand.
 - restore: the meals from one date to another eat their recipe's own ingredient again.
-- undo: the last menu change is taken back.
+- undo: the last menu change is taken back, unless a plan was written after it (a new plan or a
+  repair); then change it back by hand.
 Recipes that exist you may change too: name, meals, tags, season, serves_note, video, steps,
 ingredients and nutrition (not id, kind or how long it keeps). "No porridge at breakfast" is taking
 breakfast out of the meals of the porridge recipes: the app then gives the days planned from tomorrow

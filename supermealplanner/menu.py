@@ -20,12 +20,15 @@ dish in that meal drops its swaps; `restore` drops them by hand.
 
 Plans are generated files under state/, outside the data repo's git, so a menu change needs no
 token: it is written there, after the planner's validator found no hard rule newly broken. The
-plans as they were are kept beside them, so the last change can be undone.
+plans as they were are kept beside them, so the last change can be undone while the plans are still
+as it left them.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import logging
 import re
 import shutil
@@ -77,6 +80,9 @@ class MenuError(Exception):
 class Op:
     kind: str  # set, swap, pause, resume, regenerate, shift, use, restore, undo
     args: dict  # dates already parsed
+    # restore, once made: the recipe's own ingredient it brought back, as the plans no longer
+    # hold the swaps that named it
+    back: str | None = None
 
 
 def _date(value, what: str) -> dt.date:
@@ -247,7 +253,7 @@ def describe(ops: list[Op], data: Data, t, names: dict[str, str] | None = None) 
             meal = t("meal_" + a["meal"]).lower() if a["meal"] else t("change_plan_every_meal")
             back = a["ingredient"]
             if op.kind == "restore":  # named as the swap uses it: the meal goes back to its own
-                back = _restored(data, a)
+                back = op.back or _restored(data, a)
             words = {"days": days, "meal": meal, "food": food(back)}
             if op.kind == "use":
                 words["old"] = food(a["instead_of"])
@@ -440,6 +446,7 @@ def _use(data: Data, plans, op: Op, today: dt.date) -> set[Path]:
                 continue
             if op.kind == "restore":
                 d.swaps = [x for x in d.swaps if x not in gone]
+                op.back = op.back or was  # the swaps are gone now: the done line names it
             else:
                 _amount(data, was, a)
                 d.swaps = [x for x in d.swaps if x not in gone]
@@ -562,6 +569,20 @@ def _undo_dir(data: Data) -> Path:
     return data.state / "menu-undo"
 
 
+def _written(data: Data) -> dict[str, str]:
+    """The plans and the paused days as they are on disk now: file name -> sha256 of its text."""
+    files = [*plans_dir(data).glob("*.yaml"), data.state / "paused.yaml"]
+    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(files) if p.exists()}
+
+
+def _seal(data: Data) -> None:
+    """Note the plans as the change just left them. An undo goes through only while they still
+    are: the scheduler's next plan and the hourly repairs write plans without a copy for undo, and
+    putting the old copy back would delete what they wrote."""
+    keep = _undo_dir(data)
+    (keep / "after.json").write_text(json.dumps(_written(data), sort_keys=True), encoding="utf-8")
+
+
 def _snapshot(data: Data, by: str = "person") -> None:
     """Keep the plans and the paused days as they are now, replacing the last copy. by: who made
     the change it is kept for ("bot": an automatic turn), so the bot undoes only its own."""
@@ -583,6 +604,12 @@ def _undo(data: Data, by: str = "person") -> None:
     made = (keep / "by").read_text(encoding="utf-8") if (keep / "by").exists() else "person"
     if by == "bot" and made != "bot":
         raise MenuError("the last menu change was the household's: only they undo it")
+    after = keep / "after.json"
+    if not after.exists() or json.loads(after.read_text(encoding="utf-8")) != _written(data):
+        raise MenuError(
+            "the plans were written again after the last menu change (a new plan or a repair), "
+            "so undoing it would lose that; make the change back by hand instead"
+        )
     for p in plans_dir(data).glob("*.yaml"):
         p.unlink()
     plans_dir(data).mkdir(parents=True, exist_ok=True)
@@ -611,6 +638,7 @@ def retire(data: Data, pairs: set[tuple[str, str]], start: dt.date) -> int:
             _snapshot(data)
             for path, plan in changed.items():
                 plan.save(path)
+            _seal(data)
         return days
 
 
@@ -669,3 +697,4 @@ def apply(data: Data, ops: list[Op], today: dt.date, by: str = "person") -> None
         if paused != was:
             # days long gone are dropped, so the file never grows
             save_paused(data, {d for d in paused if d >= today - dt.timedelta(days=35)})
+        _seal(data)

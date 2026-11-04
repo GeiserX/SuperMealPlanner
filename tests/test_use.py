@@ -476,3 +476,44 @@ def test_a_block_that_adds_an_ingredient_can_use_it_at_once(data_dir):
     }
     p = changes.parse(raw, data, "ana")
     assert [op.kind for op in p.plan] == ["use"] and "quinoa" in p.ingredients
+
+
+# ---------------------------------------------------------------- undo never loses a newer plan
+
+
+def test_undo_refuses_when_a_plan_was_written_after_the_change(data_dir):
+    """The scheduler's next plan and the hourly repairs write plans without a copy for undo: an
+    undo that put the old copy back would delete them, so it is refused with the reason."""
+    data = bread(data_dir)
+    salad_dinner(data, D(2))
+    later = plans_dir(data) / f"{D(28)}.yaml"
+    generate(data, D(28), 4).save(later)  # the scheduler's new plan, no copy kept
+    with pytest.raises(menu.MenuError, match="written again after"):
+        change(data, {"undo": True})
+    assert later.exists() and plan_for(data, D(2)).day(D(2)).dinner == "ensalada-0"
+    # a repair rewriting a plan the change wrote is refused the same way
+    later.unlink()
+    path = plans_dir(data) / f"{MONDAY}.yaml"
+    plan = load_plan(path)
+    plan.day(D(3)).dinner = "ensalada-1"
+    plan.save(path)
+    with pytest.raises(menu.MenuError, match="written again after"):
+        menu.apply(data, menu.parse([{"undo": True}], data), MONDAY, by="person")
+    # control: with the plans as the change left them, the undo goes through
+    was = plan_for(data, D(4)).day(D(4)).dinner
+    salad_dinner(data, D(4))
+    change(data, {"undo": True})
+    assert plan_for(data, D(4)).day(D(4)).dinner == was
+
+
+def test_a_restore_still_names_the_recipes_own_food_after_it_is_made(data_dir):
+    """The done line is written after the change, when the swap is gone from the plans."""
+    data = bread(data_dir)
+    salad_dinner(data, D(2))
+    change(data, use(D(2), "dinner"))
+    t = Translator("es")
+    ops = menu.parse([{"restore": {"date": str(D(2)), "ingredient": "bulgur"}}], data)
+    (before,) = menu.describe(ops, data, t)
+    menu.apply(data, ops, MONDAY)
+    (after,) = menu.describe(ops, data, t)
+    assert before == after and "otra vez Pan" in after and "Bulgur" not in after
