@@ -164,7 +164,7 @@ reminder_batch_from: "🍲 Mañana desde las {time} toca cocinar por adelantado:
 reminder_soak: "🫘 Esta noche deja en remojo para cocinar mañana por adelantado:\n{items}\n{url}"
 reminder_soak_item: "• {name}: {amount}, para {dish}"
 reminder_thaw: "🧊 Esta noche saca del congelador lo de mañana y déjalo descongelar en la nevera o en la encimera (el pan también se puede tostar congelado justo antes de comer):\n{items}\n{url}"
-reminder_thaw_item: "• {name}: {amount} ({meal}: {dish})"
+reminder_thaw_item: "• {name}: {amount} ({meals})"
 reminder_meal: "🍽️ {meal} de hoy: {dish}. {where}"
 reminder_shopping: "🛒 Hoy toca compra: {url}"
 reminder_pills_lunch: "💊 {name}, ¿te has tomado las pastillas de la comida? Responde /pastillas cuando lo hagas."
@@ -361,7 +361,8 @@ tasks_none_day: Nada que hacer.
 tasks_note: Una sola lista de todo lo que hay que hacer, a su hora. Los avisos del chat, la página de Cocinar y la de cada día la leen, y los avisos que se ponen desde el chat también están en ella.
 task_cook: "🍲 Cocinar por adelantado {when}: {dishes}. {url}"
 task_soak: "🫘 Esta noche, deja en remojo: {name}, {amount}, para {dish}"
-task_thaw: "🧊 Esta noche, saca del congelador: {name}, {amount} ({meal}: {dish})"
+task_thaw_meal: "{meal}: {dish}"
+task_thaw: "🧊 Esta noche, saca del congelador: {name}, {amount} ({meals})"
 batch_tasks_title: Otras tareas del día
 today_tasks_title: Para hacer hoy
 vote_like: Me gusta

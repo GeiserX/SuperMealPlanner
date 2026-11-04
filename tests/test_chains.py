@@ -239,3 +239,34 @@ def test_a_thaw_before_a_session_that_starts_after_noon_is_cooked_by_it(data_dir
     change(data, {"set": {"date": str(MONDAY), "meal": "lunch", "recipe": "pescado-batch"}})
     remind(db, MONDAY, "12:30", "pescado-batch", MONDAY, "thaw")
     assert not [k for k in found(data, db) if "pescado-batch" in k]
+
+
+def test_one_frozen_food_for_two_of_tomorrows_meals_is_one_line_with_the_whole_amount(
+    data_dir, tmp_path
+):
+    """Bread for tomorrow's lunch and dinner showed as two «take out of the freezer» lines of the
+    same food on 4 Nov; it is one step: one line, both meals named, the amounts added up."""
+    b, db = setup(data_dir, tmp_path)
+    raw = yaml.safe_load((data_dir / "ingredients.yaml").read_text())
+    raw["merluza"]["frozen"] = True
+    (data_dir / "ingredients.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True))
+    soak(data_dir)
+    data = load(data_dir)
+    tuesday = D(8)
+    change(
+        data,
+        {
+            "set": {
+                "date": str(tuesday),
+                "meal": "lunch",
+                "recipe": "pescado-batch",
+                "cook": str(D(5)),
+            }
+        },
+    )
+    change(data, {"set": {"date": str(tuesday), "meal": "dinner", "recipe": "merluza-cena-1"}})
+    thaws = [x for x in tasks.tasks_for(data, db, D(7), D(7), bot=b) if x.kind == "thaw"]
+    (x,) = [x for x in thaws if x.ingredient == "merluza"]
+    assert x.key == f"thaw:{tuesday}:lunch:merluza"  # the key a lunch alone always had
+    assert "pescado-batch" in x.text and "merluza-cena-1" in x.text
+    assert x.text.count("(") >= 1 and " · " in x.text
