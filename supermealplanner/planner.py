@@ -358,7 +358,7 @@ def swap_breaks(data: Data, day: Day, x: Swap) -> str | None:
     """Why a swap of that day breaks a hard rule, or None: at dinner it brings in a flag someone
     avoids at dinner; it takes out of its meal a legume, fish or oily fish the recipe is counted
     for in the weekly rules (the flag the ingredient replaced has and the one used lacks); or it
-    takes out a flag a person keeps eating (`keep_flags`, such as gluten before a coeliac test).
+    takes out a flag a person keeps eating (`keep_flags`, such as one a doctor asks for).
     An avoided food is the dish's own check (validate, repair)."""
     use, out = data.ingredients.get(x.use), data.ingredients.get(x.out)
     if use is None:
