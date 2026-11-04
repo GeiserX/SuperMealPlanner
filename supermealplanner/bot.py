@@ -3707,7 +3707,9 @@ class Bot:
         offering = [r for r in listed if "cancel" not in r]
         before = await self.problem_keys(offering)
         uid = covered[-1].uid if covered else None
-        member = fixes or self.person_of(uid or 0) is not None
+        # the bot's own turn (no one wrote it, uid None) in direct mode acts for the household, as
+        # a member's tap would: it moves or cancels a step anyone set, never adds a second beside it
+        member = fixes or (self.direct and uid is None) or self.person_of(uid or 0) is not None
         items = self._offered(offering, covered[-1].who if covered else None)
         cancels = [r["cancel"] for r in listed if "cancel" in r]
         cancels, items, said = self.reword(chat_id, cancels, items, uid, member, auto)
