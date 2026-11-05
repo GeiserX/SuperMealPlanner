@@ -4720,8 +4720,9 @@ class Bot:
         bot asks itself in bot.checkup_chat, so the chef proposes the fixes in the chat like any
         change. A check that ends after the checkup still gets its turn that morning; a plan raised
         once is not raised again. A check that never ends in the window still gives the turn its
-        sure problems. Only without an AI do the sure problems go there as a list, one line each,
-        once: with one, the app never writes it, the model does. at_once: a plan the app just drew,
+        sure problems. Only when no turn can come (no AI, or the chat is a private one of no one in
+        the household) do the sure problems go there as a list, one line each, once: otherwise the
+        app never writes it, the model does. at_once: a plan the app just drew,
         raised now rather than the next morning. Only what goes wrong in the kitchen or for health
         raises it (verifier.ACT among the check's findings), and never the same problems twice."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
@@ -4749,7 +4750,9 @@ class Bot:
             return
         found = await self.problems() or []
         sure = [p for p in found if p.kind not in (*verifier.SKIP, "avoided", "unconfirmed")]
-        if no_ai:
+        # a private checkup chat: the turn is that person's, so it sees only what they may see
+        who = self.person_of(chat) if chat > 0 else None
+        if no_ai or (chat > 0 and who is None):  # no turn can come: a private chat of no one
             db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # once, said or not
             if sure:  # nobody else can word it: one line each, never one paragraph
                 items = "\n".join("• " + self.problem_line(p) for p in sure)
@@ -4774,10 +4777,6 @@ class Bot:
         ).hexdigest()
         if raised.get("found") == said:
             return  # the same findings as the last turn: it would say the same again
-        # a private checkup chat: the turn is that person's, so it sees only what they may see
-        who = self.person_of(chat) if chat > 0 else None
-        if chat > 0 and who is None:
-            return  # a private chat of no one in the household: the list at the window's end
         db.set_kv(PLAN_RAISED, {"key": key, "on": on, "found": said})
         user = {"first_name": self.t("plan_check_who")}
         self.take(chat, user, who, None, self.tt("plan_check_turn"), True, review=True)
