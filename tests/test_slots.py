@@ -452,3 +452,16 @@ def test_the_rewrite_keeps_doses_word_for_word_and_never_cuts_food(data_dir, tmp
     assert "dose is kept word for word" in system and "never dropped" in system
     assert "never suggest eating less after a binge" in system
     assert "this is for food only" in system
+
+
+def test_a_long_task_line_is_never_cut(data_dir, tmp_path):
+    """The list a message's buttons number says each task whole: the model writes it short, the
+    app never cuts it mid-word."""
+    b, db = setup(data_dir, tmp_path)
+    long = (
+        "In today's session, besides the dahl (with its pasta, on the cooking sheet): blanch the"
+        " green beans 3 min and the artichoke 5 min, and freeze them"
+    )
+    a = db.add_reminder(-100, "ana", at(soon(), "21:30"), long, 7)
+    lines, _ = b.task_buttons(b.once_tasks([db.reminder(a)]))
+    assert lines == ["⏰ " + long]
