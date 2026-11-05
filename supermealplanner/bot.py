@@ -242,7 +242,6 @@ TASK_BUTTONS = (
 )
 TASK_BUTTONS_KEEP = 400  # Telegram's 64 bytes of callback data hold the short id, not the key
 TASK_ASKED = "task.asked"  # {task key: the morning the day message asked about it}: asked once
-TASK_WHAT = 80  # characters of a task's text where its buttons say which task is which
 # why a change the app could not word was refused, for the AI
 UNREADABLE = "the app could not read this change; nothing of it was made. Write it again, simpler"
 TASK_CHANGE_DAYS = 31  # how far back a change block may say a task was done (a freezer lunch)
@@ -3331,12 +3330,13 @@ class Bot:
         return [x for x in found if x.key not in said and x.key not in asked]
 
     def task_what(self, x: tasklist.Task) -> str:
-        """A task in one short line of plain words, for the list its buttons number."""
+        """A task in one line of plain words, for the list its buttons number. Whole: the app never
+        cuts a message, the model writes it short (REMINDER_CHARS)."""
         text = x.text or x.line
         if x.kind == "cook":  # the session's sheet link says nothing of the task
             text = _TRAILING_LINK.sub(".", text).removesuffix(" " + self.t("link_sheet"))
         text = " ".join(_LINK.sub(r"\1", text).split())
-        return text if len(text) <= TASK_WHAT else text[: TASK_WHAT - 1].rstrip() + "…"
+        return text
 
     def task_buttons(
         self, found: list[tasklist.Task], together: dict[str, list[str]] | None = None
