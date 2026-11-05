@@ -410,7 +410,7 @@ verify_turn_direct: "[Check of your last answer, automatic: nobody wrote this] Y
 # the consistency check (doctor.py): what the app found, after a change and in the morning
 doctor_reminder_cancelled: "🗑 Reminder cancelled, the menu no longer has its dish: {when}: {text}"
 doctor_new: "⚠️ This change left something to fix: {items}."
-doctor_morning: "⚠️ The plan has something to fix: {items}."
+doctor_morning: "⚠️ The plan has something to fix:\n{items}"
 problem_off_day: "the batch session on {date} is not on a batch day"
 problem_split: "{dish} on {a} and {b} is cooked twice; one cook on {cook} would do"
 problem_too_old: "lunch on {date} ({dish}) is cooked on {cook} and does not keep that long"

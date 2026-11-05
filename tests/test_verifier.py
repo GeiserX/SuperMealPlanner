@@ -598,9 +598,10 @@ def test_a_private_checkup_chat_gets_the_plan_turn_as_its_person_or_not_at_all(d
     verifier.llm.complete, real = fake, verifier.llm.complete
     try:
         run(verifier.check_plan(b.data, db, MONDAY))
-        cfg.checkup_chat = 99  # a private chat of no one in the household
+        cfg.checkup_chat = 99  # a private chat of no one in the household: no turn, the list
         run(b.raise_plan(None))
-        assert taken == [] and db.get_kv("verifier.plan_raised") is None
+        assert taken == [] and db.get_kv("verifier.plan_raised")
+        db.set_kv("verifier.plan_raised", None)
         cfg.checkup_chat = cfg.people["ana"]
         run(b.raise_plan(None))
         assert taken == [(cfg.people["ana"], "ana")]
@@ -645,9 +646,11 @@ def test_a_certain_problem_gets_the_plan_turn_when_the_judgment_found_nothing(da
     assert taken == [(-100, b.t("plan_check_turn"))] and sends(b, -100) == []
 
 
-def test_a_plan_check_that_never_ends_in_the_window_leaves_the_list_once(
+def test_a_plan_check_that_never_ends_in_the_window_gives_the_turn_and_never_a_list(
     data_dir, tmp_path, monkeypatch
 ):
+    """With an AI the app never writes the problems itself (a wall of text nobody reads): when the
+    check does not end in the window, the model still gets the turn, with the sure problems."""
     from supermealplanner import bot as bot_module
 
     b, db, taken = certain_setup(data_dir, tmp_path)
@@ -665,9 +668,26 @@ def test_a_plan_check_that_never_ends_in_the_window_leaves_the_list_once(
         run(b.raise_plan(None))
     finally:
         verifier.llm.complete = real
-    (report,) = [p["text"] for p in sends(b, -100)]
-    assert report.startswith("⚠️ The plan has something to fix: the batch session on")
-    assert taken == []
+    assert sends(b, -100) == []
+    assert taken == [(-100, b.t("plan_check_turn"))]
+
+
+def test_a_private_checkup_chat_of_no_one_gets_the_list_one_line_each(data_dir, tmp_path):
+    """No turn can come there (no person's turn to take), so the sure problems go as a list, once."""
+    b, db, taken = certain_setup(data_dir, tmp_path)
+    b.data.settings.bot.checkup_chat = 99
+    _calls, fake = judged({})
+    verifier.llm.complete, real = fake, verifier.llm.complete
+    try:
+        run(verifier.check_plan(b.data, db, MONDAY))
+        run(b.raise_plan(None))
+        run(b.raise_plan(None))
+    finally:
+        verifier.llm.complete = real
+    (report,) = [x["text"] for x in sends(b, 99)]
+    assert taken == [] and report.startswith(
+        "⚠️ The plan has something to fix:\n• the batch session"
+    )
 
 
 def test_a_step_a_cook_could_misread_is_kept_and_every_chat_sees_it(data_dir, tmp_path):

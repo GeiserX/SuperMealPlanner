@@ -342,7 +342,8 @@ def test_the_morning_checkup_posts_no_list_and_without_an_ai_the_list_comes_once
     run(b.raise_plan(None))
     run(b.raise_plan(None))
     (report,) = [p["text"] for p in sends(b, -100)]
-    assert report.startswith("⚠️ The plan has something to fix: the batch session on Friday 16")
+    assert report.startswith("⚠️ The plan has something to fix:\n• the batch session on Friday 16")
+    assert "; " not in report  # one line per problem, never one paragraph
 
 
 def test_the_morning_checkup_can_be_turned_off(data_dir, tmp_path):
