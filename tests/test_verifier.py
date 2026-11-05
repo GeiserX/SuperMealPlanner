@@ -645,9 +645,11 @@ def test_a_certain_problem_gets_the_plan_turn_when_the_judgment_found_nothing(da
     assert taken == [(-100, b.t("plan_check_turn"))] and sends(b, -100) == []
 
 
-def test_a_plan_check_that_never_ends_in_the_window_leaves_the_list_once(
+def test_a_plan_check_that_never_ends_in_the_window_gives_the_turn_and_never_a_list(
     data_dir, tmp_path, monkeypatch
 ):
+    """With an AI the app never writes the problems itself (a wall of text nobody reads): when the
+    check does not end in the window, the model still gets the turn, with the sure problems."""
     from supermealplanner import bot as bot_module
 
     b, db, taken = certain_setup(data_dir, tmp_path)
@@ -665,9 +667,8 @@ def test_a_plan_check_that_never_ends_in_the_window_leaves_the_list_once(
         run(b.raise_plan(None))
     finally:
         verifier.llm.complete = real
-    (report,) = [p["text"] for p in sends(b, -100)]
-    assert report.startswith("⚠️ The plan has something to fix: the batch session on")
-    assert taken == []
+    assert sends(b, -100) == []
+    assert taken == [(-100, b.t("plan_check_turn"))]
 
 
 def test_a_step_a_cook_could_misread_is_kept_and_every_chat_sees_it(data_dir, tmp_path):

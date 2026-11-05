@@ -4719,9 +4719,9 @@ class Bot:
         problems (what the plan check found, or one the consistency check is sure of), a turn the
         bot asks itself in bot.checkup_chat, so the chef proposes the fixes in the chat like any
         change. A check that ends after the checkup still gets its turn that morning; a plan raised
-        once is not raised again. When no turn can come (no AI, or no turn by the end of the
-        window: the check never ended, or the chat is a private one of no one in the household),
-        the sure problems go there as one list instead, once. at_once: a plan the app just drew,
+        once is not raised again. A check that never ends in the window still gives the turn its
+        sure problems. Only without an AI do the sure problems go there as a list, one line each,
+        once: with one, the app never writes it, the model does. at_once: a plan the app just drew,
         raised now rather than the next morning. Only what goes wrong in the kitchen or for health
         raises it (verifier.ACT among the check's findings), and never the same problems twice."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
@@ -4749,20 +4749,25 @@ class Bot:
             return
         found = await self.problems() or []
         sure = [p for p in found if p.kind not in (*verifier.SKIP, "avoided", "unconfirmed")]
-        if no_ai or late:
+        if no_ai:
             db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # once, said or not
-            if sure:
-                items = "; ".join(self.problem_line(p) for p in sure)
+            if sure:  # nobody else can word it: one line each, never one paragraph
+                items = "\n".join("• " + self.problem_line(p) for p in sure)
                 try:
                     await self.send(client, chat, self.t("doctor_morning", items=items))
                 except TelegramError as e:
                     log.warning("could not post the plan's problems: %s", safe(e))
             return
-        if kept.get("key") != key:
+        # With an AI the app never writes the list: the model says it, short. A check that did not
+        # end in the window gives the turn the sure problems alone.
+        checked = kept.get("key") == key
+        if not checked and not late:
             return  # the check has not judged this plan yet
-        found = await asyncio.to_thread(verifier.plan_findings, data, db, today)
+        found = await asyncio.to_thread(verifier.plan_findings, data, db, today) if checked else []
         found = sorted(f for f in found if f.split(":", 1)[0] in verifier.ACT)
         if not (sure or found):
+            if late:
+                db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # nothing to say today
             return
         said = hashlib.sha256(
             "\n".join([*found, *sorted(p.key for p in sure)]).encode()
