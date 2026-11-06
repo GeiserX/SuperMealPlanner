@@ -1378,3 +1378,39 @@ def test_the_assistant_is_told_never_to_answer_with_a_diff(data_dir):
     from supermealplanner import context
 
     assert "Never show a diff" in context.WHO
+
+
+def test_a_complete_only_plugin_gets_the_long_time_of_a_turn_the_bot_asked_itself(
+    data_dir, tmp_path
+):
+    from .test_quiet_turns import own_turn
+
+    data = plugin_data(data_dir)
+    (data_dir / "plugins" / "ai.py").write_text(
+        "import pathlib\nHERE = pathlib.Path(__file__).parent\n"
+        "def complete(system, messages, settings):\n"
+        "    with (HERE / 'timeouts.txt').open('a') as f:\n"
+        "        f.write(str(settings.get('timeout_s')) + '\\n')\n"
+        "    return 'ok'\n"
+    )
+    b = ChatBot(load(data_dir), DB(tmp_path / "b.db"))
+    who = {"first_name": b.t("plan_check_who")}
+    own_turn(b, lambda: b.take(-100, who, None, None, b.tt("plan_check_turn"), True, review=True))
+    timeouts = (data_dir / "plugins" / "timeouts.txt").read_text().split()
+    assert timeouts[0] == str(data.settings.llm.auto_timeout_s)
+
+
+def test_a_turn_the_bot_asked_itself_that_breaks_is_not_told_to_the_chat(data_dir, tmp_path):
+    from .test_quiet_turns import own_turn
+
+    b = ChatBot(plugin_data(data_dir), DB(tmp_path / "b.db"))
+
+    async def broken(*a, **k):
+        raise RuntimeError("broke while the answer was handled")
+
+    b.ask = broken
+    who = {"first_name": b.t("plan_check_who")}
+    own_turn(b, lambda: b.take(-100, who, None, None, b.tt("plan_check_turn"), True, review=True))
+    assert b.t("bot_error") not in ChatBot.texts(b, -100)
+    run(b.handle(None, msg("@chefbot hola", chat=-100, user=7)))  # someone asked: told
+    assert ChatBot.texts(b, -100)[-1] == b.t("bot_error")
