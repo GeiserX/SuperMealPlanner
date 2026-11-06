@@ -1358,16 +1358,20 @@ class Bot:
             }
             if llm.asks(data):
                 turn["ask"] = self._asker(client, turn_state)
+            # a turn the bot asked itself: nobody waits, and fixing the week takes longer
+            unasked = all(i.auto or i.review or i.followup for i in items)
+            cfg = data.settings.llm
+            limit = max(cfg.timeout_s, cfg.auto_timeout_s) if unasked else cfg.timeout_s
             try:
-                reply = await asyncio.wait_for(
-                    llm.converse(data, turn), timeout=data.settings.llm.timeout_s
-                )
+                reply = await asyncio.wait_for(llm.converse(data, turn, limit), timeout=limit)
             except Exception as e:  # noqa: BLE001
                 log.warning("AI call failed: %s", safe(e))
                 later = _retry_after(e)
                 if later is not None:  # out of capacity: the same messages go again by themselves
                     deferred = True
                     await self.rest(client, chat_id, items, later)
+                    return None
+                if unasked:  # nobody asked: "try again in a minute" would answer no one
                     return None
                 # never recorded: the unanswered messages go again with the next one
                 await self.send(

@@ -25,6 +25,8 @@ import json, pathlib
 HERE = pathlib.Path(__file__).parent
 
 def converse(turn, settings):
+    with (HERE / "timeouts.txt").open("a") as f:
+        f.write(str(settings.get("timeout_s")) + "\\n")
     with (HERE / "turns.jsonl").open("a") as f:
         f.write(json.dumps({k: v for k, v in turn.items() if not callable(v)}) + "\\n")
     cfg = json.loads((HERE / "reply.json").read_text()) if (HERE / "reply.json").exists() else {}
@@ -181,6 +183,22 @@ def test_a_failed_answer_is_not_recorded_and_the_message_goes_again(data_dir, tm
     reply(data_dir)
     run(b.handle(None, msg("segunda", chat=7, user=7)))
     assert [m["content"] for m in turns(data_dir)[-1]["new"]] == ["luis: primera\nluis: segunda"]
+
+
+def test_a_turn_the_bot_asked_itself_gets_the_long_time_and_fails_in_silence(data_dir, tmp_path):
+    """The plan check fixes the week and checks each fix: nobody waits for it, so it gets
+    llm.auto_timeout_s, and when it fails nobody is told to try again: nobody asked."""
+    from .test_quiet_turns import own_turn
+
+    data = plugin_data(data_dir)
+    b = ChatBot(data, DB(tmp_path / "b.db"))
+    run(b.handle(None, msg("@chefbot hola", chat=-100, user=7)))  # someone asked: a reply's time
+    reply(data_dir, fail=True)
+    who = {"first_name": b.t("plan_check_who")}
+    own_turn(b, lambda: b.take(-100, who, None, None, b.tt("plan_check_turn"), True, review=True))
+    timeouts = (data_dir / "plugins" / "timeouts.txt").read_text().split()
+    assert timeouts == [str(data.settings.llm.timeout_s), str(data.settings.llm.auto_timeout_s)]
+    assert b.t("bot_error") not in ChatBot.texts(b, -100)
 
 
 def test_a_busy_provider_is_told_once_and_the_messages_are_answered_when_it_is_back(
