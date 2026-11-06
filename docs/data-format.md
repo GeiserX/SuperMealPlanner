@@ -137,6 +137,7 @@ llm:
   api_key_env: LLM_API_KEY
   instructions: "Answer like a friendly home cook."
   timeout_s: 600
+  auto_timeout_s: 1800        # a turn the bot asks itself (the plan check, the weekly review): nobody waits, it fixes and checks the week; the longer of this and timeout_s
   review_timeout_s: 1200      # one review of an answer once sent, or of the plan (complete()); unset: timeout_s
 transcription:                # voice notes; optional
   provider: openai            # none | openai (any /audio/transcriptions endpoint) | plugin
@@ -196,7 +197,7 @@ A plugin can also keep the conversation on its side, so each message sends only 
 
 Each message in `new` and `history` is `{"role", "content", "ids", "ts"}`: the app's ids of the chat messages merged into it and when the last of them was written (ISO 8601, UTC).
 
-It returns the answer, or `{"text": ..., "conversation": id, "kept": true}`. The app keeps the id per chat and sends it back with the next message. `conversation: None` makes the next message carry the whole history again; `kept: false` (the plugin's side did not store this turn) sends these messages again with the next one. The app stops waiting after `llm.timeout_s` (in `settings`), but it cannot stop a plugin's thread: a plugin that waits on a remote turn should give up, and cancel that turn, a little before then, so a turn the app has stopped waiting for is never stored on the plugin's side.
+It returns the answer, or `{"text": ..., "conversation": id, "kept": true}`. The app keeps the id per chat and sends it back with the next message. `conversation: None` makes the next message carry the whole history again; `kept: false` (the plugin's side did not store this turn) sends these messages again with the next one. The app stops waiting after `settings["timeout_s"]`: `llm.timeout_s`, or the longer of it and `llm.auto_timeout_s` for a turn the bot asked itself; a plugin reads the limit from `settings["timeout_s"]`, but it cannot stop a plugin's thread: a plugin that waits on a remote turn should give up, and cancel that turn, a little before then, so a turn the app has stopped waiting for is never stored on the plugin's side.
 
 **One answer per burst.** A chat's messages wait 2.5 seconds after the newest one, and a voice note of that chat still being transcribed holds them up to 30 seconds, so messages sent together get one answer. Messages that arrive while the answer is being written are handed to the plugin through `incoming()`; it names the ones its answer took into account with `"covers": [ids]` in its dict, and every handed-over message it does not name makes the next turn. An answer that covers one message replies to it; one that covers several is sent plainly. A plugin that never calls `incoming()` gets those messages in the next turn.
 

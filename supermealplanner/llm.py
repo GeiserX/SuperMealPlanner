@@ -255,9 +255,11 @@ def _proposals(raw) -> list[dict]:
     return out
 
 
-async def converse(data: Data, turn: dict) -> Reply:
+async def converse(data: Data, turn: dict, timeout: float | None = None) -> Reply:
     """One answer in a chat. A plugin with converse() keeps the conversation; every other provider
-    gets the rules, the context and the recent messages, as complete() always did."""
+    gets the rules, the context and the recent messages, as complete() always did. timeout: how
+    long the app waits for this turn when it is not llm.timeout_s; a plugin gets it as
+    settings["timeout_s"]."""
     cfg = data.settings.llm
     fn = _optional(data, "converse") if cfg.provider == "plugin" else None
     if fn is None:
@@ -265,8 +267,11 @@ async def converse(data: Data, turn: dict) -> Reply:
         if not messages or messages[0]["role"] != "user":
             messages.insert(0, {"role": "user", "content": "(conversation start)"})
         system = f"{turn['rules']}\n\n{turn['context']}"
-        return Reply(await complete(data, system, messages))
-    out = await _call(fn, {**turn, "proposals": True}, cfg.model_dump())
+        return Reply(await complete(data, system, messages, timeout))
+    settings = cfg.model_dump()
+    if timeout:
+        settings["timeout_s"] = max(1, int(timeout))
+    out = await _call(fn, {**turn, "proposals": True}, settings)
     if isinstance(out, dict):
         conv = out.get("conversation")
         covers = out.get("covers")
@@ -340,7 +345,7 @@ def _merge(messages: list[dict]) -> list[dict]:
 async def complete(
     data: Data, system: str, messages: list[dict], timeout: float | None = None
 ) -> str:
-    """One answer to these messages. timeout: how long the caller waits, when it is shorter than
+    """One answer to these messages. timeout: how long the caller waits, when it is not
     llm.timeout_s; a plugin gets it as settings["timeout_s"], so a job it runs stops by then
     instead of running on in a thread nobody waits for."""
     cfg = data.settings.llm
@@ -379,7 +384,7 @@ async def complete(
         fn = _plugin(data)
         settings = cfg.model_dump()
         if timeout:
-            settings["timeout_s"] = max(1, int(min(timeout, cfg.timeout_s)))
+            settings["timeout_s"] = max(1, int(timeout))
         if inspect.iscoroutinefunction(fn):
             out = await fn(system, messages, settings)
         else:  # a blocking plugin runs off the event loop

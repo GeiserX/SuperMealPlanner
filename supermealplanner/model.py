@@ -399,6 +399,9 @@ class LLM(Loose):
     )
     max_tokens: int = 1200
     timeout_s: int = 600
+    # a turn the bot asked itself (the plan check, the weekly review): nobody waits for it, and
+    # fixing the week and checking each fix takes longer than a reply; it gets the longer of the two
+    auto_timeout_s: int = Field(default=1800, gt=0)
     # one review of an answer or of the plan (verifier.py); unset: timeout_s
     review_timeout_s: int | None = Field(default=None, gt=0)
     instructions: str = ""  # extra system instructions for this household
