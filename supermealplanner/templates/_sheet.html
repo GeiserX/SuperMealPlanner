@@ -3,7 +3,8 @@
     <h3><a href="/recipe/{{ b.recipe.id }}?d={{ day }}">{{ b.recipe.name }}</a> <small>{{ t('servings_one') if b.servings == 1 else t('servings', n=b.servings) }}</small></h3>
     <p class="sub">{{ t('batch_cook', date=t.date(b.cook), when=b.when(t)) }}<br>
     {{ batch_for_text(t, b.containers | map(attribute='eat') | list) }}<br>
-    {{ t('batch_per_person', split=batch_split_text(b, names)) }}</p>
+    {{ t('batch_per_person', split=batch_split_text(b, names)) }}{% if b.minutes %}<br>
+    {{ t('batch_dish_minutes', time=duration_text(b.minutes), n=b.recipe.minutes) }}{% endif %}</p>
     <ul>{% for line in b.lines %}<li>{{ line }}</li>{% endfor %}</ul>
     <table class="containers">
       <tr><th>{{ t('th_container') }}</th><th>{{ t('th_servings') }}</th><th>{{ t('th_where') }}</th></tr>

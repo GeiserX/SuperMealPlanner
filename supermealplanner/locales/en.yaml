@@ -67,6 +67,10 @@ batch_for: "For the lunch of {days}"
 batch_day_item: "{weekday}"
 batch_and: " and "
 batch_per_person: "Per person: {split}"
+batch_dish_minutes: "About {time} for this amount (the recipe: {n} min)"
+batch_session_minutes: "Estimated time for the whole session: {time}"
+duration_hours: "{h} h"
+duration_hours_minutes: "{h} h {m} min"
 th_container: Container
 th_servings: Servings
 th_where: Where

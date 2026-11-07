@@ -26,9 +26,11 @@ from .portions import (
     MEAL_ORDER,
     batch_for_text,
     batch_split_text,
+    duration_text,
     person_days,
     plate,
     session_at,
+    session_minutes,
     session_sheets,
     session_when,
     shopping_list,
@@ -107,6 +109,8 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             "reason_text": lambda raw: reason_text(t, raw),
             "batch_for_text": batch_for_text,
             "batch_split_text": batch_split_text,
+            "duration_text": lambda n: duration_text(t, n),
+            "session_minutes": session_minutes,
             "session_when": lambda s: session_when(
                 t, s.morning, session_at(data, s.date, s.morning)
             ),

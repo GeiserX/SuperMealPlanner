@@ -481,6 +481,12 @@ def ticked_last(lines: list, ticked: list[str]) -> list:
 
 # ---------------------------------------------------------------- batch sheets
 
+# A recipe's `minutes` are for a small pot: up to this many reference servings.
+BASE_SERVINGS = 2
+# The share of a recipe's time that grows with the quantity (peeling, chopping, browning in
+# batches); the rest (simmering, the oven) takes about the same for a bigger pot.
+PREP_SHARE = 0.5
+
 
 @dataclass
 class Container:
@@ -511,6 +517,27 @@ class BatchDish:
     def when(self, t) -> str:
         """When its session starts, in words (session_when)."""
         return session_when(t, self.morning, self.at)
+
+    @property
+    def minutes(self) -> int:
+        """What cooking this much takes, estimated: the recipe's minutes for BASE_SERVINGS, plus
+        PREP_SHARE of them again for each further BASE_SERVINGS, rounded up to 5 minutes."""
+        base = self.recipe.minutes
+        extra = max(0.0, self.total / BASE_SERVINGS - 1) * PREP_SHARE * base
+        return 5 * math.ceil(round(base + extra, 3) / 5)
+
+
+def session_minutes(dishes: list[BatchDish]) -> int:
+    """A whole session's estimated time: its dishes one after another."""
+    return sum(b.minutes for b in dishes)
+
+
+def duration_text(t, minutes: int) -> str:
+    """ "45 min", "2 h", "2 h 15 min"."""
+    h, m = divmod(minutes, 60)
+    if not h:
+        return t("recipe_minutes", n=m)
+    return t("duration_hours", h=h) if not m else t("duration_hours_minutes", h=h, m=m)
 
 
 def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[BatchDish]:

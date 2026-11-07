@@ -32,8 +32,11 @@ from .portions import (
     MEAL_ORDER,
     batch_for_text,
     batch_split_text,
+    duration_text,
     person_days,
     plate,
+    session_at,
+    session_minutes,
     session_sheets,
     shopping_list,
     soaks_in,
@@ -396,18 +399,31 @@ def router(state) -> APIRouter:
         device(request)
         t = Translator(state.data.locale)
         date = _day(d, state.today())
-        sheet = [  # every plan's sessions that day (one may come before its own plan starts)
-            b
-            for _, dishes in session_sheets(state.data, state.db, Plans(state.data), date)
-            for b in dishes
-        ]
+        # every plan's sessions that day (one may come before its own plan starts)
+        sessions = session_sheets(state.data, state.db, Plans(state.data), date)
+        sheet = [b for _, dishes in sessions for b in dishes]
         names = {p.id: p.name for p in state.data.household.people}
+        total = session_minutes(sheet)
         return {
             "day": date.isoformat(),
+            "cook_minutes": total,
+            "cook_minutes_text": duration_text(t, total),
+            "sessions": [
+                {
+                    "morning": s.morning,
+                    "at": session_at(state.data, s.date, s.morning),
+                    "recipes": [b.recipe.id for b in dishes],
+                    "cook_minutes": session_minutes(dishes),
+                    "cook_minutes_text": duration_text(t, session_minutes(dishes)),
+                }
+                for s, dishes in sessions
+            ],
             "dishes": [
                 {
                     "recipe": _recipe_brief(b.recipe),
                     "servings": b.servings,
+                    "cook_minutes": b.minutes,
+                    "cook_minutes_text": duration_text(t, b.minutes),
                     "morning": b.morning,
                     "eat_on": [c.eat.isoformat() for c in b.containers],
                     "for_text": batch_for_text(t, [c.eat for c in b.containers]),

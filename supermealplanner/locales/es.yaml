@@ -67,6 +67,10 @@ batch_for: "Para la comida {days}"
 batch_day_item: "del {weekday}"
 batch_and: " y "
 batch_per_person: "Reparto por persona: {split}"
+batch_dish_minutes: "Unos {time} para esta cantidad (la receta: {n} min)"
+batch_session_minutes: "Tiempo estimado de toda la sesión: {time}"
+duration_hours: "{h} h"
+duration_hours_minutes: "{h} h {m} min"
 th_container: Táper
 th_servings: Raciones
 th_where: Dónde
