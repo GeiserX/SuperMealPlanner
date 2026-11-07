@@ -999,12 +999,29 @@ class Bot:
         asked = private or self.mentioned(text) or self.replied(msg) or SPOKEN in msg
         # bot.answer_scope all: a group message without a mention starts a turn too, still logged
         # as not addressed, so the AI sees it marked "[no mention]"
-        heard = not asked and self.hears(chat, user)
+        # a bare yes or no to an offer waiting for this person keeps its own handling: without a
+        # mention it is not the answer (answer_pending), and stays context only, as before
+        heard = (
+            not asked and self.hears(chat, user) and not self.bare_answer(chat["id"], user, text)
+        )
         if asked or heard or "all" in (cfg.history_scope, cfg.answer_scope):
             self.take(chat["id"], user, who, msg, self.reply_tag(msg) + text, asked, heard=heard)
             self.inbox(done=msg)  # logged, and queued when called: QUEUED keeps it from here
         if asked or heard:
             await self.drive(client, chat["id"])
+
+    def bare_answer(self, chat_id: int, user: dict, text: str) -> bool:
+        """The message is only a yes or a no, and something waits for this person's answer."""
+        if not any(
+            user.get("id") in (by if isinstance(by := i.get("by"), list) else [by])
+            for i in self.pending(chat_id)
+        ):
+            return False
+        words = re.sub(r"[^\w\s]", " ", text.lower()).split()
+        answers = set(self.t.raw("change_yes_words") or []) | set(
+            self.t.raw("change_no_words") or []
+        )
+        return bool(words) and set(words) <= answers
 
     def hears(self, chat: dict, user: dict) -> bool:
         """bot.answer_scope all: a group message that does not call the bot is answered too, when a
@@ -1359,12 +1376,15 @@ class Bot:
         self.again.discard(chat_id)
         typer = None
         try:
-            try:
-                await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
-            except TelegramError as e:  # only a courtesy: the answer still goes
-                log.info("typing indicator failed: %s", e)
-            # kept on until the answer is written
-            typer = asyncio.create_task(self.typing(client, chat_id))
+            # lines without a mention only (bot.answer_scope all): the answer is often nothing, so
+            # the chat sees no sign of it on arrival
+            if not any(i.heard for i in items) or not _nobody_asked(items):
+                try:
+                    await self.call(client, "sendChatAction", chat_id=chat_id, action="typing")
+                except TelegramError as e:  # only a courtesy: the answer still goes
+                    log.info("typing indicator failed: %s", e)
+                # kept on until the answer is written
+                typer = asyncio.create_task(self.typing(client, chat_id))
             attachments = await self.fetch_files(client, chat_id, items)
             private = chat_id > 0
             # bot.answer_scope all: a line without a mention is for the AI too, only not a question
@@ -1484,7 +1504,8 @@ class Bot:
             # the bot's own turn found nothing to say after all, or what the household said
             # without a mention needs no answer (context.NO_REPLY): nothing to send, and handled
             if _nobody_asked(covered):
-                keep()
+                if any(i.heard for i in covered):  # the bot's own turns stay as they were
+                    keep()
                 return covered
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return None
@@ -2499,7 +2520,7 @@ class Bot:
         name = self.data.household.person(who).name if who else user.get("first_name") or "?"
         calls = chat.get("type") == "private" or self.mentioned(text) or self.replied(msg)
         # bot.answer_scope all: a group message without a mention was answered too, so its edit
-        # is handled as the edit of one that called the bot
+        # is handled as the edit of one that called the bot, still as a line without a mention
         hears = self.hears(chat, user)
         text = self.reply_tag(msg) + text  # as it was stored
         row = db.find_chat(chat_id, msg["message_id"])
@@ -2510,7 +2531,9 @@ class Bot:
             return
         before, now = self.clean(row["text"]), self.clean(text)
         asked = bool(row["asked"]) if row["asked"] is not None else calls
-        asked = asked or hears
+        # its correction may get nothing at all, as the line itself could (context.NO_REPLY)
+        heard = hears and not asked
+        asked = asked or heard
         if before == now and (asked or not calls):
             return  # formatting only: nothing changes, not even who it calls
         turn_state = self.running.get(chat_id)
@@ -2528,7 +2551,7 @@ class Bot:
                 f"wording.]\nBefore: {before}\nNow: {now}"
             )
             # queued before any await: the running turn takes it, or the chat's loop runs it next
-            self.take(chat_id, user, who, None, note, asked=True, corrects=True)
+            self.take(chat_id, user, who, None, note, asked=not heard, corrects=True, heard=heard)
             await self.close_asks(client, turn_state, note=f"editado: {now}")
             await self.drive(client, chat_id)  # the turn may have ended meanwhile
             return
@@ -2544,12 +2567,19 @@ class Bot:
             return
         db.edit_chat(row["id"], text)
         said = (db.answer_after(chat_id, row["id"]) or "")[:1500]
-        note = (
-            f"[{name} edited a message you already answered. Check whether your answer still "
-            f"holds with the new wording, and say what changes.]\nBefore: {before}\nNow: {now}"
-            + (f"\nYour answer was: {said}" if said else "")
-        )
-        self.take(chat_id, user, who, msg, note, asked=True, log_mid=False)
+        if heard:  # it may have had no answer at all, and its edit may need none either
+            note = (
+                f"[{name} edited a message without a mention. Check whether what you did or said "
+                f"about it still holds with the new wording.]\nBefore: {before}\nNow: {now}"
+            )
+        else:
+            note = (
+                f"[{name} edited a message you already answered. Check whether your answer still "
+                f"holds with the new wording, and say what changes.]\nBefore: {before}\nNow: {now}"
+            )
+        if said:  # a line without a mention may have had none: say only what came next
+            note += f"\n{'Your next message after it' if heard else 'Your answer'} was: {said}"
+        self.take(chat_id, user, who, msg, note, asked=not heard, log_mid=False, heard=heard)
         await self.drive(client, chat_id)
 
     def clean(self, text: str) -> str:

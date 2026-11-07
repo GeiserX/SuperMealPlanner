@@ -141,7 +141,7 @@ def test_a_deliberate_no_reply_sends_nothing_and_counts_as_handled(data_dir, tmp
     cfg(data_dir, text="[no reply]")
     run(b.handle(None, msg("¿vienes luego?", user=8, message_id=1)))
     assert len(lines(data_dir, "turns.jsonl")) == 1
-    assert b.calls and sends(b) == [] and calls(b, "setMessageReaction") == []
+    assert sends(b) == [] and calls(b, "setMessageReaction") == []
     assert db.get_kv("bot.queued") is None and not b.queues.get(-100)
     # the conversation keeps the turn: the next one does not send the line again
     cfg(data_dir)
@@ -183,8 +183,10 @@ def test_an_edit_of_an_answered_line_without_a_mention_is_handled_as_addressed(d
     run(b.edited(None, msg("quedan 8 raciones", user=8, message_id=1)))
     _first, second = lines(data_dir, "turns.jsonl")
     (new,) = second["new"]
-    assert "edited a message you already answered" in new
+    assert new.startswith("[no mention] ana: [Ana edited a message without a mention.")
     assert "Before: quedan 10 raciones\nNow: quedan 8 raciones" in new
+    # it may have had no answer (logged before the mode was on): no claim that it had one
+    assert "Your next message after it was: ok" in new and "already answered" not in new
     assert db.find_chat(-100, 1)["text"] == "quedan 8 raciones"
 
 
@@ -238,3 +240,74 @@ def test_a_reply_to_the_bot_is_not_marked(data_dir, tmp_path):
     b, _ = everyone(data_dir, tmp_path)
     run(b.handle(None, msg("vale", user=8, message_id=1, **TO_BOT)))
     assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["ana: vale"]
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_an_edit_of_a_silent_line_without_a_mention_can_stay_silent(data_dir, tmp_path):
+    # people fix typos in what they say to each other: that edit may get nothing, cleanly
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, text="[no reply]")
+    run(b.handle(None, msg("llego a las 8", user=8, message_id=1)))
+    run(b.edited(None, msg("llego a las 9", user=8, message_id=1)))
+    assert sends(b) == []
+    (note,) = lines(data_dir, "turns.jsonl")[-1]["new"]
+    assert note.startswith("[no mention] ana: [Ana edited a message without a mention.")
+    assert "you already answered" not in note
+    # handled: the note does not go again with the next turn
+    cfg(data_dir)
+    run(b.handle(None, msg("@chefbot qué cenamos", message_id=2)))
+    assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["luis: @chefbot qué cenamos"]
+
+
+def test_an_edit_during_the_turn_of_a_line_without_a_mention_can_stay_silent(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, listen=3, until=1, cover=False, text="[no reply]")
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("llego a las 8", user=8, message_id=1)))
+        await until(lambda: running(data_dir))
+        await b.edited(None, msg("llego a las 9", user=8, message_id=1))
+        await first
+        await drain(b)
+
+    run(go())
+    turns = lines(data_dir, "turns.jsonl")
+    assert turns[0]["incoming"][0].startswith("[no mention] ana: [Ana edited a message of this")
+    assert sends(b) == []
+
+
+def test_a_bare_yes_without_a_mention_to_a_waiting_offer_starts_no_turn(data_dir, tmp_path):
+    # the offer's yes keeps its own handling: unaddressed, it is context only, as before
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(
+        data_dir,
+        text="I can draft that.",
+        proposals=[{"id": "j1:1", "summary": "Add soup.", "confirm_by": "asker"}],
+    )
+    run(b.handle(None, msg("@chefbot quiero sopa", message_id=1)))
+    assert len(lines(data_dir, "turns.jsonl")) == 1
+    run(b.handle(None, msg("yes", message_id=3)))
+    assert len(lines(data_dir, "turns.jsonl")) == 1 and lines(data_dir, "acts.jsonl") == []
+    # someone else's "yes" is ordinary talk: heard as usual
+    run(b.handle(None, msg("yes", user=8, message_id=4)))
+    assert len(lines(data_dir, "turns.jsonl")) == 2
+
+
+def test_a_turn_of_lines_without_a_mention_shows_no_typing(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, text="[no reply]")
+    run(b.handle(None, msg("llego a las 8", user=8, message_id=1)))
+    assert len(lines(data_dir, "turns.jsonl")) == 1
+    assert calls(b, "sendChatAction") == []
+    run(b.handle(None, msg("@chefbot hola", message_id=2)))
+    assert calls(b, "sendChatAction")  # a mention still shows it
+
+
+def test_the_all_mode_rules_settle_reactions_changes_and_bare_answers(data):
+    data.settings.bot.answer_scope = "all"
+    flat = " ".join(context.rules(data).split())
+    assert "A change you make posts its own short confirmation" in flat
+    assert "never [no reply] and never only a reaction" in flat
+    assert 'A bare "yes" or "no" without a mention never answers an offer' in flat

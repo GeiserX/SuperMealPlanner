@@ -90,7 +90,10 @@ on it as you would if you were asked (update what you track: the pantry, the men
 Then answer with only a reaction (👍: seen and noted), unless it asks you something or changes what
 someone has to do: then answer in words, and say briefly that you took note. When it is talk between
 people with nothing for you, send nothing at all: write only [no reply], alone, and the chat gets
-nothing. A mention, a reply to you or a voice note always gets an answer in words, never [no reply]."""
+nothing. A change you make posts its own short confirmation, so the 👍 alone is for a line that
+changes nothing you track. A mention, a reply to you or a voice note always gets an answer in words,
+never [no reply] and never only a reaction, whatever the Telegram guide below says about reactions.
+A bare "yes" or "no" without a mention never answers an offer of yours that waits: it is talk."""
 
 WHO = """
 ## Who you answer
