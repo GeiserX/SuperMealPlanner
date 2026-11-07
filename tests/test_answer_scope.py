@@ -186,7 +186,7 @@ def test_an_edit_of_an_answered_line_without_a_mention_is_handled_as_addressed(d
     assert new.startswith("[no mention] ana: [Ana edited a message without a mention.")
     assert "Before: quedan 10 raciones\nNow: quedan 8 raciones" in new
     # it may have had no answer (logged before the mode was on): no claim that it had one
-    assert "Your next message after it was: ok" in new and "already answered" not in new
+    assert "was: ok" not in new and "already answered" not in new
     assert db.find_chat(-100, 1)["text"] == "quedan 8 raciones"
 
 
@@ -311,3 +311,19 @@ def test_the_all_mode_rules_settle_reactions_changes_and_bare_answers(data):
     assert "A change you make posts its own short confirmation" in flat
     assert "never [no reply] and never only a reaction" in flat
     assert 'A bare "yes" or "no" without a mention never answers an offer' in flat
+
+
+def test_an_edit_of_a_line_kept_before_all_mode_carries_no_unrelated_answer(data_dir, tmp_path):
+    # logged as context in asked mode, then the mode changes: what the bot said next may be about
+    # something else, so the correction quotes no answer
+    b, _ = setup(data_dir, tmp_path, history_scope="all")
+    run(b.handle(None, msg("llego a las 8", user=8, message_id=1)))
+    cfg(data_dir, text="lentejas")
+    run(b.handle(None, msg("@chefbot qué cenamos", message_id=2)))
+    b.data.settings.bot.answer_scope = "all"
+    cfg(data_dir, text="[no reply]")
+    run(b.edited(None, msg("llego a las 9", user=8, message_id=1)))
+    (note,) = lines(data_dir, "turns.jsonl")[-1]["new"]
+    assert note.startswith("[no mention] ana: [Ana edited a message without a mention.")
+    assert "lentejas" not in note and "already answered" not in note
+    assert sends(b, -100)[-1]["text"] == "lentejas"  # and the edit sent nothing

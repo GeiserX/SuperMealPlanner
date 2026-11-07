@@ -2577,8 +2577,10 @@ class Bot:
                 f"[{name} edited a message you already answered. Check whether your answer still "
                 f"holds with the new wording, and say what changes.]\nBefore: {before}\nNow: {now}"
             )
-        if said:  # a line without a mention may have had none: say only what came next
-            note += f"\n{'Your next message after it' if heard else 'Your answer'} was: {said}"
+        # a line without a mention may have had no answer (or been kept before the mode was on): what
+        # the bot said next may be about something else, so only an answered line's answer goes
+        if said and not heard:
+            note += f"\nYour answer was: {said}"
         self.take(chat_id, user, who, msg, note, asked=not heard, log_mid=False, heard=heard)
         await self.drive(client, chat_id)
 
