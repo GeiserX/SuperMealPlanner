@@ -366,6 +366,10 @@ class Bot(Loose):
         False  # True: the AI may discuss binge, craving and note logs in the group
     )
     history_scope: Literal["asked", "all"] = "asked"  # which group messages are kept as AI context
+    # which group messages start a turn: "asked", only one that mentions the bot or replies to it;
+    # "all", every message of an allowed person (the AI may answer with only a reaction, or nothing).
+    # "all" keeps every group message as context too, whatever history_scope says
+    answer_scope: Literal["asked", "all"] = "asked"
     # the AI's offer of a reminder also shows "In the calendar": a tap starts a turn in which the
     # provider adds the event with its own calendar tools (a plugin that has them)
     reminder_calendar: bool = False
