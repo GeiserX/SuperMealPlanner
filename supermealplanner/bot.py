@@ -6,7 +6,9 @@ Map each person to their Telegram user id in bot.people.
 
 In a private chat the bot always answers. A voice note is always answered, in the group too, because
 it cannot mention the bot, and so is a photo, a video, a GIF, a round video note, a sticker or any
-file. In the group it answers only a text message that mentions its @handle or replies to it.
+file. In the group it answers only a text message that mentions its @handle or replies to it; with
+bot.answer_scope all, every text message of someone it answers (Item.heard), which the AI may answer
+with only a reaction or with nothing (context.NO_REPLY).
 
 A photo or a file goes to a provider that can look at it (llm.sees_files) as turn["attachments"],
 its caption as the message's text. It is queued like any message, by its Telegram file id, and its
@@ -164,6 +166,11 @@ COMMANDS = {
 USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")  # Telegram usernames (4-letter ones exist)
 NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)")
 AI = "ai"  # the `who` of the AI's own answers in the chat log
+# the mark on a group line that did not call the bot (context.WHO); "[no mention]" when the bot
+# answers those too (bot.answer_scope all)
+NOT_TO_YOU, NO_MENTION = context.NOT_TO_YOU, context.NO_MENTION
+# the AI's deliberate "nothing to send" (context.NO_REPLY), however it spaces or cases it
+NO_REPLY_RE = re.compile(r"\[\s*no[ _-]?reply\s*\]", re.IGNORECASE)
 PENDING_TTL = 3600  # a proposed change waits this long for its yes
 # What waits for a yes, as a list. 0.3.x kept one change as a dict under bot.pending.<chat> and reads
 # nothing else, so the list lives under its own key: a rollback to 0.3.x finds nothing it cannot read.
@@ -305,6 +312,9 @@ class Item:
     followup: bool = False
     # an edit of a message of the running turn: the answer written before it cannot stand (AGAIN)
     corrects: bool = False
+    # a group message that neither mentions the bot nor replies to it, answered because
+    # bot.answer_scope is "all": the AI may answer it with only a reaction, or with nothing
+    heard: bool = False
 
 
 @dataclass
@@ -770,6 +780,7 @@ class Bot:
                         x.get("file"),
                         bool(x.get("auto")),
                         bool(x.get("review")),
+                        heard=bool(x.get("heard")),
                     )
                     for x in kept
                 ]
@@ -821,6 +832,7 @@ class Bot:
                     "file": add.file,
                     "auto": add.auto,
                     "review": add.review,
+                    "heard": add.heard,
                 }
             )
         else:
@@ -985,11 +997,24 @@ class Bot:
                 )
             return
         asked = private or self.mentioned(text) or self.replied(msg) or SPOKEN in msg
-        if asked or cfg.history_scope == "all":
-            self.take(chat["id"], user, who, msg, self.reply_tag(msg) + text, asked)
-            self.inbox(done=msg)  # logged, and queued when asked: QUEUED keeps it from here
-        if asked:
+        # bot.answer_scope all: a group message without a mention starts a turn too, still logged
+        # as not addressed, so the AI sees it marked "[no mention]"
+        heard = not asked and self.hears(chat, user)
+        if asked or heard or "all" in (cfg.history_scope, cfg.answer_scope):
+            self.take(chat["id"], user, who, msg, self.reply_tag(msg) + text, asked, heard=heard)
+            self.inbox(done=msg)  # logged, and queued when called: QUEUED keeps it from here
+        if asked or heard:
             await self.drive(client, chat["id"])
+
+    def hears(self, chat: dict, user: dict) -> bool:
+        """bot.answer_scope all: a group message that does not call the bot is answered too, when a
+        person the bot would answer wrote it (the caller checked allowed()); never one of a bot."""
+        return (
+            chat.get("type") != "private"
+            and self.data.settings.bot.answer_scope == "all"
+            and not user.get("is_bot")
+            and not (self.bot_id and user.get("id") == self.bot_id)
+        )
 
     async def on_file(self, client, msg: dict) -> None:
         """A photo, a video, a GIF, a video note, a sticker or any file. Like a voice note it always
@@ -1073,13 +1098,16 @@ class Bot:
         review: bool = False,
         followup: bool = False,
         corrects: bool = False,
+        heard: bool = False,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
         log_mid False: the answer replies to msg, but the log row is not that message (an edit's
         correction), so an edit of msg still finds msg's own row. A spoken turn from the app is
         marked "[voice]" for the AI, which then answers for the ear (context.WHO). A follow-up is
-        logged under its own name (user's first_name), never as the person it acts for."""
+        logged under its own name (user's first_name), never as the person it acts for. heard: a
+        group message that did not call the bot, queued anyway (bot.answer_scope all) and logged as
+        not addressed."""
         spoken = self.spoken.get((msg or {}).get(SPOKEN) or "")
         if spoken is not None:
             text = f"[voice] {text}"
@@ -1091,7 +1119,7 @@ class Bot:
             mid=(msg or {}).get("message_id") if log_mid else None,
             asked=asked,
         )
-        if asked:
+        if asked or heard:
             if spoken is not None:
                 spoken.row = row
                 self.spoken_rows[row] = spoken.id
@@ -1100,6 +1128,7 @@ class Bot:
                 row, mid, user.get("id"), who, self.clock(), grant, file, auto, review, followup
             )
             item.corrects = corrects
+            item.heard = heard and not asked
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
@@ -1137,9 +1166,8 @@ class Bot:
                     except Exception as e:  # noqa: BLE001  the next turn of the chat still runs
                         log.warning("a turn failed: %s", safe(e))
                         # nobody asked: "try again in a minute" would answer no one
-                        unasked = all(i.auto or i.review or i.followup for i in items)
                         try:
-                            if not unasked:
+                            if not _nobody_asked(items):
                                 await self.send(
                                     client,
                                     chat_id,
@@ -1339,6 +1367,8 @@ class Bot:
             typer = asyncio.create_task(self.typing(client, chat_id))
             attachments = await self.fetch_files(client, chat_id, items)
             private = chat_id > 0
+            # bot.answer_scope all: a line without a mention is for the AI too, only not a question
+            unmarked = NO_MENTION if data.settings.bot.answer_scope == "all" else NOT_TO_YOU
             last_item = items[-1]
             viewer = last_item.who if private else None
             facts = await asyncio.to_thread(
@@ -1349,8 +1379,8 @@ class Bot:
                 "conversation": conv.get("id"),
                 "rules": self.rules(),
                 "context": facts,
-                "new": _messages(fresh) + ([_unsent(fresh)] if rewrite else []),
-                "history": _messages([r for r in rows if r not in fresh]),
+                "new": _messages(fresh, unmarked) + ([_unsent(fresh)] if rewrite else []),
+                "history": _messages([r for r in rows if r not in fresh], unmarked),
                 "files": await asyncio.to_thread(_files, data.root),
                 "attachments": attachments,
                 # the chat and the person whose message started the turn
@@ -1374,7 +1404,7 @@ class Bot:
                     deferred = True
                     await self.rest(client, chat_id, items, later)
                     return None
-                if unasked:  # nobody asked: "try again in a minute" would answer no one
+                if _nobody_asked(items):  # "try again in a minute" would answer no one
                     return None
                 # never recorded: the unanswered messages go again with the next one
                 await self.send(
@@ -1417,7 +1447,8 @@ class Bot:
         covered = [*items, *(i for i in turn_state.pulled if i.row in reply.covers)]
         reply_to = _reply_to(covered)
         anchor = covered[-1]  # gestures act on the newest message
-        text, change = changes.extract(reply.text)
+        # the AI's deliberate silence (context.NO_REPLY): never shown, whatever else it wrote
+        text, change = changes.extract(_no_reply(reply.text))
         whose = change.pop("for", None) if isinstance(change, dict) else None
         # a turn only the bot asked itself (a step not done, the weekly review, the plan check, a
         # follow-up): nobody asked for anything, so it fixes only the days ahead (AUTO_KEYS)
@@ -1436,21 +1467,28 @@ class Bot:
         listed = reply.reminders or listed
         acted = acts["react"] or acts["sticker"] or acts["photos"] or acts["documents"]
         followup = all(i.followup for i in covered)
+
+        def keep() -> None:  # the turn is the conversation's: its messages do not go again
+            if reply.conversation:
+                last = max((r["id"] for r in rows), default=seen)
+                if reply.kept:
+                    took = {i.row for i in covered if i.row > last}
+                    kept = sorted({d for d in done if d > last} | took)
+                    db.set_kv(key, {"id": reply.conversation, "seen": last, "done": kept})
+                else:
+                    db.set_kv(key, {"id": reply.conversation, "seen": seen, "done": sorted(done)})
+            else:
+                db.set_kv(key, None)
+
         if not text and change is None and not reply.proposals and not listed and not acted:
-            if automatic:  # the bot's own turn found nothing to say after all: nothing to send
+            # the bot's own turn found nothing to say after all, or what the household said
+            # without a mention needs no answer (context.NO_REPLY): nothing to send, and handled
+            if _nobody_asked(covered):
+                keep()
                 return covered
             await self.send(client, chat_id, self.t("bot_error"), reply_to, record=False)
             return None
-        if reply.conversation:
-            last = max((r["id"] for r in rows), default=seen)
-            if reply.kept:
-                took = {i.row for i in covered if i.row > last}
-                done = sorted({d for d in done if d > last} | took)
-                db.set_kv(key, {"id": reply.conversation, "seen": last, "done": done})
-            else:
-                db.set_kv(key, {"id": reply.conversation, "seen": seen, "done": sorted(done)})
-        else:
-            db.set_kv(key, None)
+        keep()
         # One message per turn: what the change, the cancelled reminders and the check say joins
         # the answer, and so does the reminder offer when the answer has no buttons of its own. A
         # change that waits for a yes and a proposal still get their own message, with buttons.
@@ -1914,7 +1952,9 @@ class Bot:
                 {
                     "id": i.row,
                     "role": "user",
-                    "content": f"{rows[i.row]['who'] or 'someone'}: {rows[i.row]['text']}",
+                    # a line without a mention keeps its mark here too (bot.answer_scope all)
+                    "content": (f"{NO_MENTION} " if i.heard else "")
+                    + f"{rows[i.row]['who'] or 'someone'}: {rows[i.row]['text']}",
                     "ts": rows[i.row]["ts"],
                 }
                 for i in got
@@ -2458,15 +2498,19 @@ class Bot:
         who = self.person_of(user.get("id", 0))
         name = self.data.household.person(who).name if who else user.get("first_name") or "?"
         calls = chat.get("type") == "private" or self.mentioned(text) or self.replied(msg)
+        # bot.answer_scope all: a group message without a mention was answered too, so its edit
+        # is handled as the edit of one that called the bot
+        hears = self.hears(chat, user)
         text = self.reply_tag(msg) + text  # as it was stored
         row = db.find_chat(chat_id, msg["message_id"])
         if row is None:  # never stored: a new message if it now calls the bot
-            if calls:
-                self.take(chat_id, user, who, msg, text, asked=True)
+            if calls or hears:
+                self.take(chat_id, user, who, msg, text, asked=calls, heard=not calls)
                 await self.drive(client, chat_id)
             return
         before, now = self.clean(row["text"]), self.clean(text)
         asked = bool(row["asked"]) if row["asked"] is not None else calls
+        asked = asked or hears
         if before == now and (asked or not calls):
             return  # formatting only: nothing changes, not even who it calls
         turn_state = self.running.get(chat_id)
@@ -5065,6 +5109,19 @@ def _same_words(text: str) -> str:
     return " ".join(re.sub(r"[^\w]+", " ", plain).split())
 
 
+def _nobody_asked(items: list[Item]) -> bool:
+    """No message of these asked the bot anything: the bot's own turns, and group lines without a
+    mention (bot.answer_scope all). Nothing to say is then a fine answer, and a failure is not
+    told to the chat ("try again" would answer no one)."""
+    return all(i.auto or i.review or i.followup or i.heard for i in items)
+
+
+def _no_reply(text: str) -> str:
+    """The answer without the AI's no-reply marker (context.NO_REPLY), wherever it wrote it, so it
+    never reaches the chat; an answer that was only the marker is empty: nothing is sent."""
+    return NO_REPLY_RE.sub("", text or "").strip()
+
+
 def _reply_to(items: list[Item]) -> int | None:
     """An answer replies to the message it answers only when it answers exactly one."""
     return items[0].mid if len(items) == 1 else None
@@ -5074,16 +5131,17 @@ def keyboard(rows: list[list[tuple[str, str]]]) -> dict:
     return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in rows]}
 
 
-def _messages(rows: list[dict]) -> list[dict]:
+def _messages(rows: list[dict], unmarked: str = NOT_TO_YOU) -> list[dict]:
     """Chat log rows as model messages; who wrote a user message goes in front of it, and a group
-    message that did not call the bot is marked "[not to you]". Each carries the ids of the rows
-    merged into it and when the last of them was written."""
+    message that did not call the bot is marked `unmarked`: "[not to you]", or "[no mention]" when
+    the bot answers those too (bot.answer_scope all). Each carries the ids of the rows merged into
+    it and when the last of them was written."""
     out: list[dict] = []
     for h in rows:
         role = "assistant" if h["role"] == "assistant" else "user"
         content = h["text"] if role == "assistant" else f"{h['who'] or 'someone'}: {h['text']}"
         if role == "user" and h.get("asked") == 0:  # said in the group, not to the bot
-            content = f"[not to you] {content}"
+            content = f"{unmarked} {content}"
         if out and out[-1]["role"] == role:
             out[-1]["content"] += "\n" + content
             out[-1]["ids"].append(h.get("id"))

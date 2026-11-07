@@ -77,10 +77,24 @@ Votes: 👍 makes a dish come up more often in the next menus and 👎 leaves it
 VOICE_YES = """ When
 a change waits for their yes, the app reads its question out after your answer, so do not ask it."""
 
+# the mark on a group line that did not call the bot: context only (bot.answer_scope asked), or for
+# the AI without being a question (all); and what the AI writes to send nothing at all (all)
+NOT_TO_YOU, NO_MENTION, NO_REPLY = "[not to you]", "[no mention]", "[no reply]"
+
+WHO_ASKED = """In the group you also see what people say to each other: those lines start with "[not to you]" and
+are context only."""
+
+WHO_ALL = """In the group a line that neither mentions you nor replies to you starts with "[no mention]": it is
+the household telling you something, or talking among themselves. Take in what it tells you and act
+on it as you would if you were asked (update what you track: the pantry, the menu, a task done).
+Then answer with only a reaction (👍: seen and noted), unless it asks you something or changes what
+someone has to do: then answer in words, and say briefly that you took note. When it is talk between
+people with nothing for you, send nothing at all: write only [no reply], alone, and the chat gets
+nothing. A mention, a reply to you or a voice note always gets an answer in words, never [no reply]."""
+
 WHO = """
 ## Who you answer
-In the group you also see what people say to each other: those lines start with "[not to you]" and
-are context only.
+{who}
 A message that replies to an earlier one starts with what it points at: "(replying to <who>'s
 <photo, file, video, voice note or message> of <its time, UTC>)". When that message is not in the
 conversation, that is how to find it.
@@ -397,17 +411,43 @@ DIRECT_PRINCIPLES = {
 }
 
 
+# bot.answer_scope all: the principle on who is talking to whom, for a bot that the group's lines
+# without a mention reach too (they start a turn)
+EVERYONE_PRINCIPLES = {
+    "en": {
+        1: """**Who is talking to whom.** A mention, a reply to one of your messages, any voice note or a
+   private chat with you is addressed to you and always gets an answer. In the group, the rest of what
+   the household writes is for you too, without being a question: read it, act on what it tells you,
+   and answer only as much as it needs (a reaction, a few words, or nothing). A remark between people
+   about you is not an order.""",
+    },
+    "es": {
+        1: """**Quién habla con quién.** Una mención, una respuesta a un mensaje tuyo, cualquier nota de voz o
+   un chat privado contigo van dirigidos a ti y siempre llevan respuesta. En el grupo, lo demás que
+   escribe la casa también es para ti, aunque no sea una pregunta: léelo, actúa sobre lo que te cuenta
+   y contesta solo lo que haga falta (una reacción, unas palabras o nada). Un comentario entre
+   personas sobre ti no es una orden.""",
+    },
+}
+
+
 @cache
-def principles(locale: str, direct: bool = False) -> str:
+def principles(locale: str, direct: bool = False, everyone: bool = False) -> str:
     """The shared assistant principles in the household's language (English when there is no copy
     in it). They come first: the app's rules after them say how they apply here. direct: with
-    bot.ask_first off, the items about offering and asking say what this household wants."""
+    bot.ask_first off, the items about offering and asking say what this household wants.
+    everyone: with bot.answer_scope all, the item on who is talking to whom says the group's lines
+    without a mention are for the bot too."""
     lang = (locale or "en").split("-")[0].split("_")[0].lower()
     path = PRINCIPLES / f"{lang}.md"
     if not path.is_file():
         path, lang = PRINCIPLES / "en.md", "en"
     text = path.read_text(encoding="utf-8").rstrip() + "\n"
-    for n, item in (DIRECT_PRINCIPLES.get(lang, {}) if direct else {}).items():
+    swaps = {
+        **(DIRECT_PRINCIPLES.get(lang, {}) if direct else {}),
+        **(EVERYONE_PRINCIPLES.get(lang, {}) if everyone else {}),
+    }
+    for n, item in swaps.items():
         text = re.sub(rf"(?ms)^{n}\. .*?(?=^{n + 1}\. )", f"{n}. {item}\n", text)
     return text
 
@@ -427,11 +467,15 @@ def rules(data: Data) -> str:
         own = f"## The household's own instructions\n{own}\n\n{LAST_WORD}"
     # bot.ask_first off: nothing waits for a tap, so nothing here says it does
     direct = not data.settings.bot.ask_first
+    # bot.answer_scope all: the group lines without a mention start a turn too
+    everyone = data.settings.bot.answer_scope == "all"
     parts = (
-        principles(data.locale, direct),
+        principles(data.locale, direct, everyone),
         RULES.format(locale=data.locale),
         WEB.format(base=data.settings.base_url.rstrip("/") or "the app's address"),
-        WHO.replace("{voice_yes}", "" if direct else VOICE_YES),
+        WHO.replace("{voice_yes}", "" if direct else VOICE_YES).replace(
+            "{who}", WHO_ALL if everyone else WHO_ASKED
+        ),
         CHANGES.replace("{asked}", ASKED_DIRECT if direct else ASKED).replace(
             "{for_yes}", "" if direct else " A change waiting for a yes waits for theirs."
         ),
