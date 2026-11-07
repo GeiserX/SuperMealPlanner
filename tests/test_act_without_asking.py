@@ -334,10 +334,15 @@ def test_the_principles_stop_offering_with_buttons_in_direct_mode(data_dir, tmp_
 
 
 def served(b, when):
-    """The dinner on the day of `when` (the AI's "YYYY-MM-DD HH:MM"), its date."""
-    from supermealplanner.planner import Plans
+    """The dinner on the day of `when` (the AI's "YYYY-MM-DD HH:MM"), its date. A day past the
+    synthetic plan (it starts on a fixed Monday) gets its week drawn, so the test keeps working
+    as the real date moves on."""
+    from supermealplanner.planner import Plans, generate, plans_dir
 
     day = dt.date.fromisoformat(when[:10])
+    if Plans(b.data).day(day) is None:
+        monday = day - dt.timedelta(days=day.weekday())
+        generate(b.data, monday, 1).save(plans_dir(b.data) / f"{monday}.yaml")
     return Plans(b.data).day(day).dinner, day.isoformat()
 
 

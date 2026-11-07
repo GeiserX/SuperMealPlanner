@@ -57,7 +57,7 @@ not expire; it ends when someone takes the phone away with `/devices` (`/disposi
 | `GET /day?d=&person=` | One day in eating order: every meal, each dish, and a plate per person with its lines, kcal and protein. Each dish also carries a `total`: the same shape as a plate (`factor`, `lines`, `kcal`, `protein_g`), for everyone who eats it together, each person's swaps included, so whoever cooks for all weighs it out at once; its lines say the kitchen count too, as «400 g (≈ 2 leeks)». Plus the day's targets, what to take out of the freezer for tomorrow, what to leave to soak tonight for tomorrow's batch session (`soak_for_tomorrow`: each dish with the ingredient, `qty`, `unit` and the `amount` as the page writes it), and this person's votes. Each meal carries its `hours` (`{"from": "12:00", "until": "16:00"}`, local time) and `open`: whether it is the meal of the moment, by the household's clock at `now` (see below) |
 | `GET /week?d=` | Seven days of dish names from that week's Monday |
 | `GET /tasks?d=` | Each day's tasks with their times, from the one task list the chat and the pages read: `key`, `at`, `kind` (cook, soak, thaw, defrost, shop, a chat reminder's own kind, or note), `source` (auto or chat), `text`, `recipe`, `eat` |
-| `GET /cook?d=` | A batch afternoon: every dish, its servings, its containers and where each one goes |
+| `GET /cook?d=` | A batch afternoon: every dish, its servings, its containers and where each one goes, and how long each dish and each session take (see below) |
 | `GET /recipe/{id}?d=&person=` | The whole recipe, with this person's plate for that day and their vote. Plus `plates`: every person's plate that day (`person`, `name` and the plate), as the recipe page shows them, and `total`: the dish for all of them together, shaped as a plate, as in `/day` |
 | `GET /list?d=&store=` | The week's shopping list per store, in the order the aisles come, with the ticks and what is already at home. Each section's lines come as the page shows them (see below) |
 | `GET /list/ticks?d=` | Only the week's ticks, as below: small enough to ask every few seconds while the list is open, so a tick made on another phone or on the web page shows at once |
@@ -92,6 +92,21 @@ first, in the section's usual order, then the ticked ones, the first ticked firs
 
 So an app can reorder a section by itself the moment a tick changes, here or from `GET /list/ticks`,
 without asking for the whole list again.
+
+### How long a cooking session takes
+
+A recipe's `minutes` are for a small pot: two reference servings. A session cooks more, so `GET /cook`
+estimates how long each dish takes for the amount cooked that day: half of the recipe's time is
+preparation (peeling, chopping, browning in batches) and grows with the amount, the other half
+(simmering, the oven) stays the same; less than two servings still takes the recipe's time. Each
+estimate is rounded up to five minutes.
+
+- Each dish: `cook_minutes`, the estimate for its `servings`, and `cook_minutes_text`, as the Cook
+  page writes it ("1 h 15 min"). The recipe's own time stays in `recipe.minutes`.
+- `sessions`: each session that day, in the order the Cook page shows them: `morning`, `at` (when
+  it starts, `HH:MM`), `recipes` (the ids of its dishes, in the order of `dishes`), `cook_minutes`
+  (its dishes one after another) and `cook_minutes_text`.
+- `cook_minutes` and `cook_minutes_text` at the top: every session of the day together.
 
 ### The pantry
 

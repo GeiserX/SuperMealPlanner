@@ -11,6 +11,8 @@
 {% for s, dishes in sessions %}
 <section class="meal">
   <h2>{{ t.date(day) | capitalize }} · {{ session_when(s) }}</h2>
+  {% set total = session_minutes(dishes) %}
+  {% if total %}<p class="sub">{{ t('batch_session_minutes', time=duration_text(total)) }}</p>{% endif %}
   {% if s.busy %}<p class="note">{{ t('batch_busy', events=s.busy | join(', ')) }}</p>{% endif %}
   {{ sheet(dishes, day) }}
 </section>
