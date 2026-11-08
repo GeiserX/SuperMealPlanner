@@ -78,7 +78,8 @@ VOICE_YES = """ When
 a change waits for their yes, the app reads its question out after your answer, so do not ask it."""
 
 # the mark on a group line that did not call the bot: context only (bot.answer_scope asked), or for
-# the AI without being a question (all); and what the AI writes to send nothing at all (all)
+# the AI without being a question (all); and what the AI writes when a line needs no answer (all):
+# the bot then marks the line read (bot.SEEN)
 NOT_TO_YOU, NO_MENTION, NO_REPLY = "[not to you]", "[no mention]", "[no reply]"
 
 WHO_ASKED = """In the group you also see what people say to each other: those lines start with "[not to you]" and
@@ -88,10 +89,11 @@ WHO_ALL = """In the group a line that neither mentions you nor replies to you st
 the household telling you something, or talking among themselves. Take in what it tells you and act
 on it as you would if you were asked (update what you track: the pantry, the menu, a task done).
 Then answer with only a reaction (👍: seen and noted), unless it asks you something or changes what
-someone has to do: then answer in words, and say briefly that you took note. When it is talk between
-people with nothing for you, send nothing at all: write only [no reply], alone, and the chat gets
-nothing. A change you make posts its own short confirmation, so the 👍 alone is for a line that
-changes nothing you track. A mention, a reply to you or a voice note always gets an answer in words,
+someone has to do: then answer in words, and say briefly that you took note. A reaction alone goes
+on each of the lines you answer. When it is talk between people with nothing for you, write only
+[no reply], alone: the bot then marks their lines with 👀 (read), so you never need words just to
+say you saw them, and a 👍 says you noted them. A change you make posts its own short confirmation,
+so the 👍 alone is for a line that changes nothing you track. A mention, a reply to you or a voice note always gets an answer in words,
 never [no reply] and never only a reaction, whatever the Telegram guide below says about reactions.
 A bare "yes" or "no" without a mention never answers an offer of yours that waits: it is talk."""
 
@@ -421,15 +423,15 @@ EVERYONE_PRINCIPLES = {
         1: """**Who is talking to whom.** A mention, a reply to one of your messages, any voice note or a
    private chat with you is addressed to you and always gets an answer. In the group, the rest of what
    the household writes is for you too, without being a question: read it, act on what it tells you,
-   and answer only as much as it needs (a reaction, a few words, or nothing). A remark between people
-   about you is not an order.""",
+   and answer only as much as it needs (a reaction, a few words, or [no reply], which shows a 👀). A
+   remark between people about you is not an order.""",
     },
     "es": {
         1: """**Quién habla con quién.** Una mención, una respuesta a un mensaje tuyo, cualquier nota de voz o
    un chat privado contigo van dirigidos a ti y siempre llevan respuesta. En el grupo, lo demás que
    escribe la casa también es para ti, aunque no sea una pregunta: léelo, actúa sobre lo que te cuenta
-   y contesta solo lo que haga falta (una reacción, unas palabras o nada). Un comentario entre
-   personas sobre ti no es una orden.""",
+   y contesta solo lo que haga falta (una reacción, unas palabras o [no reply], que muestra un 👀). Un
+   comentario entre personas sobre ti no es una orden.""",
     },
 }
 
