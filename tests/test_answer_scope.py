@@ -575,3 +575,22 @@ def test_a_read_mark_never_goes_on_the_bots_own_voice_echo(data_dir, tmp_path):
     covered = [Item(5, 1000, 7, "luis", 0.0), Item(6, 2, 8, "ana", 0.0, heard=True)]
     run(b.mark(None, -100, covered, "👀"))
     assert reactions(b) == [(2, "👀")]
+
+
+def test_a_reaction_reaches_a_mention_written_before_a_line_without_one(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    b.debounce = 0.3
+    refusing(b, "🔥")
+    cfg(data_dir, text="```telegram\nreact: 🔥\n```")
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("@chefbot gracias", user=8, message_id=1)))
+        await asyncio.sleep(0.05)
+        await b.handle(None, msg("ya está la lasaña", user=8, message_id=2))
+        await first
+
+    run(go())
+    assert len(lines(data_dir, "turns.jsonl")) == 1
+    # the mention keeps its words fallback; the line beside it falls back to a thumb
+    assert [p["text"] for p in sends(b, -100)] == ["🔥"]
+    assert sorted(reactions(b)) == [(1, "🔥"), (2, "👍"), (2, "🔥")]

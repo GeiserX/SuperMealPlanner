@@ -1669,10 +1669,14 @@ class Bot:
                 await self.mark(client, chat_id, covered, acts["react"])
             else:
                 # a mention, a reply or a voice note keeps its reaction as it always did (words
-                # when Telegram refuses it); the lines without a mention beside it get it too
-                await self.gesture(client, chat_id, acts, anchor.mid, bool(said), reply_to)
+                # when Telegram refuses it), on the newest of them; the turn's other messages
+                # get it too
+                to = (
+                    next((i for i in reversed(covered) if not i.heard), anchor) if every else anchor
+                )
+                await self.gesture(client, chat_id, acts, to.mid, bool(said), reply_to)
                 if every:
-                    others = [i for i in covered if i.heard and i.mid != anchor.mid]
+                    others = [i for i in covered if i.mid != to.mid]
                     await self.mark(client, chat_id, others, acts["react"])
         key = None
         if change is not None and not now:
