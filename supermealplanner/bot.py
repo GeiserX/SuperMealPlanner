@@ -847,8 +847,8 @@ class Bot:
                     "heard": add.heard,
                 }
             )
-        else:
-            left = {i.row for i in self.queues.get(chat_id) or []}
+        else:  # what a failed turn held stays too: a restart answers it (resume)
+            left = {i.row for i in [*(self.queues.get(chat_id) or []), *self.held.get(chat_id, [])]}
             kept = [x for x in kept if x["row"] in left]
         if kept:
             every[key] = kept
@@ -1179,10 +1179,12 @@ class Bot:
                         items = self.queues.pop(chat_id, [])
                     if not items:
                         return
-                    # what a failed turn held (bot.answer_scope all) goes with this one, first
-                    rows_in = {i.row for i in items}
-                    held = [i for i in self.held.pop(chat_id, []) if i.row not in rows_in]
-                    items = [*held, *items]
+                    # what a failed turn held (bot.answer_scope all) goes with this one, first;
+                    # never with a turn only the bot asked itself (it stays automatic)
+                    if not all(i.auto or i.review or i.followup for i in items):
+                        rows_in = {i.row for i in items}
+                        held = [i for i in self.held.pop(chat_id, []) if i.row not in rows_in]
+                        items = [*held, *items]
                     # read with the queue, before any await: a later message goes to the turn
                     # through incoming(), never in both
                     rows = self.state.db.chat_rows(
@@ -1660,12 +1662,18 @@ class Bot:
         if acted:
             said = joined or change is not None or reply.proposals or listed  # each says something
             alone = not (said or acts["sticker"] or acts["photos"] or acts["documents"])
-            if alone and acts["react"] and self.answers_all(chat_id):
+            every = alone and acts["react"] and self.answers_all(chat_id)
+            if every and _nobody_asked(covered):
                 # bot.answer_scope all: a reaction-only answer goes on every message it covers,
                 # never as words in its place
                 await self.mark(client, chat_id, covered, acts["react"])
             else:
+                # a mention, a reply or a voice note keeps its reaction as it always did (words
+                # when Telegram refuses it); the lines without a mention beside it get it too
                 await self.gesture(client, chat_id, acts, anchor.mid, bool(said), reply_to)
+                if every:
+                    others = [i for i in covered if i.heard and i.mid != anchor.mid]
+                    await self.mark(client, chat_id, others, acts["react"])
         key = None
         if change is not None and not now:
             made = await self.propose(
@@ -1904,9 +1912,12 @@ class Bot:
         """bot.answer_scope all: `emoji` on every message of a person the turn covered: the
         reaction of a reaction-only answer, or SEEN for a turn that showed nothing. One Telegram
         refuses (the chat's allowed reactions, a deleted message) gets NOTED once instead, then is
-        left as it is: never words in place of a reaction."""
+        left as it is: never words in place of a reaction. One lost to Telegram being down (no
+        answer, 429, 5xx) is held for the chat's next turn instead (hold)."""
         _show(chat_id)  # tried: the turn is not silent, whatever Telegram answers
-        for mid in dict.fromkeys(i.mid for i in covered if _person(i)):
+        lost: list[Item] = []
+        mine = [i for i in covered if self.person(i)]
+        for mid in dict.fromkeys(i.mid for i in mine):
             for e in dict.fromkeys((emoji, NOTED)):
                 try:
                     await self.call(
@@ -1919,18 +1930,30 @@ class Bot:
                     break
                 except TelegramError as err:
                     log.info("reaction %s failed: %s", e, err)
+                    down = err.code is None or err.code == 429 or err.code >= 500
+            else:
+                if down:
+                    lost += [i for i in mine if i.mid == mid]
+        if lost:
+            self.hold(chat_id, lost)
+
+    def person(self, item: Item) -> bool:
+        """A message a person wrote in the chat (one a reaction can go on): not the bot's own
+        turn, nor the echo the bot posted of something said to the app (spoken_rows)."""
+        return _person(item) and item.row not in self.spoken_rows
 
     def hold(self, chat_id: int, items: list[Item]) -> None:
         """bot.answer_scope all: a turn that failed before anything reached the chat read nothing,
         so its people's messages get no SEEN; they join the chat's next turn instead, whose answer
-        (words, a reaction or SEEN) covers them too. Never a turn of their own: a provider that
-        keeps failing is not called again for them. Their rows went to no conversation, so the AI
-        gets them again as new either way."""
+        (words, a reaction or SEEN) covers them too, never a turn only the bot asked itself (drive).
+        No turn of their own: a provider that keeps failing is not called again for them. They stay
+        in QUEUED (queued), so after a restart they are answered like any queued message. Their
+        rows went to no conversation, so the AI gets them again as new either way."""
         if not self.answers_all(chat_id):
             return
         held = self.held.setdefault(chat_id, [])
         rows = {i.row for i in held}
-        held.extend(i for i in items if _person(i) and i.row not in rows)
+        held.extend(i for i in items if self.person(i) and i.row not in rows)
         if not held:
             self.held.pop(chat_id, None)
 
@@ -3091,11 +3114,11 @@ class Bot:
             self.state.db.set_kv(LEGACY_PENDING.format(chat_id), None)
             self.state.db.clear_chat(chat_id)
             self.state.db.set_kv(OPTIONS.format(chat_id), None)
+            self.held.pop(chat_id, None)
             with self.qlock:
                 self.queues.pop(chat_id, None)
                 self.queued(chat_id)
             self.again.discard(chat_id)
-            self.held.pop(chat_id, None)
         if conv.get("id"):
             try:
                 await llm.forget(self.data, conv["id"])
