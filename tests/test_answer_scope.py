@@ -465,3 +465,31 @@ def test_asked_mode_reacts_and_stays_quiet_as_before(data_dir, tmp_path):
     )
     run(b.handle(None, msg("@chefbot hola", user=8, message_id=9)))
     assert not b.held
+
+
+def test_a_turn_that_fails_while_posting_holds_the_lines_it_was_handed_too(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, listen=3, until=1, text="Apuntado.")
+    sent = b.call
+    down = [True]
+
+    async def call(client, method, _tries=0, **params):
+        if method == "sendMessage" and down[0]:
+            b.calls.append((method, params))
+            raise TelegramError(method, "Internal Server Error", 500)
+        return await sent(client, method, _tries, **params)
+
+    b.call = call
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("quedan 10", user=8, message_id=1)))
+        await until(lambda: running(data_dir))
+        await b.handle(None, msg("y 2 de sopa", user=8, message_id=2))
+        await first
+
+    run(go())
+    assert reactions(b) == []  # nothing reached the chat: nothing was read
+    down[0] = False
+    cfg(data_dir, text="```telegram\nreact: 👍\n```")
+    run(b.handle(None, msg("y pan", user=8, message_id=3)))
+    assert reactions(b) == [(1, "👍"), (2, "👍"), (3, "👍")]

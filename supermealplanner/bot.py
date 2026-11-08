@@ -1192,10 +1192,11 @@ class Bot:
                     ears: list[str] = []
                     listening = HEARING.set((*HEARING.get(), (chat_id, ears)))
                     shown: list[bool] = []
+                    pulled: list[Item] = []
                     showing = SHOWN.set((*SHOWN.get(), (chat_id, shown)))
                     covered = None
                     try:
-                        covered = await self.ask(client, chat_id, items, rows)
+                        covered = await self.ask(client, chat_id, items, rows, pulled)
                         # bot.answer_scope all: an answer that showed nothing (the AI's
                         # [no reply], an empty answer, a change that says nothing): its
                         # people's messages are marked read, never left with nothing
@@ -1207,7 +1208,7 @@ class Bot:
                     except Exception as e:  # noqa: BLE001  the next turn of the chat still runs
                         log.warning("a turn failed: %s", safe(e))
                         if not shown:  # nothing was read: no 👀, and they go with the next turn
-                            self.hold(chat_id, items)
+                            self.hold(chat_id, [*items, *pulled])
                         # nobody asked: "try again in a minute" would answer no one
                         try:
                             if not _nobody_asked(items):
@@ -1371,7 +1372,12 @@ class Bot:
                 log.info("typing indicator failed: %s", safe(e))
 
     async def ask(
-        self, client, chat_id: int, items: list[Item], rows: list[dict]
+        self,
+        client,
+        chat_id: int,
+        items: list[Item],
+        rows: list[dict],
+        pulled: list[Item] | None = None,
     ) -> list[Item] | None:
         """One AI answer for the queued messages `items`. A provider that keeps the conversation
         gets only what it has not seen; the household's data goes with every message, fresh.
@@ -1396,7 +1402,8 @@ class Bot:
         ]
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
             return None  # an earlier turn already took these messages
-        turn_state = Turn(chat_id, items)
+        # pulled: the caller's list of what the turn is handed while it runs (drive holds those too)
+        turn_state = Turn(chat_id, items, pulled if pulled is not None else [])
         self.running[chat_id] = turn_state
         reply, deferred, again, failed = None, False, False, False
         rewrite = chat_id in self.again  # this turn rewrites an answer that was not sent
