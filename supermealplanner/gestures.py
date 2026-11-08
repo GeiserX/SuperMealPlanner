@@ -29,7 +29,8 @@ text and returns what they ask for, checked and capped, so the text the chat see
 
 Anything else in a block, and anything over a limit, is dropped without a word. The bot sends the text
 first and each of these after it on its own, so a reaction or a file Telegram refuses never loses the
-answer; a reaction that fails on an answer with no text is sent as that emoji instead. Stdlib only, and
+answer; a reaction that fails on an answer with no text is sent as that emoji instead (with
+bot.answer_scope all in a group it is tried once as 👍 and never becomes words). Stdlib only, and
 it imports nothing else, so a bot that cannot depend on this package can carry a copy of this file.
 """
 

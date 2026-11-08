@@ -8,7 +8,8 @@ In a private chat the bot always answers. A voice note is always answered, in th
 it cannot mention the bot, and so is a photo, a video, a GIF, a round video note, a sticker or any
 file. In the group it answers only a text message that mentions its @handle or replies to it; with
 bot.answer_scope all, every text message of someone it answers (Item.heard), which the AI may answer
-with only a reaction or with nothing (context.NO_REPLY).
+with only a reaction (put on every message of the turn) or with no words (context.NO_REPLY): such a
+message is then marked SEEN, never left with nothing.
 
 A photo or a file goes to a provider that can look at it (llm.sees_files) as turn["attachments"],
 its caption as the message's text. It is queued like any message, by its Telegram file id, and its
@@ -171,6 +172,9 @@ AI = "ai"  # the `who` of the AI's own answers in the chat log
 NOT_TO_YOU, NO_MENTION = context.NOT_TO_YOU, context.NO_MENTION
 # the AI's deliberate "nothing to send" (context.NO_REPLY), however it spaces or cases it
 NO_REPLY_RE = re.compile(r"\[\s*no[ _-]?reply\s*\]", re.IGNORECASE)
+# bot.answer_scope all: a group turn never leaves a person's message with nothing visible. One the
+# answer shows nothing for gets SEEN ("read"); a reaction Telegram refuses gets NOTED once instead
+SEEN, NOTED = "👀", "👍"
 PENDING_TTL = 3600  # a proposed change waits this long for its yes
 # What waits for a yes, as a list. 0.3.x kept one change as a dict under bot.pending.<chat> and reads
 # nothing else, so the list lives under its own key: a rollback to 0.3.x finds nothing it cannot read.
@@ -283,6 +287,9 @@ to do, in the order they are done. Every id goes in a step or in dropped, never 
 # listens. A context variable, so only the task running that turn (and what it starts) is heard,
 # never a typed command answered in the same chat at the same moment.
 HEARING: ContextVar[tuple[tuple[int, list[str]], ...]] = ContextVar("hearing", default=())
+# (chat id, list) pairs: each list gets an entry when something of a turn reaches that chat (a
+# message, a file, a reaction), so a turn that showed nothing is known (bot.answer_scope all: SEEN)
+SHOWN: ContextVar[tuple[tuple[int, list[bool]], ...]] = ContextVar("shown", default=())
 
 
 @dataclass
@@ -313,7 +320,7 @@ class Item:
     # an edit of a message of the running turn: the answer written before it cannot stand (AGAIN)
     corrects: bool = False
     # a group message that neither mentions the bot nor replies to it, answered because
-    # bot.answer_scope is "all": the AI may answer it with only a reaction, or with nothing
+    # bot.answer_scope is "all": the AI may answer it with only a reaction, or with no words (SEEN)
     heard: bool = False
 
 
@@ -381,6 +388,9 @@ class Bot:
         self.asks: dict[str, dict] = {}  # open asks of the provider, by key
         self.resting: dict[int, float] = {}  # chat -> clock() its answer waits for (busy provider)
         self.again: set[int] = set()  # chats whose next turn rewrites an answer that was not sent
+        # bot.answer_scope all: the people's messages of a turn that failed before anything reached
+        # the chat; they join the chat's next turn, so its answer covers them (hold)
+        self.held: dict[int, list[Item]] = {}
         self.told_busy: set[int] = set()  # chats told of the wait, until an answer goes out
         self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
         self.spoken: dict[str, Spoken] = {}  # what was said to the app, by turn id
@@ -535,6 +545,8 @@ class Bot:
             sent = await self.call(client, "sendMessage", text=chunk, **params)
             if ids is not None and isinstance(sent, dict) and sent.get("message_id"):
                 ids.append(sent["message_id"])
+        if sent is not None:
+            _show(chat_id)
         if record:
             self.state.db.add_chat(chat_id, "assistant", who, text)
         heard = text if spoken is None else spoken
@@ -835,8 +847,8 @@ class Bot:
                     "heard": add.heard,
                 }
             )
-        else:
-            left = {i.row for i in self.queues.get(chat_id) or []}
+        else:  # what a failed turn held stays too: a restart answers it (resume)
+            left = {i.row for i in [*(self.queues.get(chat_id) or []), *self.held.get(chat_id, [])]}
             kept = [x for x in kept if x["row"] in left]
         if kept:
             every[key] = kept
@@ -1167,6 +1179,12 @@ class Bot:
                         items = self.queues.pop(chat_id, [])
                     if not items:
                         return
+                    # what a failed turn held (bot.answer_scope all) goes with this one, first;
+                    # never with a turn only the bot asked itself (it stays automatic)
+                    if not all(i.auto or i.review or i.followup for i in items):
+                        rows_in = {i.row for i in items}
+                        held = [i for i in self.held.pop(chat_id, []) if i.row not in rows_in]
+                        items = [*held, *items]
                     # read with the queue, before any await: a later message goes to the turn
                     # through incoming(), never in both
                     rows = self.state.db.chat_rows(
@@ -1175,13 +1193,24 @@ class Bot:
                     # what the bot says in the chat during the turn is what a spoken turn hears
                     ears: list[str] = []
                     listening = HEARING.set((*HEARING.get(), (chat_id, ears)))
+                    shown: list[bool] = []
+                    pulled: list[Item] = []
+                    showing = SHOWN.set((*SHOWN.get(), (chat_id, shown)))
                     covered = None
                     try:
-                        covered = await self.ask(client, chat_id, items, rows)
+                        covered = await self.ask(client, chat_id, items, rows, pulled)
+                        # bot.answer_scope all: an answer that showed nothing (the AI's
+                        # [no reply], an empty answer, a change that says nothing): its
+                        # people's messages are marked read, never left with nothing
+                        silent = covered is not AGAIN and covered is not None and not shown
+                        if silent and self.answers_all(chat_id):
+                            await self.mark(client, chat_id, covered, SEEN)
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:  # noqa: BLE001  the next turn of the chat still runs
                         log.warning("a turn failed: %s", safe(e))
+                        if not shown:  # nothing was read: no 👀, and they go with the next turn
+                            self.hold(chat_id, [*items, *pulled])
                         # nobody asked: "try again in a minute" would answer no one
                         try:
                             if not _nobody_asked(items):
@@ -1195,6 +1224,7 @@ class Bot:
                         except Exception as e2:  # noqa: BLE001
                             log.warning("could not send the error reply: %s", safe(e2))
                     finally:
+                        SHOWN.reset(showing)
                         HEARING.reset(listening)
                     if covered is AGAIN:
                         continue  # its messages are queued again, for the turn that answers them
@@ -1344,7 +1374,12 @@ class Bot:
                 log.info("typing indicator failed: %s", safe(e))
 
     async def ask(
-        self, client, chat_id: int, items: list[Item], rows: list[dict]
+        self,
+        client,
+        chat_id: int,
+        items: list[Item],
+        rows: list[dict],
+        pulled: list[Item] | None = None,
     ) -> list[Item] | None:
         """One AI answer for the queued messages `items`. A provider that keeps the conversation
         gets only what it has not seen; the household's data goes with every message, fresh.
@@ -1369,9 +1404,10 @@ class Bot:
         ]
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
             return None  # an earlier turn already took these messages
-        turn_state = Turn(chat_id, items)
+        # pulled: the caller's list of what the turn is handed while it runs (drive holds those too)
+        turn_state = Turn(chat_id, items, pulled if pulled is not None else [])
         self.running[chat_id] = turn_state
-        reply, deferred, again = None, False, False
+        reply, deferred, again, failed = None, False, False, False
         rewrite = chat_id in self.again  # this turn rewrites an answer that was not sent
         self.again.discard(chat_id)
         typer = None
@@ -1424,6 +1460,7 @@ class Bot:
                     deferred = True
                     await self.rest(client, chat_id, items, later)
                     return None
+                failed = True  # nothing was read: its messages go with the next turn (hold)
                 if _nobody_asked(items):  # "try again in a minute" would answer no one
                     return None
                 # never recorded: the unanswered messages go again with the next one
@@ -1452,6 +1489,8 @@ class Bot:
                     self.again.add(chat_id)
                 elif reply is not None and missed:  # the next turn sends them, at the head
                     self.queues[chat_id] = [*missed, *self.queues.get(chat_id, [])]
+            if failed:
+                self.hold(chat_id, [*items, *turn_state.pulled])
             self.running.pop(chat_id, None)
             await self.close_asks(client, turn_state)
         if again:
@@ -1622,7 +1661,23 @@ class Bot:
                 items = []
         if acted:
             said = joined or change is not None or reply.proposals or listed  # each says something
-            await self.gesture(client, chat_id, acts, anchor.mid, bool(said), reply_to)
+            alone = not (said or acts["sticker"] or acts["photos"] or acts["documents"])
+            every = alone and acts["react"] and self.answers_all(chat_id)
+            if every and _nobody_asked(covered):
+                # bot.answer_scope all: a reaction-only answer goes on every message it covers,
+                # never as words in its place
+                await self.mark(client, chat_id, covered, acts["react"])
+            else:
+                # a mention, a reply or a voice note keeps its reaction as it always did (words
+                # when Telegram refuses it), on the newest of them; the turn's other messages
+                # get it too
+                to = (
+                    next((i for i in reversed(covered) if not i.heard), anchor) if every else anchor
+                )
+                await self.gesture(client, chat_id, acts, to.mid, bool(said), reply_to)
+                if every:
+                    others = [i for i in covered if i.mid != to.mid]
+                    await self.mark(client, chat_id, others, acts["react"])
         key = None
         if change is not None and not now:
             made = await self.propose(
@@ -1853,6 +1908,59 @@ class Bot:
         self.resting.pop(chat_id, None)
         await self.drive(client, chat_id)
 
+    def answers_all(self, chat_id: int) -> bool:
+        """A group whose every message of a person starts a turn (bot.answer_scope all)."""
+        return chat_id < 0 and self.data.settings.bot.answer_scope == "all"
+
+    async def mark(self, client, chat_id: int, covered: list[Item], emoji: str) -> None:
+        """bot.answer_scope all: `emoji` on every message of a person the turn covered: the
+        reaction of a reaction-only answer, or SEEN for a turn that showed nothing. One Telegram
+        refuses (the chat's allowed reactions, a deleted message) gets NOTED once instead, then is
+        left as it is: never words in place of a reaction. One lost to Telegram being down (no
+        answer, 429, 5xx) is held for the chat's next turn instead (hold)."""
+        _show(chat_id)  # tried: the turn is not silent, whatever Telegram answers
+        lost: list[Item] = []
+        mine = [i for i in covered if self.person(i)]
+        for mid in dict.fromkeys(i.mid for i in mine):
+            for e in dict.fromkeys((emoji, NOTED)):
+                try:
+                    await self.call(
+                        client,
+                        "setMessageReaction",
+                        chat_id=chat_id,
+                        message_id=mid,
+                        reaction=[{"type": "emoji", "emoji": e}],
+                    )
+                    break
+                except TelegramError as err:
+                    log.info("reaction %s failed: %s", e, err)
+                    down = err.code is None or err.code == 429 or err.code >= 500
+            else:
+                if down:
+                    lost += [i for i in mine if i.mid == mid]
+        if lost:
+            self.hold(chat_id, lost)
+
+    def person(self, item: Item) -> bool:
+        """A message a person wrote in the chat (one a reaction can go on): not the bot's own
+        turn, nor the echo the bot posted of something said to the app (spoken_rows)."""
+        return _person(item) and item.row not in self.spoken_rows
+
+    def hold(self, chat_id: int, items: list[Item]) -> None:
+        """bot.answer_scope all: a turn that failed before anything reached the chat read nothing,
+        so its people's messages get no SEEN; they join the chat's next turn instead, whose answer
+        (words, a reaction or SEEN) covers them too, never a turn only the bot asked itself (drive).
+        No turn of their own: a provider that keeps failing is not called again for them. They stay
+        in QUEUED (queued), so after a restart they are answered like any queued message. Their
+        rows went to no conversation, so the AI gets them again as new either way."""
+        if not self.answers_all(chat_id):
+            return
+        held = self.held.setdefault(chat_id, [])
+        rows = {i.row for i in held}
+        held.extend(i for i in items if self.person(i) and i.row not in rows)
+        if not held:
+            self.held.pop(chat_id, None)
+
     async def gesture(self, client, chat_id, acts, to, texted, reply_to=None) -> None:
         """What the answer's gestures block asks for (gestures.py), each on its own after the text,
         so a file or a reaction Telegram refuses never loses the answer. A reaction goes on message
@@ -1878,6 +1986,7 @@ class Bot:
             try:
                 await self.call(client, method, _files=files, chat_id=chat_id, **params)
                 shown = True
+                _show(chat_id)
             except TelegramError as e:
                 log.warning("%s failed: %s", method, e)
         if acts["react"] and to:
@@ -1886,6 +1995,7 @@ class Bot:
                 await self.call(
                     client, "setMessageReaction", chat_id=chat_id, message_id=to, reaction=reaction
                 )
+                _show(chat_id)
                 return
             except TelegramError as e:
                 log.info("reaction failed: %s", e)
@@ -3008,6 +3118,7 @@ class Bot:
             self.state.db.set_kv(LEGACY_PENDING.format(chat_id), None)
             self.state.db.clear_chat(chat_id)
             self.state.db.set_kv(OPTIONS.format(chat_id), None)
+            self.held.pop(chat_id, None)
             with self.qlock:
                 self.queues.pop(chat_id, None)
                 self.queued(chat_id)
@@ -5146,6 +5257,18 @@ def _nobody_asked(items: list[Item]) -> bool:
     mention (bot.answer_scope all). Nothing to say is then a fine answer, and a failure is not
     told to the chat ("try again" would answer no one)."""
     return all(i.auto or i.review or i.followup or i.heard for i in items)
+
+
+def _person(item: Item) -> bool:
+    """A message a person wrote in the chat (one a reaction can go on): not the bot's own turn."""
+    return item.mid is not None and not (item.auto or item.review or item.followup)
+
+
+def _show(chat_id: int) -> None:
+    """Something of the running turn reached chat_id (SHOWN)."""
+    for chat, shown in SHOWN.get():
+        if chat == chat_id:
+            shown.append(True)
 
 
 def _no_reply(text: str) -> str:

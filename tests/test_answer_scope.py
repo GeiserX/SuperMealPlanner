@@ -1,18 +1,39 @@
 """bot.answer_scope: with "all", a group line without a mention starts a turn as an addressed one
 does, reaches the AI marked "[no mention]", and may be answered with only a reaction or with
-nothing at all ([no reply])."""
+nothing in words ([no reply]), which the bot marks with 👀 so no line is left with nothing."""
 
 import asyncio
 
 from supermealplanner import context
+from supermealplanner.bot import TelegramError
 
 from .test_conversations import TO_BOT, ChatBot
 from .test_settings_stores_bot import msg, run
-from .test_turns import cfg, drain, feed, lines, restarted, running, sends, setup, until
+from .test_turns import (
+    PLUGIN,
+    cfg,
+    drain,
+    feed,
+    lines,
+    restarted,
+    running,
+    sends,
+    setup,
+    until,
+)
 
 
 def calls(b, method):
     return [p for m, p in b.calls if m == method]
+
+
+def reactions(b, chat=-100):
+    """(message id, emoji) of each reaction the bot put in the chat, in order."""
+    return [
+        (p["message_id"], p["reaction"][0]["emoji"])
+        for p in calls(b, "setMessageReaction")
+        if p["chat_id"] == chat
+    ]
 
 
 def everyone(data_dir, tmp_path, **bot):
@@ -59,9 +80,8 @@ def test_a_burst_of_lines_without_a_mention_is_one_turn(data_dir, tmp_path):
     assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [
         ["[no mention] ana: quedan 10 raciones\n[no mention] ana: y he sacado 100 g de merluza"]
     ]
-    # the reaction goes on the last of them, and no text at all
-    (r,) = calls(b, "setMessageReaction")
-    assert (r["message_id"], r["reaction"]) == (2, [{"type": "emoji", "emoji": "👍"}])
+    # the reaction goes on every one of them, and no text at all
+    assert reactions(b) == [(1, "👍"), (2, "👍")]
     assert sends(b, -100) == []
 
 
@@ -136,12 +156,12 @@ def test_a_reaction_only_answer_sends_no_text(data_dir, tmp_path):
     assert sends(b, -100) == []
 
 
-def test_a_deliberate_no_reply_sends_nothing_and_counts_as_handled(data_dir, tmp_path):
+def test_a_deliberate_no_reply_sends_no_words_and_counts_as_handled(data_dir, tmp_path):
     b, db = everyone(data_dir, tmp_path)
     cfg(data_dir, text="[no reply]")
     run(b.handle(None, msg("¿vienes luego?", user=8, message_id=1)))
     assert len(lines(data_dir, "turns.jsonl")) == 1
-    assert sends(b) == [] and calls(b, "setMessageReaction") == []
+    assert sends(b) == [] and reactions(b) == [(1, "👀")]
     assert db.get_kv("bot.queued") is None and not b.queues.get(-100)
     # the conversation keeps the turn: the next one does not send the line again
     cfg(data_dir)
@@ -327,3 +347,250 @@ def test_an_edit_of_a_line_kept_before_all_mode_carries_no_unrelated_answer(data
     assert note.startswith("[no mention] ana: [Ana edited a message without a mention.")
     assert "lentejas" not in note and "already answered" not in note
     assert sends(b, -100)[-1]["text"] == "lentejas"  # and the edit sent nothing
+
+
+# ---------------------------------------------------------------- never silent
+
+
+def burst(b, *texts, mention=False):
+    """A burst of group lines from ana (8), one turn; message ids from 1."""
+    b.debounce = 0.3
+
+    async def go():
+        tasks = []
+        for n, text in enumerate(texts, 1):
+            text = f"@chefbot {text}" if mention else text
+            tasks.append(asyncio.create_task(b.handle(None, msg(text, user=8, message_id=n))))
+            await asyncio.sleep(0.05)
+        await asyncio.gather(*tasks)
+        await drain(b)
+
+    run(go())
+
+
+def refusing(b, *emojis):
+    """Telegram refuses these reactions (the chat's allowed reactions, say)."""
+    sent = b.call
+
+    async def call(client, method, _tries=0, **params):
+        if method == "setMessageReaction" and params["reaction"][0]["emoji"] in emojis:
+            b.calls.append((method, params))
+            raise TelegramError(method, "Bad Request: REACTION_INVALID", 400)
+        return await sent(client, method, _tries, **params)
+
+    b.call = call
+
+
+def test_no_reply_marks_every_line_of_the_turn_read(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, text="[no reply]")
+    burst(b, "llego a las 8", "y compro pan")
+    assert len(lines(data_dir, "turns.jsonl")) == 1
+    assert reactions(b) == [(1, "👀"), (2, "👀")] and sends(b) == []
+
+
+def test_an_empty_answer_of_the_plugin_marks_the_lines_read(data_dir, tmp_path):
+    # the provider's own silence (an empty answer) is no different from the marker
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, text="")
+    burst(b, "llego a las 8", "y compro pan")
+    assert reactions(b) == [(1, "👀"), (2, "👀")] and sends(b) == []
+
+
+def test_a_text_answer_adds_no_reactions(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, text="Apuntado.")
+    burst(b, "quedan 10 raciones", "y 2 de sopa")
+    assert [p["text"] for p in sends(b, -100)] == ["Apuntado."] and reactions(b) == []
+
+
+def test_a_refused_read_mark_falls_back_to_a_thumb_once_and_never_to_words(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    refusing(b, "👀")
+    cfg(data_dir, text="[no reply]")
+    run(b.handle(None, msg("llego a las 8", user=8, message_id=1)))
+    assert reactions(b) == [(1, "👀"), (1, "👍")] and sends(b) == []
+    # both refused: logged and left, still no words
+    b.calls.clear()
+    refusing(b, "👀", "👍")
+    run(b.handle(None, msg("llego a las 9", user=8, message_id=2)))
+    assert reactions(b) == [(2, "👀"), (2, "👍")] and sends(b) == []
+
+
+def test_a_refused_reaction_only_answer_falls_back_to_a_thumb_not_to_text(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    refusing(b, "🔥")
+    cfg(data_dir, text="```telegram\nreact: 🔥\n```")
+    run(b.handle(None, msg("ya está la lasaña", user=8, message_id=1)))
+    assert reactions(b) == [(1, "🔥"), (1, "👍")] and sends(b) == []
+
+
+def test_a_mention_is_never_answered_with_only_a_read_mark(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, text="[no reply]")
+    burst(b, "qué cenamos", "y mañana", mention=True)
+    assert [p["text"] for p in sends(b, -100)] == [b.t("bot_error")] and reactions(b) == []
+
+
+def test_a_failed_turn_marks_nothing_and_its_lines_go_with_the_next_one(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    plugin = data_dir / "plugins" / "ai.py"
+    plugin.write_text("def converse(turn, settings):\n    raise RuntimeError('no_output')\n")
+    run(b.handle(None, msg("quedan 10 raciones", user=8, message_id=1)))
+    assert sends(b) == [] and reactions(b) == []
+    plugin.write_text(PLUGIN)
+    cfg(data_dir, text="```telegram\nreact: 👍\n```")
+    run(b.handle(None, msg("y 2 de sopa", user=8, message_id=2)))
+    (turn,) = lines(data_dir, "turns.jsonl")
+    assert turn["new"] == ["[no mention] ana: quedan 10 raciones\n[no mention] ana: y 2 de sopa"]
+    # the answer covers the line of the failed turn too
+    assert reactions(b) == [(1, "👍"), (2, "👍")] and sends(b) == []
+    assert not b.held
+
+
+def test_asked_mode_reacts_and_stays_quiet_as_before(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)  # answer_scope asked
+    cfg(data_dir, text="```telegram\nreact: 👍\n```")
+    burst(b, "gracias", "de verdad", mention=True)
+    assert reactions(b) == [(2, "👍")]  # on the newest message only
+    b.calls.clear()
+    # a turn the bot asked itself that finds nothing to say shows nothing at all
+    cfg(data_dir, text="")
+    b.take(-100, {"id": 7, "first_name": "Luis"}, "luis", None, "check", True, auto=True)
+    run(b.drive(None, -100))
+    assert reactions(b) == [] and sends(b) == []
+    # a failed turn holds nothing
+    (data_dir / "plugins" / "ai.py").write_text(
+        "def converse(turn, settings):\n    raise RuntimeError('no_output')\n"
+    )
+    run(b.handle(None, msg("@chefbot hola", user=8, message_id=9)))
+    assert not b.held
+
+
+def test_a_turn_that_fails_while_posting_holds_the_lines_it_was_handed_too(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, listen=3, until=1, text="Apuntado.")
+    sent = b.call
+    down = [True]
+
+    async def call(client, method, _tries=0, **params):
+        if method == "sendMessage" and down[0]:
+            b.calls.append((method, params))
+            raise TelegramError(method, "Internal Server Error", 500)
+        return await sent(client, method, _tries, **params)
+
+    b.call = call
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("quedan 10", user=8, message_id=1)))
+        await until(lambda: running(data_dir))
+        await b.handle(None, msg("y 2 de sopa", user=8, message_id=2))
+        await first
+
+    run(go())
+    assert reactions(b) == []  # nothing reached the chat: nothing was read
+    down[0] = False
+    cfg(data_dir, text="```telegram\nreact: 👍\n```")
+    run(b.handle(None, msg("y pan", user=8, message_id=3)))
+    assert reactions(b) == [(1, "👍"), (2, "👍"), (3, "👍")]
+
+
+def test_a_mention_answered_with_a_reaction_keeps_its_words_fallback(data_dir, tmp_path):
+    # a reaction the AI chose for a mention goes as it always did (words when Telegram refuses
+    # it); the lines without a mention beside it get the reaction too
+    b, _ = everyone(data_dir, tmp_path)
+    b.debounce = 0.3
+    refusing(b, "🔥")
+    cfg(data_dir, text="```telegram\nreact: 🔥\n```")
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("ya está la lasaña", user=8, message_id=1)))
+        await asyncio.sleep(0.05)
+        await b.handle(None, msg("@chefbot gracias", user=8, message_id=2))
+        await first
+
+    run(go())
+    assert len(lines(data_dir, "turns.jsonl")) == 1
+    assert [p["text"] for p in sends(b, -100)] == ["🔥"]
+    assert sorted(reactions(b)) == [(1, "👍"), (1, "🔥"), (2, "🔥")]
+
+
+def test_the_lines_of_a_failed_turn_survive_a_restart(data_dir, tmp_path):
+    old, db = everyone(data_dir, tmp_path)
+    plugin = data_dir / "plugins" / "ai.py"
+    plugin.write_text("def converse(turn, settings):\n    raise RuntimeError('no_output')\n")
+    run(old.handle(None, msg("quedan 10 raciones", user=8, message_id=1)))
+    assert [x["mid"] for x in db.get_kv("bot.queued")["-100"]] == [1]
+    plugin.write_text(PLUGIN)
+    cfg(data_dir, text="[no reply]")
+    new, start = restarted(old)
+    run(start())
+    assert reactions(new) == [(1, "👀")]
+    assert not (db.get_kv("bot.queued") or {}).get("-100")
+
+
+def test_a_held_line_waits_for_a_persons_turn_not_the_bots_own(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    plugin = data_dir / "plugins" / "ai.py"
+    plugin.write_text("def converse(turn, settings):\n    raise RuntimeError('no_output')\n")
+    run(b.handle(None, msg("quedan 10 raciones", user=8, message_id=1)))
+    plugin.write_text(PLUGIN)
+    cfg(data_dir, text="")
+    b.take(-100, {"id": 7, "first_name": "Luis"}, "luis", None, "check", True, auto=True)
+    run(b.drive(None, -100))
+    # its line stays held: the bot's own turn neither marks it nor answers for it
+    assert reactions(b) == [] and b.held
+    cfg(data_dir, text="```telegram\nreact: 👍\n```")
+    run(b.handle(None, msg("y 2 de sopa", user=8, message_id=2)))
+    assert reactions(b) == [(1, "👍"), (2, "👍")]
+
+
+def test_a_read_mark_lost_to_a_telegram_outage_goes_with_the_next_turn(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    sent = b.call
+    down = [True]
+
+    async def call(client, method, _tries=0, **params):
+        if method == "setMessageReaction" and down[0]:
+            b.calls.append((method, params))
+            raise TelegramError(method, "Bad Gateway", 502)
+        return await sent(client, method, _tries, **params)
+
+    b.call = call
+    cfg(data_dir, text="[no reply]")
+    run(b.handle(None, msg("llego a las 8", user=8, message_id=1)))
+    assert reactions(b) == [(1, "👀"), (1, "👍")] and sends(b) == []
+    down[0] = False
+    b.calls.clear()
+    cfg(data_dir, text="```telegram\nreact: 👍\n```")
+    run(b.handle(None, msg("y compro pan", user=8, message_id=2)))
+    assert reactions(b) == [(1, "👍"), (2, "👍")]
+
+
+def test_a_read_mark_never_goes_on_the_bots_own_voice_echo(data_dir, tmp_path):
+    from supermealplanner.bot import Item
+
+    b, _ = everyone(data_dir, tmp_path)
+    b.spoken_rows[5] = "s1"  # row 5 is a spoken turn: its message is the bot's own echo
+    covered = [Item(5, 1000, 7, "luis", 0.0), Item(6, 2, 8, "ana", 0.0, heard=True)]
+    run(b.mark(None, -100, covered, "👀"))
+    assert reactions(b) == [(2, "👀")]
+
+
+def test_a_reaction_reaches_a_mention_written_before_a_line_without_one(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    b.debounce = 0.3
+    refusing(b, "🔥")
+    cfg(data_dir, text="```telegram\nreact: 🔥\n```")
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("@chefbot gracias", user=8, message_id=1)))
+        await asyncio.sleep(0.05)
+        await b.handle(None, msg("ya está la lasaña", user=8, message_id=2))
+        await first
+
+    run(go())
+    assert len(lines(data_dir, "turns.jsonl")) == 1
+    # the mention keeps its words fallback; the line beside it falls back to a thumb
+    assert [p["text"] for p in sends(b, -100)] == ["🔥"]
+    assert sorted(reactions(b)) == [(1, "🔥"), (2, "👍"), (2, "🔥")]
