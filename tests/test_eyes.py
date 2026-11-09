@@ -380,3 +380,129 @@ def test_an_anonymous_admins_message_gets_eyes(data_dir, tmp_path):
     run(b.handle(None, {**msg("@chefbot hola", message_id=3), "from": anon, "sender_chat": group}))
     assert [p["text"] for p in sends(b, -100)] == ["ok"]
     assert reactions(b) == [(3, "👀")]
+
+
+def test_messages_waiting_behind_another_chats_turn_get_eyes_on_arrival(data_dir, tmp_path):
+    # one AI answer at a time across chats: the group and Ana's private chat wait behind Luis's
+    b, _ = setup(data_dir, tmp_path)  # answer_scope asked
+    cfg(data_dir, listen=3)
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("hola", chat=7, user=7, message_id=1)))
+        await until(lambda: running(data_dir), timeout=30)
+        waiting = [
+            asyncio.create_task(b.handle(None, msg("@chefbot qué cenamos", user=8, message_id=2))),
+            asyncio.create_task(b.handle(None, msg("hola", chat=8, user=8, message_id=4))),
+        ]
+        await b.handle(None, msg("llego tarde", user=8, message_id=3))  # context only: no turn
+        await until(lambda: (2, "👀") in reactions(b) and (4, "👀") in reactions(b, chat=8))
+        assert running(data_dir) and not first.done()  # Luis's turn is still being answered
+        assert not sends(b)
+        cfg(data_dir)
+        await asyncio.gather(first, *waiting)
+        await drain(b)
+
+    run(go())
+    # once each: their own turns found them marked already; never on the context line
+    assert reactions(b) == [(2, "👀")]
+    assert reactions(b, chat=8) == [(4, "👀")] and reactions(b, chat=7) == [(1, "👀")]
+    assert [p["text"] for p in sends(b, -100)] == ["ok"] and len(sends(b, 8)) == 1
+
+
+@pytest.mark.parametrize("telegram", ["hangs", "refuses"])
+def test_an_arrival_eye_that_hangs_or_is_refused_holds_nothing_up(data_dir, tmp_path, telegram):
+    b, _ = setup(data_dir, tmp_path)
+    cfg(data_dir, listen=1)
+    sent, never = b.call, asyncio.Event
+
+    async def call(client, method, _tries=0, **params):
+        if method == "setMessageReaction" and params["chat_id"] == 8:
+            b.calls.append((method, params))
+            if telegram == "hangs":
+                await never().wait()
+            raise TelegramError(method, "Bad Request: REACTION_INVALID", 400)
+        return await sent(client, method, _tries, **params)
+
+    b.call = call
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("hola", chat=7, user=7, message_id=1)))
+        await until(lambda: running(data_dir), timeout=30)
+        cfg(data_dir)
+        # the handler queues it, tries 👀, waits its turn and answers, whatever Telegram does
+        await asyncio.wait_for(b.handle(None, msg("hola", chat=8, user=8, message_id=4)), 10)
+        await first
+
+    run(go())
+    assert [p["text"] for p in sends(b, 8)] == ["ok"]  # no 👍, no words about it
+    assert reactions(b, chat=8)[0] == (4, "👀")
+    assert "👍" not in [e for _, e in reactions(b, chat=8)]
+
+
+# ---------------------------------------------------------------- the 👀 never stands in for the answer
+
+
+def test_a_message_marked_while_it_waits_still_gets_its_answer_in_words(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)  # answer_scope asked
+    cfg(data_dir, listen=2)
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("hola", chat=7, user=7, message_id=1)))
+        await until(lambda: running(data_dir), timeout=30)
+        later = asyncio.create_task(b.handle(None, msg("@chefbot y mañana", user=8, message_id=2)))
+        await until(lambda: (2, "👀") in reactions(b))
+        cfg(data_dir, text="Lentejas.")
+        await asyncio.gather(first, later)
+        await drain(b)
+
+    run(go())
+    assert [t["new"] for t in lines(data_dir, "turns.jsonl")][-1] == ["ana: @chefbot y mañana"]
+    (answer,) = sends(b, -100)
+    assert answer["text"] == "Lentejas." and answer["reply_parameters"]["message_id"] == 2
+    assert reactions(b) == [(2, "👀")]
+
+
+def test_a_message_marked_while_it_waits_is_answered_after_its_turn_fails(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    cfg(data_dir, listen=2)
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("hola", chat=7, user=7, message_id=1)))
+        await until(lambda: running(data_dir), timeout=30)
+        later = asyncio.create_task(b.handle(None, msg("quedan 10", user=8, message_id=2)))
+        await until(lambda: (2, "👀") in reactions(b))
+        failing(data_dir)  # its own turn fails, once Luis's is done: held, marked, unanswered
+        await asyncio.gather(first, later)
+        assert [i.mid for i in b.held[-100]] == [2] and not sends(b, -100)
+        (data_dir / "plugins" / "ai.py").write_text(PLUGIN)
+        cfg(data_dir, text="Apuntado.")
+        await b.handle(None, msg("y 2 de sopa", user=8, message_id=3))
+        await drain(b)
+
+    run(go())
+    assert lines(data_dir, "turns.jsonl")[-1]["new"] == [
+        "[no mention] ana: quedan 10\n[no mention] ana: y 2 de sopa"
+    ]
+    assert [p["text"] for p in sends(b, -100)] == ["Apuntado."]
+    assert reactions(b) == [(2, "👀"), (3, "👀")]
+
+
+def test_a_message_marked_while_it_waits_is_answered_after_a_restart(data_dir, tmp_path):
+    from .test_turns import feed, restarted
+
+    old, db = setup(data_dir, tmp_path)
+    feed(old, {"update_id": 41, "message": msg("¿qué cenamos?", chat=7, user=7, message_id=5)})
+
+    async def dies_while_it_waits():
+        await old.ai.acquire()  # another chat's turn holds the one AI slot
+        poll = asyncio.create_task(old.poll(None))
+        await until(lambda: (5, "👀") in reactions(old, chat=7))
+        poll.cancel()
+
+    run(dies_while_it_waits())
+    assert lines(data_dir, "turns.jsonl") == [] and not sends(old)
+    new, start = restarted(old)
+    run(start())
+    assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [["luis: ¿qué cenamos?"]]
+    assert [p["text"] for p in sends(new, 7)] == ["ok"]
+    assert db.get_kv("bot.queued") is None

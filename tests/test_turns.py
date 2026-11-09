@@ -109,6 +109,9 @@ async def until(cond, timeout=5.0):
 async def drain(b):
     while b.tasks:
         await asyncio.gather(*list(b.tasks))
+        # a task that just finished leaves b.tasks in its done callback, which needs the loop to run:
+        # gathering only finished tasks never yields to it
+        await asyncio.sleep(0)
 
 
 def running(data_dir):

@@ -82,7 +82,8 @@ def test_a_burst_of_lines_without_a_mention_is_one_turn(data_dir, tmp_path):
         ["[no mention] ana: quedan 10 raciones\n[no mention] ana: y he sacado 100 g de merluza"]
     ]
     # 👀 on each as the turn starts; the reaction then replaces it on every one, and no text at all
-    assert reactions(b) == [(1, "👀"), (2, "👀"), (1, "👍"), (2, "👍")]
+    # the new line is marked when it arrives, the held one when the turn takes it
+    assert reactions(b) == [(2, "👀"), (1, "👀"), (1, "👍"), (2, "👍")]
     assert sends(b, -100) == []
 
 
@@ -547,7 +548,8 @@ def test_a_held_line_waits_for_a_persons_turn_not_the_bots_own(data_dir, tmp_pat
     assert reactions(b) == [(1, "👀")] and b.held
     cfg(data_dir, text="```telegram\nreact: 👍\n```")
     run(b.handle(None, msg("y 2 de sopa", user=8, message_id=2)))
-    assert reactions(b) == [(1, "👀"), (2, "👀"), (1, "👍"), (2, "👍")]
+    # the new line is marked when it arrives, the held one when the turn takes it
+    assert reactions(b) == [(2, "👀"), (1, "👀"), (1, "👍"), (2, "👍")]
 
 
 def test_a_read_mark_lost_to_a_telegram_outage_goes_with_the_next_turn(data_dir, tmp_path):
@@ -569,7 +571,8 @@ def test_a_read_mark_lost_to_a_telegram_outage_goes_with_the_next_turn(data_dir,
     b.calls.clear()
     cfg(data_dir, text="```telegram\nreact: 👍\n```")
     run(b.handle(None, msg("y compro pan", user=8, message_id=2)))
-    assert reactions(b) == [(1, "👀"), (2, "👀"), (1, "👍"), (2, "👍")]
+    # the new line is marked when it arrives, the held one when the turn takes it
+    assert reactions(b) == [(2, "👀"), (1, "👀"), (1, "👍"), (2, "👍")]
 
 
 def test_a_read_mark_never_goes_on_the_bots_own_voice_echo(data_dir, tmp_path):
