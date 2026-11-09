@@ -370,3 +370,13 @@ def test_a_reaction_answer_to_a_tap_never_goes_on_the_bots_question(data_dir, tm
     run(tap(b, garbanzos["callback_data"], 7, mid))
     assert reactions(b) == []
     assert [p["text"] for p in sends(b, -100)] == ["👍"]  # said, as when a reaction fails
+
+
+def test_an_anonymous_admins_message_gets_eyes(data_dir, tmp_path):
+    # Telegram sends it from its placeholder bot, with the group itself as the sender
+    b, _ = setup(data_dir, tmp_path, group_open=True)
+    anon = {"id": 1087968824, "first_name": "Group", "is_bot": True}
+    group = {"id": -100, "type": "supergroup"}
+    run(b.handle(None, {**msg("@chefbot hola", message_id=3), "from": anon, "sender_chat": group}))
+    assert [p["text"] for p in sends(b, -100)] == ["ok"]
+    assert reactions(b) == [(3, "👀")]

@@ -1177,7 +1177,10 @@ class Bot:
             )
             item.corrects = corrects
             item.heard = heard and not asked
-            item.bots_mid = tapped or spoken is not None or bool(user.get("is_bot"))
+            # an anonymous admin writes as Telegram's placeholder bot, with the group as sender_chat:
+            # a person all the same
+            from_bot = bool(user.get("is_bot")) and not (msg or {}).get("sender_chat")
+            item.bots_mid = tapped or spoken is not None or from_bot
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
