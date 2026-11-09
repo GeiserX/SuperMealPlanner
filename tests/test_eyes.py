@@ -321,3 +321,31 @@ def test_a_start_eye_that_lands_after_the_answer_reaction_puts_that_reaction_bac
 
     run(go())
     assert reactions(b) == [(1, "🔥"), (1, "👀"), (1, "🔥")]  # the answer's reaction is last
+
+
+def test_a_start_eye_that_lands_while_the_answer_reaction_waits_for_its_reply_loses(
+    data_dir, tmp_path, monkeypatch
+):
+    # Telegram applies the answer's 🔥, then the late 👀, and only then replies to the 🔥
+    b, _ = everyone(data_dir, tmp_path)
+    monkeypatch.setattr(botmod, "EYES_WAIT_S", 0.05)
+    cfg(data_dir, text="```telegram\nreact: 🔥\n```")
+    sent = b.call
+
+    async def call(client, method, _tries=0, **params):
+        emoji = params.get("reaction", [{}])[0].get("emoji")
+        if method == "setMessageReaction" and emoji == "👀":
+            await until(lambda: (1, "🔥") in reactions(b), timeout=10)
+        out = await sent(client, method, _tries, **params)
+        if method == "setMessageReaction" and emoji == "🔥":
+            await until(lambda: (1, "👀") in reactions(b), timeout=10)  # its reply comes late
+        return out
+
+    b.call = call
+
+    async def go():
+        await b.handle(None, msg("ya está la lasaña", user=8, message_id=1))
+        await drain(b)
+
+    run(go())
+    assert reactions(b)[-1] == (1, "🔥") and reactions(b)[:2] == [(1, "🔥"), (1, "👀")]

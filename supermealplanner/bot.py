@@ -1952,14 +1952,7 @@ class Bot:
                 continue  # it got its SEEN when the turn took it
             for e in dict.fromkeys((emoji, NOTED)):
                 try:
-                    await self.call(
-                        client,
-                        "setMessageReaction",
-                        chat_id=chat_id,
-                        message_id=mid,
-                        reaction=[{"type": "emoji", "emoji": e}],
-                    )
-                    self.reacted(chat_id, mid, e)
+                    await self.react(client, chat_id, mid, e)
                     break
                 except TelegramError as err:
                     log.info("reaction %s failed: %s", e, err)
@@ -2020,8 +2013,8 @@ class Bot:
         now = self.reacts.get(chat_id, {}).get(mid)
         if now is None or now == SEEN:
             return
-        # the answer's own reaction landed while this one was on its way (eyes_landed gave up
-        # waiting): this one replaced it, so it goes again
+        # the answer's own reaction went out while this one was on its way (eyes_landed gave up
+        # waiting): this one may have replaced it, so it goes again
         try:
             await self.call(
                 client,
@@ -2039,6 +2032,29 @@ class Bot:
         pending = [t for t in self.eyeing.get(chat_id, ()) if not t.done()]
         if pending:
             await asyncio.wait(pending, timeout=EYES_WAIT_S)
+
+    async def react(self, client, chat_id: int, mid: int, emoji: str) -> None:
+        """The answer's reaction `emoji` on message `mid`. Counted before it is sent, so a start
+        SEEN that Telegram applies after it, whichever answers first, sees it and puts it back
+        (_eye); one Telegram refuses gives back what was there."""
+        before = self.reacts.get(chat_id, {}).get(mid)
+        self.reacted(chat_id, mid, emoji)
+        try:
+            await self.call(
+                client,
+                "setMessageReaction",
+                chat_id=chat_id,
+                message_id=mid,
+                reaction=[{"type": "emoji", "emoji": emoji}],
+            )
+        except BaseException:
+            reacts = self.reacts.get(chat_id, {})
+            if reacts.get(mid) == emoji:
+                if before is None:
+                    reacts.pop(mid, None)
+                else:
+                    reacts[mid] = before
+            raise
 
     def reacted(self, chat_id: int, mid: int, emoji: str) -> None:
         """The bot's reaction on message `mid` is now `emoji` (Bot.reacts)."""
@@ -2094,11 +2110,7 @@ class Bot:
         if acts["react"] and to:
             try:
                 await self.eyes_landed(chat_id)  # it replaces the turn's SEEN, never the reverse
-                reaction = [{"type": "emoji", "emoji": acts["react"]}]
-                await self.call(
-                    client, "setMessageReaction", chat_id=chat_id, message_id=to, reaction=reaction
-                )
-                self.reacted(chat_id, to, acts["react"])
+                await self.react(client, chat_id, to, acts["react"])
                 _show(chat_id)
                 return
             except TelegramError as e:
