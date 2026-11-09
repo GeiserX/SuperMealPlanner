@@ -180,7 +180,7 @@ NO_REPLY_RE = re.compile(r"\[\s*no[ _-]?reply\s*\]", re.IGNORECASE)
 # being worked on; a text answer leaves it, a reaction-only answer replaces it. bot.answer_scope all:
 # a group turn that shows nothing keeps it; a SEEN Telegram refuses there gets NOTED once instead
 SEEN, NOTED = "👀", "👍"
-SEEN_KEEP = 500  # message ids per chat known to carry SEEN (Bot.seen)
+REACTS_KEEP = 500  # message ids per chat whose bot reaction is known (Bot.reacts)
 EYES_WAIT_S = 10  # how long a reaction at the end of a turn waits for its start's SEEN to land
 PENDING_TTL = 3600  # a proposed change waits this long for its yes
 # What waits for a yes, as a list. 0.3.x kept one change as a dict under bot.pending.<chat> and reads
@@ -329,8 +329,9 @@ class Item:
     # a group message that neither mentions the bot nor replies to it, answered because
     # bot.answer_scope is "all": the AI may answer it with only a reaction, or with no words (SEEN)
     heard: bool = False
-    # a tap on a button: `mid` is the bot's own message under which it was tapped (no reaction)
-    tapped: bool = False
+    # `mid` is the bot's own message (no reaction goes on it): the question a button was tapped
+    # under, or the echo the bot posted of something said to the app
+    bots_mid: bool = False
 
 
 @dataclass
@@ -400,10 +401,10 @@ class Bot:
         # bot.answer_scope all: the people's messages of a turn that failed before anything reached
         # the chat; they join the chat's next turn, so its answer covers them (hold)
         self.held: dict[int, list[Item]] = {}
-        # per chat: the message ids SEEN went on (or is going on), oldest first, so it goes once;
-        # and the tasks putting it on at the start of a turn (eye), which end-of-turn reactions
-        # wait for, so a SEEN that lands late never replaces the answer's own reaction
-        self.seen: dict[int, dict[int, None]] = {}
+        # per chat: message id -> the bot's reaction on it (sent or on its way), oldest first, so
+        # SEEN goes once; and the tasks putting SEEN on at the start of a turn (eye), which
+        # end-of-turn reactions wait for, so a SEEN that lands late never replaces their own
+        self.reacts: dict[int, dict[int, str]] = {}
         self.eyeing: dict[int, set[asyncio.Task]] = {}
         self.told_busy: set[int] = set()  # chats told of the wait, until an answer goes out
         self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
@@ -807,7 +808,7 @@ class Bot:
                         bool(x.get("auto")),
                         bool(x.get("review")),
                         heard=bool(x.get("heard")),
-                        tapped=bool(x.get("tapped")),
+                        bots_mid=bool(x.get("bots_mid")),
                     )
                     for x in kept
                 ]
@@ -860,7 +861,7 @@ class Bot:
                     "auto": add.auto,
                     "review": add.review,
                     "heard": add.heard,
-                    "tapped": add.tapped,
+                    "bots_mid": add.bots_mid,
                 }
             )
         else:  # what a failed turn held stays too: a restart answers it (resume)
@@ -1176,7 +1177,7 @@ class Bot:
             )
             item.corrects = corrects
             item.heard = heard and not asked
-            item.tapped = tapped
+            item.bots_mid = tapped or spoken is not None
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
@@ -1944,10 +1945,10 @@ class Bot:
         _show(chat_id)  # tried: the turn is not silent, whatever Telegram answers
         await self.eyes_landed(chat_id)
         lost: list[Item] = []
-        mine = [i for i in covered if self.person(i)]
-        seen = self.seen.get(chat_id, {})
+        mine = [i for i in covered if self.reactable(i)]
+        reacts = self.reacts.get(chat_id, {})
         for mid in dict.fromkeys(i.mid for i in mine):
-            if emoji == SEEN and mid in seen:
+            if emoji == SEEN and reacts.get(mid) == SEEN:
                 continue  # it got its SEEN when the turn took it
             for e in dict.fromkeys((emoji, NOTED)):
                 try:
@@ -1970,10 +1971,14 @@ class Bot:
             self.hold(chat_id, lost)
 
     def person(self, item: Item) -> bool:
-        """A message a person wrote in the chat (one a reaction can go on): not the bot's own
-        turn, nor the echo the bot posted of something said to the app (spoken_rows), nor the bot's
-        message a button was tapped under."""
-        return _person(item) and not item.tapped and item.row not in self.spoken_rows
+        """A message a person sent (one a failed turn holds, hold): not the bot's own turn, nor
+        something said to the app (spoken_rows), which the app answers itself."""
+        return _person(item) and item.row not in self.spoken_rows
+
+    def reactable(self, item: Item) -> bool:
+        """A person's message a reaction can go on: not the bot's own message a button was tapped
+        under, nor its echo of something said to the app, however long ago (bots_mid)."""
+        return self.person(item) and not item.bots_mid
 
     def eye(self, client, chat_id: int, items: list[Item]) -> None:
         """A turn took these messages (it started with them, or they joined it while it runs): SEEN
@@ -1982,35 +1987,51 @@ class Bot:
         does, a failure is only logged, and nothing is tried in its place (NOTED means noted). The
         end of the turn keeps it, replaces it with a reaction-only answer, or (bot.answer_scope
         all, a turn that showed nothing) tries it again where it was refused, then NOTED (mark)."""
-        seen = self.seen.setdefault(chat_id, {})
-        mids = [m for m in dict.fromkeys(i.mid for i in items if self.person(i)) if m not in seen]
-        if not mids:
-            return
+        reacts = self.reacts.get(chat_id, {})
+        mids = [i.mid for i in items if self.reactable(i) and reacts.get(i.mid) != SEEN]
         try:
-            task = asyncio.get_running_loop().create_task(self._eye(client, chat_id, mids))
+            loop = asyncio.get_running_loop()
         except RuntimeError:  # no loop in this thread: nothing can be sent from here
             return
-        for mid in mids:  # counted now, so a message taken twice meanwhile gets it once
-            self.reacted(chat_id, mid, SEEN)
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
         eyeing = self.eyeing.setdefault(chat_id, set())
-        eyeing.add(task)
-        task.add_done_callback(eyeing.discard)
+        for mid in dict.fromkeys(mids):  # each on its own: a slow one never holds up the rest
+            self.reacted(chat_id, mid, SEEN)  # counted now: a message taken twice gets it once
+            task = loop.create_task(self._eye(client, chat_id, mid))
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
+            eyeing.add(task)
+            task.add_done_callback(eyeing.discard)
 
-    async def _eye(self, client, chat_id: int, mids: list[int]) -> None:
-        for mid in mids:
-            try:
-                await self.call(
-                    client,
-                    "setMessageReaction",
-                    chat_id=chat_id,
-                    message_id=mid,
-                    reaction=[{"type": "emoji", "emoji": SEEN}],
-                )
-            except Exception as e:  # noqa: BLE001  only a sign: the turn goes on without it
-                log.info("reaction %s at the start of a turn failed: %s", SEEN, safe(e))
-                self.seen.get(chat_id, {}).pop(mid, None)  # the end of the turn may try it again
+    async def _eye(self, client, chat_id: int, mid: int) -> None:
+        try:
+            await self.call(
+                client,
+                "setMessageReaction",
+                chat_id=chat_id,
+                message_id=mid,
+                reaction=[{"type": "emoji", "emoji": SEEN}],
+            )
+        except Exception as e:  # noqa: BLE001  only a sign: the turn goes on without it
+            log.info("reaction %s at the start of a turn failed: %s", SEEN, safe(e))
+            reacts = self.reacts.get(chat_id, {})
+            if reacts.get(mid) == SEEN:
+                reacts.pop(mid)  # the end of the turn may try it again
+            return
+        now = self.reacts.get(chat_id, {}).get(mid)
+        if now is None or now == SEEN:
+            return
+        # the answer's own reaction landed while this one was on its way (eyes_landed gave up
+        # waiting): this one replaced it, so it goes again
+        try:
+            await self.call(
+                client,
+                "setMessageReaction",
+                chat_id=chat_id,
+                message_id=mid,
+                reaction=[{"type": "emoji", "emoji": now}],
+            )
+        except Exception as e:  # noqa: BLE001
+            log.info("reaction %s again after a late %s failed: %s", now, SEEN, safe(e))
 
     async def eyes_landed(self, chat_id: int) -> None:
         """Wait (EYES_WAIT_S at most) for the SEEN the chat's turn start is putting on, so a
@@ -2020,13 +2041,12 @@ class Bot:
             await asyncio.wait(pending, timeout=EYES_WAIT_S)
 
     def reacted(self, chat_id: int, mid: int, emoji: str) -> None:
-        """The bot's reaction on message `mid` is now `emoji` (Bot.seen keeps the SEEN ones)."""
-        seen = self.seen.setdefault(chat_id, {})
-        seen.pop(mid, None)
-        if emoji == SEEN:
-            seen[mid] = None
-            while len(seen) > SEEN_KEEP:
-                seen.pop(next(iter(seen)))
+        """The bot's reaction on message `mid` is now `emoji` (Bot.reacts)."""
+        reacts = self.reacts.setdefault(chat_id, {})
+        reacts.pop(mid, None)
+        reacts[mid] = emoji
+        while len(reacts) > REACTS_KEEP:
+            reacts.pop(next(iter(reacts)))
 
     def hold(self, chat_id: int, items: list[Item]) -> None:
         """bot.answer_scope all: a turn that failed before anything reached the chat read nothing,

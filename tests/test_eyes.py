@@ -69,11 +69,11 @@ def test_a_line_without_a_mention_gets_eyes_at_the_start_too(data_dir, tmp_path,
 @pytest.mark.parametrize("scope", ["asked", "all"])
 def test_a_message_that_joins_a_running_turn_gets_eyes_at_once(data_dir, tmp_path, scope):
     b, _ = setup(data_dir, tmp_path, answer_scope=scope)
-    cfg(data_dir, listen=1.5, until=2)  # it listens the whole time: never two lines
+    cfg(data_dir, listen=4, until=2)  # it listens the whole time: never two lines
 
     async def go():
         first = asyncio.create_task(b.handle(None, msg("@chefbot qué cenamos", message_id=1)))
-        await until(lambda: running(data_dir))
+        await until(lambda: running(data_dir), timeout=30)
         await b.handle(None, msg("@chefbot y mañana", user=8, message_id=2))
         # on it while the answer is still being written
         await until(lambda: (2, "👀") in reactions(b))
@@ -193,8 +193,8 @@ def test_a_slow_start_eye_never_delays_the_ai(data_dir, tmp_path, monkeypatch):
     sent = b.call
 
     async def slow(client, method, _tries=0, **params):
-        if method == "setMessageReaction":
-            await asyncio.sleep(1.0)
+        if method == "setMessageReaction":  # Telegram answers only once the answer went out
+            await until(lambda: sends(b, -100), timeout=10)
         return await sent(client, method, _tries, **params)
 
     b.call = slow
@@ -242,3 +242,82 @@ def test_a_failed_turn_leaves_the_eyes_and_asked_mode_still_says_so(data_dir, tm
     assert reactions(b) == [(1, "👀")]
     assert [p["text"] for p in sends(b, -100)] == [b.t("bot_error")]
     assert calls(b, "setMessageReaction")[0]["chat_id"] == -100
+
+
+def test_a_tap_whose_turn_fails_still_goes_with_the_next_turn(data_dir, tmp_path):
+    # no 👀 on the bot's question, but the tap itself is a person's message: a failed turn holds it
+    b, db = everyone(data_dir, tmp_path)
+    cfg(data_dir, text="¿Cuál?\n\n```options\n- Lentejas\n- Garbanzos\n```")
+    run(b.handle(None, msg("@chefbot ¿qué hago el lunes?", message_id=1)))
+    _, garbanzos = buttons(sends(b, -100)[-1])
+    mid = 1000 + len(b.calls)
+    failing(data_dir)
+    b.calls.clear()
+    run(tap(b, garbanzos["callback_data"], 7, mid))
+    assert reactions(b) == []
+    assert [i.mid for i in b.held[-100]] == [mid]
+    assert [x["mid"] for x in db.get_kv("bot.queued")["-100"]] == [mid]
+
+
+def test_the_echo_of_something_said_to_the_app_gets_no_eyes_after_a_restart(data_dir, tmp_path):
+    from .test_turns import restarted
+
+    old, db = everyone(data_dir, tmp_path)
+    old.spoken["s1"] = botmod.Spoken("s1", "luis", 7, "qué cenamos", chat=-100)
+    echo = {**msg("[voice] qué cenamos", message_id=50), botmod.SPOKEN: "s1"}
+    old.take(-100, {"id": 7}, "luis", echo, "qué cenamos", asked=True)
+    assert db.get_kv("bot.queued")["-100"][0]["bots_mid"] is True
+    new, start = restarted(old)
+    run(start())
+    assert lines(data_dir, "turns.jsonl") and reactions(new) == []
+
+
+def test_one_slow_start_eye_never_holds_up_the_others(data_dir, tmp_path):
+    b, _ = everyone(data_dir, tmp_path)
+    b.debounce = 0.3
+    cfg(data_dir, text="Apuntado.")
+    sent, landed = b.call, []
+
+    async def call(client, method, _tries=0, **params):
+        if method == "setMessageReaction" and params["message_id"] == 1:
+            await until(lambda: sends(b, -100), timeout=10)  # stuck until the answer is out
+        out = await sent(client, method, _tries, **params)
+        if method == "setMessageReaction":
+            landed.append((params["message_id"], bool(sends(b, -100))))
+        return out
+
+    b.call = call
+
+    async def go():
+        first = asyncio.create_task(b.handle(None, msg("quedan 10", user=8, message_id=1)))
+        await asyncio.sleep(0.05)
+        await b.handle(None, msg("y 2 de sopa", user=8, message_id=2))
+        await first
+        await drain(b)
+
+    run(go())
+    # message 2 had its 👀 before the answer went out, while message 1's was stuck
+    assert landed == [(2, False), (1, True)]
+
+
+def test_a_start_eye_that_lands_after_the_answer_reaction_puts_that_reaction_back(
+    data_dir, tmp_path, monkeypatch
+):
+    b, _ = everyone(data_dir, tmp_path)
+    monkeypatch.setattr(botmod, "EYES_WAIT_S", 0.05)
+    cfg(data_dir, text="```telegram\nreact: 🔥\n```")
+    sent = b.call
+
+    async def call(client, method, _tries=0, **params):
+        if method == "setMessageReaction" and params["reaction"][0]["emoji"] == "👀":
+            await until(lambda: (1, "🔥") in reactions(b), timeout=10)  # lands after the answer's
+        return await sent(client, method, _tries, **params)
+
+    b.call = call
+
+    async def go():
+        await b.handle(None, msg("ya está la lasaña", user=8, message_id=1))
+        await drain(b)
+
+    run(go())
+    assert reactions(b) == [(1, "🔥"), (1, "👀"), (1, "🔥")]  # the answer's reaction is last
