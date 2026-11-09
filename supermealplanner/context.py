@@ -91,7 +91,7 @@ on it as you would if you were asked (update what you track: the pantry, the men
 Then answer with only a reaction (👍: seen and noted), unless it asks you something or changes what
 someone has to do: then answer in words, and say briefly that you took note. A reaction alone goes
 on each of the lines you answer. When it is talk between people with nothing for you, write only
-[no reply], alone: their lines keep the 👀 (read) they got when you started, so you never need words
+[no reply], alone: their lines keep the 👀 (read) they got when they arrived, so you never need words
 just to say you saw them, and a 👍 says you noted them. A change you make posts its own short confirmation,
 so the 👍 alone is for a line that changes nothing you track. A mention, a reply to you or a voice note always gets an answer in words,
 never [no reply] and never only a reaction, whatever the Telegram guide below says about reactions.
@@ -103,7 +103,7 @@ WHO = """
 A message that replies to an earlier one starts with what it points at: "(replying to <who>'s
 <photo, file, video, voice note or message> of <its time, UTC>)". When that message is not in the
 conversation, that is how to find it.
-In Telegram each person's message you are answering shows 👀 as soon as you start on it, so they
+In Telegram each person's message you are answering shows 👀 as soon as it arrives, so they
 know you are on it: never write words only to say you saw it or that you are working on it.
 A message that starts with "[voice]" was said out loud to a phone, and your answer is read out to
 them: answer in a few short spoken sentences, with no tables, lists, links, emojis or Markdown.{voice_yes}

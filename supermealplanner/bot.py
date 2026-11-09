@@ -11,9 +11,10 @@ bot.answer_scope all, every text message of someone it answers (Item.heard), whi
 with only a reaction (put on every message of the turn) or with no words (context.NO_REPLY): such a
 message keeps its SEEN, never left with nothing.
 
-In every chat, each person's message gets SEEN (👀) as soon as a turn takes it, when the turn starts
-or when it joins the running one, so the household sees it is being worked on (Bot.eye). It never
-waits on Telegram; a text answer leaves it, a reaction-only answer replaces it, a failed turn keeps it.
+In every chat, each person's message a turn will answer gets SEEN (👀) the moment the bot receives
+it, before it waits behind any turn (Bot.take, Bot.eye), and again at its turn's start only where that
+one did not land, so the household sees at once it is being worked on. It never waits on Telegram; a
+text answer leaves it, a reaction-only answer replaces it, a failed turn keeps it.
 
 A photo or a file goes to a provider that can look at it (llm.sees_files) as turn["attachments"],
 its caption as the message's text. It is queued like any message, by its Telegram file id, and its
@@ -176,9 +177,10 @@ AI = "ai"  # the `who` of the AI's own answers in the chat log
 NOT_TO_YOU, NO_MENTION = context.NOT_TO_YOU, context.NO_MENTION
 # the AI's deliberate "nothing to send" (context.NO_REPLY), however it spaces or cases it
 NO_REPLY_RE = re.compile(r"\[\s*no[ _-]?reply\s*\]", re.IGNORECASE)
-# Every chat: SEEN goes on each person's message as soon as a turn takes it (eye), so they see it is
-# being worked on; a text answer leaves it, a reaction-only answer replaces it. bot.answer_scope all:
-# a group turn that shows nothing keeps it; a SEEN Telegram refuses there gets NOTED once instead
+# Every chat: SEEN goes on each person's message as soon as it is queued for a turn (eye), so they
+# see it is being worked on; a text answer leaves it, a reaction-only answer replaces it.
+# bot.answer_scope all: a group turn that shows nothing keeps it; a SEEN Telegram refuses there gets
+# NOTED once instead
 SEEN, NOTED = "👀", "👍"
 REACTS_KEEP = 500  # message ids per chat whose bot reaction is known (Bot.reacts)
 EYES_WAIT_S = 10  # how long a reaction at the end of a turn waits for its start's SEEN to land
@@ -1154,8 +1156,8 @@ class Bot:
         marked "[voice]" for the AI, which then answers for the ear (context.WHO). A follow-up is
         logged under its own name (user's first_name), never as the person it acts for. heard: a
         group message that did not call the bot, queued anyway (bot.answer_scope all) and logged as
-        not addressed. tapped: a button's tap, msg being the bot's message it was under. A message
-        that joins a chat whose turn is running gets SEEN at once (eye)."""
+        not addressed. tapped: a button's tap, msg being the bot's message it was under. A queued
+        message gets SEEN at once (eye), however long it then waits for its turn."""
         spoken = self.spoken.get((msg or {}).get(SPOKEN) or "")
         if spoken is not None:
             text = f"[voice] {text}"
@@ -1184,8 +1186,8 @@ class Bot:
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
-            if chat_id in self.running:  # the running turn takes it, or the next one: seen now
-                self.eye(self.client, chat_id, [item])
+            # a turn will answer it: seen now, before it waits behind any turn of any chat
+            self.eye(self.client, chat_id, [item])
         return row
 
     async def drive(self, client, chat_id: int) -> None:
@@ -1980,12 +1982,14 @@ class Bot:
         return self.person(item) and not item.bots_mid
 
     def eye(self, client, chat_id: int, items: list[Item]) -> None:
-        """A turn took these messages (it started with them, or they joined it while it runs): SEEN
-        on each person's message that has none yet, in every chat, so the household sees at once
-        that it is being worked on. Its own task, never awaited: the turn goes on whatever Telegram
-        does, a failure is only logged, and nothing is tried in its place (NOTED means noted). The
-        end of the turn keeps it, replaces it with a reaction-only answer, or (bot.answer_scope
-        all, a turn that showed nothing) tries it again where it was refused, then NOTED (mark)."""
+        """A turn will answer these messages (they were just queued, take, or a turn starts with
+        them): SEEN on each person's message that has none yet, in every chat, so the household
+        sees at once that it is being worked on, even while it waits behind another chat's turn.
+        Its own task, never awaited: the turn goes on whatever Telegram does, a failure is only
+        logged, and nothing is tried in its place (NOTED means noted). The end of the turn keeps
+        it, replaces it with a reaction-only answer, or (bot.answer_scope all, a turn that showed
+        nothing) tries it again where it was refused, then NOTED (mark). It never answers: the
+        message still gets its turn and its answer."""
         reacts = self.reacts.get(chat_id, {})
         mids = [i.mid for i in items if self.reactable(i) and reacts.get(i.mid) != SEEN]
         try:
@@ -2011,7 +2015,7 @@ class Bot:
                 reaction=[{"type": "emoji", "emoji": SEEN}],
             )
         except Exception as e:  # noqa: BLE001  only a sign: the turn goes on without it
-            log.info("reaction %s at the start of a turn failed: %s", SEEN, safe(e))
+            log.info("reaction %s on a message to answer failed: %s", SEEN, safe(e))
             reacts = self.reacts.get(chat_id, {})
             if reacts.get(mid) == SEEN:
                 reacts.pop(mid)  # the end of the turn may try it again
@@ -2033,7 +2037,7 @@ class Bot:
             log.info("reaction %s again after a late %s failed: %s", now, SEEN, safe(e))
 
     async def eyes_landed(self, chat_id: int) -> None:
-        """Wait (EYES_WAIT_S at most) for the SEEN the chat's turn start is putting on, so a
+        """Wait (EYES_WAIT_S at most) for the SEEN being put on the chat's messages, so a
         reaction of its end goes after it: Telegram keeps only the bot's last one."""
         pending = [t for t in self.eyeing.get(chat_id, ()) if not t.done()]
         if pending:

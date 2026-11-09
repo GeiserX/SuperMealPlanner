@@ -81,7 +81,7 @@ def test_a_burst_of_lines_without_a_mention_is_one_turn(data_dir, tmp_path):
     assert [t["new"] for t in lines(data_dir, "turns.jsonl")] == [
         ["[no mention] ana: quedan 10 raciones\n[no mention] ana: y he sacado 100 g de merluza"]
     ]
-    # 👀 on each as the turn starts; the reaction then replaces it on every one, and no text at all
+    # 👀 on each as it arrives; the reaction then replaces it on every one, and no text at all
     assert reactions(b) == [(1, "👀"), (2, "👀"), (1, "👍"), (2, "👍")]
     assert sends(b, -100) == []
 
@@ -569,7 +569,8 @@ def test_a_read_mark_lost_to_a_telegram_outage_goes_with_the_next_turn(data_dir,
     b.calls.clear()
     cfg(data_dir, text="```telegram\nreact: 👍\n```")
     run(b.handle(None, msg("y compro pan", user=8, message_id=2)))
-    assert reactions(b) == [(1, "👀"), (2, "👀"), (1, "👍"), (2, "👍")]
+    # the new line is marked when it arrives, the held one when the turn takes it
+    assert reactions(b) == [(2, "👀"), (1, "👀"), (1, "👍"), (2, "👍")]
 
 
 def test_a_read_mark_never_goes_on_the_bots_own_voice_echo(data_dir, tmp_path):
