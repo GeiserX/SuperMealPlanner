@@ -184,6 +184,9 @@ NO_REPLY_RE = re.compile(r"\[\s*no[ _-]?reply\s*\]", re.IGNORECASE)
 SEEN, NOTED = "👀", "👍"
 REACTS_KEEP = 500  # message ids per chat whose bot reaction is known (Bot.reacts)
 EYES_WAIT_S = 10  # how long a reaction at the end of a turn waits for its start's SEEN to land
+# bot.answer_scope all: a failed turn's held lines get a turn of their own after these waits, one
+# per failure in a row, so they never wait for someone to write again (retry_held)
+HELD_RETRY_S = (120, 300, 900)
 PENDING_TTL = 3600  # a proposed change waits this long for its yes
 # What waits for a yes, as a list. 0.3.x kept one change as a dict under bot.pending.<chat> and reads
 # nothing else, so the list lives under its own key: a rollback to 0.3.x finds nothing it cannot read.
@@ -403,6 +406,11 @@ class Bot:
         # bot.answer_scope all: the people's messages of a turn that failed before anything reached
         # the chat; they join the chat's next turn, so its answer covers them (hold)
         self.held: dict[int, list[Item]] = {}
+        # per chat: the turns tried for held lines since the last that did not fail (retry_held),
+        # the rows such a turn retried (a failure says nothing of them again), and the waiting tries
+        self.retries: dict[int, int] = {}
+        self.retried: set[int] = set()
+        self.retrying: dict[int, asyncio.Task] = {}
         # per chat: message id -> the bot's reaction on it (sent or on its way), oldest first, so
         # SEEN goes once; and the tasks putting SEEN on at the start of a turn (eye), which
         # end-of-turn reactions wait for, so a SEEN that lands late never replaces their own
@@ -1240,7 +1248,8 @@ class Bot:
                             self.hold(chat_id, [*items, *pulled])
                         # nobody asked: "try again in a minute" would answer no one
                         try:
-                            if not _nobody_asked(items):
+                            # nor again for a line a retry took: it was told when it first failed
+                            if not _nobody_asked([i for i in items if i.row not in self.retried]):
                                 await self.send(
                                     client,
                                     chat_id,
@@ -1256,6 +1265,11 @@ class Bot:
                     if covered is AGAIN:
                         continue  # its messages are queued again, for the turn that answers them
                     self.answered(items, covered, ears)
+                    if (
+                        chat_id not in self.held
+                    ):  # its held lines went out: a new failure starts over
+                        self.retries.pop(chat_id, None)
+                        self.retried.difference_update(i.row for i in items)
                     # the turn ended (a cancelled one did not: a stop keeps its messages queued)
                     with self.qlock:
                         self.queued(chat_id)
@@ -1489,7 +1503,9 @@ class Bot:
                     await self.rest(client, chat_id, items, later)
                     return None
                 failed = True  # nothing was read: its messages go with the next turn (hold)
-                if _nobody_asked(items):  # "try again in a minute" would answer no one
+                # "try again in a minute" would answer no one, and a line a retry took was told
+                # when it first failed (retry_held)
+                if _nobody_asked([i for i in items if i.row not in self.retried]):
                     return None
                 # never recorded: the unanswered messages go again with the next one
                 await self.send(
@@ -2078,7 +2094,8 @@ class Bot:
         """bot.answer_scope all: a turn that failed before anything reached the chat read nothing,
         so its people's messages get no SEEN; they join the chat's next turn instead, whose answer
         (words, a reaction or SEEN) covers them too, never a turn only the bot asked itself (drive).
-        No turn of their own: a provider that keeps failing is not called again for them. They stay
+        If nobody writes, they get a turn of their own after a while (retry_held), a few times at
+        most, so a provider that keeps failing is not called for them forever. They stay
         in QUEUED (queued), so after a restart they are answered like any queued message. Their
         rows went to no conversation, so the AI gets them again as new either way."""
         if not self.answers_all(chat_id):
@@ -2088,6 +2105,40 @@ class Bot:
         held.extend(i for i in items if self.person(i) and i.row not in rows)
         if not held:
             self.held.pop(chat_id, None)
+            return
+        self.retry_held(chat_id)
+
+    def retry_held(self, chat_id: int) -> None:
+        """The chat's held lines get a turn of their own after HELD_RETRY_S, without anyone writing
+        again: the next wait after each failure in a row, then no more until a turn goes through or
+        the bot restarts (resume). A message that comes in first takes them with it (drive)."""
+        tries = self.retries.get(chat_id, 0)
+        if tries >= len(HELD_RETRY_S) or chat_id in self.retrying:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self.retries[chat_id] = tries + 1
+        task = loop.create_task(self._retry_held(chat_id, HELD_RETRY_S[tries]))
+        self.retrying[chat_id] = task  # its own set: a wait of minutes never holds up the rest
+        task.add_done_callback(
+            lambda t: self.retrying.get(chat_id) is t and self.retrying.pop(chat_id)
+        )
+
+    async def _retry_held(self, chat_id: int, wait: float) -> None:
+        await asyncio.sleep(wait)
+        with self.qlock:
+            held = self.held.get(chat_id)
+            if not held or self.queues.get(chat_id):  # answered, or a queued message takes them
+                return
+            self.queues[chat_id] = self.held.pop(chat_id)
+            self.retried.update(i.row for i in held)
+        self.retrying.pop(chat_id, None)  # the turn may fail again: that schedules the next try
+        try:
+            await self.drive(self.client, chat_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("retrying the held lines failed: %s", safe(e))
 
     async def gesture(self, client, chat_id, acts, to, texted, reply_to=None) -> None:
         """What the answer's gestures block asks for (gestures.py), each on its own after the text,
@@ -3245,6 +3296,7 @@ class Bot:
             self.state.db.clear_chat(chat_id)
             self.state.db.set_kv(OPTIONS.format(chat_id), None)
             self.held.pop(chat_id, None)
+            self.retries.pop(chat_id, None)
             with self.qlock:
                 self.queues.pop(chat_id, None)
                 self.queued(chat_id)

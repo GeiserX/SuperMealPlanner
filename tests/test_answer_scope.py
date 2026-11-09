@@ -5,6 +5,7 @@ nothing."""
 
 import asyncio
 
+from supermealplanner import bot as botmod
 from supermealplanner import context
 from supermealplanner.bot import TelegramError
 
@@ -600,3 +601,57 @@ def test_a_reaction_reaches_a_mention_written_before_a_line_without_one(data_dir
     # the mention keeps its words fallback; the line beside it falls back to a thumb
     assert [p["text"] for p in sends(b, -100)] == ["🔥"]
     assert sorted(reactions(b)) == [(1, "👀"), (1, "🔥"), (2, "👀"), (2, "👍"), (2, "🔥")]
+
+
+# ---------------------------------------------------------------- held lines are retried
+
+
+def retry_soon(monkeypatch):
+    monkeypatch.setattr(botmod, "HELD_RETRY_S", (0.2, 0.2, 0.2))
+
+
+def test_a_held_line_gets_its_own_turn_without_anyone_writing_again(
+    data_dir, tmp_path, monkeypatch
+):
+    retry_soon(monkeypatch)
+    b, db = everyone(data_dir, tmp_path)
+    plugin = data_dir / "plugins" / "ai.py"
+    plugin.write_text("def converse(turn, settings):\n    raise RuntimeError('no_output')\n")
+
+    async def go():
+        await b.handle(None, msg("quedan 10 raciones", user=8, message_id=1))
+        assert b.held and sends(b) == []  # a line without a mention: no error in the group
+        plugin.write_text(PLUGIN)
+        cfg(data_dir, text="Apuntado.")
+        await until(lambda: sends(b, -100))
+        await drain(b)
+
+    run(go())
+    assert lines(data_dir, "turns.jsonl")[-1]["new"] == ["[no mention] ana: quedan 10 raciones"]
+    assert [p["text"] for p in sends(b, -100)] == ["Apuntado."]
+    assert not b.held and not (db.get_kv("bot.queued") or {}).get("-100")
+
+
+def test_held_lines_are_retried_a_few_times_then_wait_and_never_repeat_the_error(
+    data_dir, tmp_path, monkeypatch
+):
+    retry_soon(monkeypatch)
+    b, _ = everyone(data_dir, tmp_path)
+    tries = data_dir / "plugins" / "tries"
+    (data_dir / "plugins" / "ai.py").write_text(
+        "import pathlib\n"
+        f"T = pathlib.Path({str(tries)!r})\n"
+        "def converse(turn, settings):\n"
+        "    T.write_text(str(int(T.read_text() or 0) + 1) if T.exists() else '1')\n"
+        "    raise RuntimeError('no_output')\n"
+    )
+
+    async def go():
+        await b.handle(None, msg("@chefbot qué cenamos", user=8, message_id=1))
+        await until(lambda: tries.exists() and tries.read_text() == "4")
+        await asyncio.sleep(1)  # no fifth try
+
+    run(go())
+    assert tries.read_text() == "4"  # the turn, then one per HELD_RETRY_S
+    assert [p["text"] for p in sends(b, -100)] == [b.t("bot_error")]  # told once
+    assert [i.mid for i in b.held[-100]] == [1]  # still held: a message or a restart takes it
