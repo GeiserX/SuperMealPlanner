@@ -21,7 +21,7 @@ SuperMealPlanner is a self-hosted meal planner for a household that eats the sam
 - A tasks page with each day's defrost, batch and shopping jobs, and 👍/👎 on every dish that the next menus follow.
 - Targets that follow each person's weight trend, with floors and doctor flags.
 - GLP-1 aware: lighter dishes and smaller plates in the days after a weekly injection.
-- Telegram bot: today's plates, the week, the list, logging, reminders, voice notes, photos, videos and any file. Always answers in private, and in the group when you mention it or reply to it (or, with `bot.answer_scope: all`, to every message, with a 👍 when that is enough and a 👀 when it only read it). A voice note, a photo or a file is always answered.
+- Telegram bot: today's plates, the week, the list, logging, reminders, voice notes, photos, videos and any file. Always answers in private, and in the group when you mention it or reply to it (or, with `bot.answer_scope: all`, to every message, with a 👍 when that is enough and a 👀 when it only read it). A voice note, a photo or a file is always answered. Every message it is working on gets a 👀 at once, so a long answer never leaves the chat wondering.
 - Talk to the same bot from a phone by voice (an iOS Shortcut, say): `POST /api/v1/chef`, and it answers in spoken sentences, changes included ([the app API](docs/api.md#talking-to-the-chef-by-voice)).
 - An assistant that remembers the conversation: one ongoing conversation per chat, `/new` to start over.
 - Change the menu from the chat: another dish for a day, two days swapped, a pause while you eat what is at home, the whole menu moved a week later, a new draw from a Monday. Each one can be undone.
