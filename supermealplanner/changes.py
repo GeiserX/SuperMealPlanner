@@ -109,7 +109,7 @@ INGREDIENT_FIELDS = (
     "frozen",
     "keeps_days",
 )
-NOTES_MAX = 20  # chat notes per person
+NOTES_MAX = 50  # chat notes per person
 NOTE_MAX = 300  # characters in one
 INSTRUCTIONS_MAX = 4000  # characters of the assistant's own instructions a chat change may set
 LISTS_BY_ID = {"people", "reminders"}  # lists whose items are addressed by their id

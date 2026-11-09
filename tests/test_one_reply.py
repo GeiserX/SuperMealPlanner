@@ -166,13 +166,13 @@ def test_a_refused_change_tells_the_household_plainly_and_the_ai_why(data_dir, t
     data = plugin_data(data_dir)
     db = DB(tmp_path / "b.db")
     b = ChatBot(data, db)
-    notes = [{"add": {"person": "ana", "text": f"n{i}"}} for i in range(21)]
+    notes = [{"add": {"person": "ana", "text": f"n{i}"}} for i in range(changes.NOTES_MAX + 1)]
     reply(data_dir, text="Noted.\n" + block({"asked": True, "notes": notes}))
     run(b.handle(None, msg("@chefbot remember all this", user=8)))
     (said,) = [p["text"] for p in sends(b, -100)]
     assert said.startswith("Noted.") and said.endswith(f"\n\n{b.t('change_invalid')}")
-    assert "at most 20" not in said  # the app's own words stay out of the chat
-    assert "at most 20" in refusals(db)[-1]  # and reach the AI with the next turn
+    assert f"at most {changes.NOTES_MAX}" not in said  # the app's own words stay out of the chat
+    assert f"at most {changes.NOTES_MAX}" in refusals(db)[-1]  # and reach the AI with the next turn
 
 
 def test_a_change_can_add_an_ingredient_the_list_then_buys(data_dir, tmp_path, monkeypatch):

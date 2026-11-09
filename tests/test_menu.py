@@ -685,10 +685,13 @@ def test_the_chat_keeps_its_own_notes_and_never_touches_the_ones_written_by_hand
         ([{"add": {"person": "ana", "text": "x" * 301}}], "300 characters"),
         ([{"add": {"person": "nadie", "text": "x"}}], "no person"),
         ([{"edit": {"person": "ana", "text": "x"}}], "add or remove"),
-        ([{"add": {"person": "ana", "text": f"n{i}"}} for i in range(20)], "at most 20"),
+        ([{"add": {"person": "ana", "text": f"n{i}"}} for i in range(50)], "at most 50"),
     ):
         with pytest.raises(changes.ChangeError, match=why):
             changes.parse({"notes": bad}, b.state.data, "luis")
+    # a household keeps up to 50 facts per person: with one there, 49 more still fit
+    fits = [{"add": {"person": "ana", "text": f"n{i}"}} for i in range(49)]
+    assert len(changes.parse({"notes": fits}, b.state.data, "luis").notes) == 49
     for path in ("household.people.ana.notes", "household.people.ana.chat_notes"):
         with pytest.raises(changes.ChangeError, match="cannot be changed"):
             changes.parse({"set": {path: []}}, b.state.data, "ana")
