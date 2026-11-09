@@ -349,3 +349,24 @@ def test_a_start_eye_that_lands_while_the_answer_reaction_waits_for_its_reply_lo
 
     run(go())
     assert reactions(b)[-1] == (1, "🔥") and reactions(b)[:2] == [(1, "🔥"), (1, "👀")]
+
+
+def test_another_bots_message_that_calls_the_bot_gets_no_eyes(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path, group_open=True)
+    other = {"id": 555, "first_name": "OtherBot", "is_bot": True}
+    run(b.handle(None, {**msg("@chefbot hola", message_id=1), "from": other}))
+    assert lines(data_dir, "turns.jsonl") and [p["text"] for p in sends(b, -100)] == ["ok"]
+    assert reactions(b) == []
+
+
+def test_a_reaction_answer_to_a_tap_never_goes_on_the_bots_question(data_dir, tmp_path):
+    b, _ = setup(data_dir, tmp_path)
+    cfg(data_dir, text="¿Cuál?\n\n```options\n- Lentejas\n- Garbanzos\n```")
+    run(b.handle(None, msg("@chefbot ¿qué hago el lunes?", message_id=1)))
+    _, garbanzos = buttons(sends(b, -100)[-1])
+    mid = 1000 + len(b.calls)
+    cfg(data_dir, text="```telegram\nreact: 👍\n```")
+    b.calls.clear()
+    run(tap(b, garbanzos["callback_data"], 7, mid))
+    assert reactions(b) == []
+    assert [p["text"] for p in sends(b, -100)] == ["👍"]  # said, as when a reaction fails

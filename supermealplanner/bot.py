@@ -329,8 +329,8 @@ class Item:
     # a group message that neither mentions the bot nor replies to it, answered because
     # bot.answer_scope is "all": the AI may answer it with only a reaction, or with no words (SEEN)
     heard: bool = False
-    # `mid` is the bot's own message (no reaction goes on it): the question a button was tapped
-    # under, or the echo the bot posted of something said to the app
+    # `mid` is a bot's message (no reaction goes on it): the question a button was tapped under,
+    # the echo the bot posted of something said to the app, or another bot's message that called it
     bots_mid: bool = False
 
 
@@ -1177,7 +1177,7 @@ class Bot:
             )
             item.corrects = corrects
             item.heard = heard and not asked
-            item.bots_mid = tapped or spoken is not None
+            item.bots_mid = tapped or spoken is not None or bool(user.get("is_bot"))
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
@@ -1697,7 +1697,9 @@ class Bot:
                 to = (
                     next((i for i in reversed(covered) if not i.heard), anchor) if every else anchor
                 )
-                await self.gesture(client, chat_id, acts, to.mid, bool(said), reply_to)
+                # never on a bot's message (a tap's question, an echo): the fallback says it instead
+                mid = to.mid if self.reactable(to) else None
+                await self.gesture(client, chat_id, acts, mid, bool(said), reply_to)
                 if every:
                     others = [i for i in covered if i.mid != to.mid]
                     await self.mark(client, chat_id, others, acts["react"])
@@ -1970,7 +1972,8 @@ class Bot:
 
     def reactable(self, item: Item) -> bool:
         """A person's message a reaction can go on: not the bot's own message a button was tapped
-        under, nor its echo of something said to the app, however long ago (bots_mid)."""
+        under, nor its echo of something said to the app, nor another bot's message, however long
+        ago (bots_mid)."""
         return self.person(item) and not item.bots_mid
 
     def eye(self, client, chat_id: int, items: list[Item]) -> None:
