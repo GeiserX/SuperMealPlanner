@@ -58,7 +58,8 @@ def test_a_reaction_alone_reacts_and_says_nothing(data_dir, tmp_path):
     b = ChatBot(plugin_data(data_dir), DB(tmp_path / "b.db"))
     reply(data_dir, text="```telegram\nreact: 👍\n```")
     run(b.handle(None, msg("¡gracias!", chat=7, user=7, message_id=42)))
-    [r] = calls(b, "setMessageReaction")
+    eyes, r = calls(b, "setMessageReaction")  # 👀 as the turn starts, then the answer
+    assert eyes["reaction"] == [{"type": "emoji", "emoji": "👀"}]
     assert (r["chat_id"], r["message_id"], r["reaction"]) == (
         7,
         42,

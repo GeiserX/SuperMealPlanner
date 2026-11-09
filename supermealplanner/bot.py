@@ -9,7 +9,11 @@ it cannot mention the bot, and so is a photo, a video, a GIF, a round video note
 file. In the group it answers only a text message that mentions its @handle or replies to it; with
 bot.answer_scope all, every text message of someone it answers (Item.heard), which the AI may answer
 with only a reaction (put on every message of the turn) or with no words (context.NO_REPLY): such a
-message is then marked SEEN, never left with nothing.
+message keeps its SEEN, never left with nothing.
+
+In every chat, each person's message gets SEEN (👀) as soon as a turn takes it, when the turn starts
+or when it joins the running one, so the household sees it is being worked on (Bot.eye). It never
+waits on Telegram; a text answer leaves it, a reaction-only answer replaces it, a failed turn keeps it.
 
 A photo or a file goes to a provider that can look at it (llm.sees_files) as turn["attachments"],
 its caption as the message's text. It is queued like any message, by its Telegram file id, and its
@@ -172,9 +176,12 @@ AI = "ai"  # the `who` of the AI's own answers in the chat log
 NOT_TO_YOU, NO_MENTION = context.NOT_TO_YOU, context.NO_MENTION
 # the AI's deliberate "nothing to send" (context.NO_REPLY), however it spaces or cases it
 NO_REPLY_RE = re.compile(r"\[\s*no[ _-]?reply\s*\]", re.IGNORECASE)
-# bot.answer_scope all: a group turn never leaves a person's message with nothing visible. One the
-# answer shows nothing for gets SEEN ("read"); a reaction Telegram refuses gets NOTED once instead
+# Every chat: SEEN goes on each person's message as soon as a turn takes it (eye), so they see it is
+# being worked on; a text answer leaves it, a reaction-only answer replaces it. bot.answer_scope all:
+# a group turn that shows nothing keeps it; a SEEN Telegram refuses there gets NOTED once instead
 SEEN, NOTED = "👀", "👍"
+SEEN_KEEP = 500  # message ids per chat known to carry SEEN (Bot.seen)
+EYES_WAIT_S = 10  # how long a reaction at the end of a turn waits for its start's SEEN to land
 PENDING_TTL = 3600  # a proposed change waits this long for its yes
 # What waits for a yes, as a list. 0.3.x kept one change as a dict under bot.pending.<chat> and reads
 # nothing else, so the list lives under its own key: a rollback to 0.3.x finds nothing it cannot read.
@@ -322,6 +329,8 @@ class Item:
     # a group message that neither mentions the bot nor replies to it, answered because
     # bot.answer_scope is "all": the AI may answer it with only a reaction, or with no words (SEEN)
     heard: bool = False
+    # a tap on a button: `mid` is the bot's own message under which it was tapped (no reaction)
+    tapped: bool = False
 
 
 @dataclass
@@ -391,6 +400,11 @@ class Bot:
         # bot.answer_scope all: the people's messages of a turn that failed before anything reached
         # the chat; they join the chat's next turn, so its answer covers them (hold)
         self.held: dict[int, list[Item]] = {}
+        # per chat: the message ids SEEN went on (or is going on), oldest first, so it goes once;
+        # and the tasks putting it on at the start of a turn (eye), which end-of-turn reactions
+        # wait for, so a SEEN that lands late never replaces the answer's own reaction
+        self.seen: dict[int, dict[int, None]] = {}
+        self.eyeing: dict[int, set[asyncio.Task]] = {}
         self.told_busy: set[int] = set()  # chats told of the wait, until an answer goes out
         self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
         self.spoken: dict[str, Spoken] = {}  # what was said to the app, by turn id
@@ -793,6 +807,7 @@ class Bot:
                         bool(x.get("auto")),
                         bool(x.get("review")),
                         heard=bool(x.get("heard")),
+                        tapped=bool(x.get("tapped")),
                     )
                     for x in kept
                 ]
@@ -845,6 +860,7 @@ class Bot:
                     "auto": add.auto,
                     "review": add.review,
                     "heard": add.heard,
+                    "tapped": add.tapped,
                 }
             )
         else:  # what a failed turn held stays too: a restart answers it (resume)
@@ -1128,6 +1144,7 @@ class Bot:
         followup: bool = False,
         corrects: bool = False,
         heard: bool = False,
+        tapped: bool = False,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
@@ -1136,7 +1153,8 @@ class Bot:
         marked "[voice]" for the AI, which then answers for the ear (context.WHO). A follow-up is
         logged under its own name (user's first_name), never as the person it acts for. heard: a
         group message that did not call the bot, queued anyway (bot.answer_scope all) and logged as
-        not addressed."""
+        not addressed. tapped: a button's tap, msg being the bot's message it was under. A message
+        that joins a chat whose turn is running gets SEEN at once (eye)."""
         spoken = self.spoken.get((msg or {}).get(SPOKEN) or "")
         if spoken is not None:
             text = f"[voice] {text}"
@@ -1158,9 +1176,12 @@ class Bot:
             )
             item.corrects = corrects
             item.heard = heard and not asked
+            item.tapped = tapped
             with self.qlock:
                 self.queues.setdefault(chat_id, []).append(item)
                 self.queued(chat_id, add=item)
+            if chat_id in self.running:  # the running turn takes it, or the next one: seen now
+                self.eye(self.client, chat_id, [item])
         return row
 
     async def drive(self, client, chat_id: int) -> None:
@@ -1407,6 +1428,7 @@ class Bot:
         # pulled: the caller's list of what the turn is handed while it runs (drive holds those too)
         turn_state = Turn(chat_id, items, pulled if pulled is not None else [])
         self.running[chat_id] = turn_state
+        self.eye(client, chat_id, items)  # being worked on: 👀 at once, never awaited
         reply, deferred, again, failed = None, False, False, False
         rewrite = chat_id in self.again  # this turn rewrites an answer that was not sent
         self.again.discard(chat_id)
@@ -1914,14 +1936,19 @@ class Bot:
 
     async def mark(self, client, chat_id: int, covered: list[Item], emoji: str) -> None:
         """bot.answer_scope all: `emoji` on every message of a person the turn covered: the
-        reaction of a reaction-only answer, or SEEN for a turn that showed nothing. One Telegram
+        reaction of a reaction-only answer (it replaces the SEEN the turn's start put there), or SEEN
+        for a turn that showed nothing, a no-op where the start put it already. One Telegram
         refuses (the chat's allowed reactions, a deleted message) gets NOTED once instead, then is
         left as it is: never words in place of a reaction. One lost to Telegram being down (no
         answer, 429, 5xx) is held for the chat's next turn instead (hold)."""
         _show(chat_id)  # tried: the turn is not silent, whatever Telegram answers
+        await self.eyes_landed(chat_id)
         lost: list[Item] = []
         mine = [i for i in covered if self.person(i)]
+        seen = self.seen.get(chat_id, {})
         for mid in dict.fromkeys(i.mid for i in mine):
+            if emoji == SEEN and mid in seen:
+                continue  # it got its SEEN when the turn took it
             for e in dict.fromkeys((emoji, NOTED)):
                 try:
                     await self.call(
@@ -1931,6 +1958,7 @@ class Bot:
                         message_id=mid,
                         reaction=[{"type": "emoji", "emoji": e}],
                     )
+                    self.reacted(chat_id, mid, e)
                     break
                 except TelegramError as err:
                     log.info("reaction %s failed: %s", e, err)
@@ -1943,8 +1971,62 @@ class Bot:
 
     def person(self, item: Item) -> bool:
         """A message a person wrote in the chat (one a reaction can go on): not the bot's own
-        turn, nor the echo the bot posted of something said to the app (spoken_rows)."""
-        return _person(item) and item.row not in self.spoken_rows
+        turn, nor the echo the bot posted of something said to the app (spoken_rows), nor the bot's
+        message a button was tapped under."""
+        return _person(item) and not item.tapped and item.row not in self.spoken_rows
+
+    def eye(self, client, chat_id: int, items: list[Item]) -> None:
+        """A turn took these messages (it started with them, or they joined it while it runs): SEEN
+        on each person's message that has none yet, in every chat, so the household sees at once
+        that it is being worked on. Its own task, never awaited: the turn goes on whatever Telegram
+        does, a failure is only logged, and nothing is tried in its place (NOTED means noted). The
+        end of the turn keeps it, replaces it with a reaction-only answer, or (bot.answer_scope
+        all, a turn that showed nothing) tries it again where it was refused, then NOTED (mark)."""
+        seen = self.seen.setdefault(chat_id, {})
+        mids = [m for m in dict.fromkeys(i.mid for i in items if self.person(i)) if m not in seen]
+        if not mids:
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(self._eye(client, chat_id, mids))
+        except RuntimeError:  # no loop in this thread: nothing can be sent from here
+            return
+        for mid in mids:  # counted now, so a message taken twice meanwhile gets it once
+            self.reacted(chat_id, mid, SEEN)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        eyeing = self.eyeing.setdefault(chat_id, set())
+        eyeing.add(task)
+        task.add_done_callback(eyeing.discard)
+
+    async def _eye(self, client, chat_id: int, mids: list[int]) -> None:
+        for mid in mids:
+            try:
+                await self.call(
+                    client,
+                    "setMessageReaction",
+                    chat_id=chat_id,
+                    message_id=mid,
+                    reaction=[{"type": "emoji", "emoji": SEEN}],
+                )
+            except Exception as e:  # noqa: BLE001  only a sign: the turn goes on without it
+                log.info("reaction %s at the start of a turn failed: %s", SEEN, safe(e))
+                self.seen.get(chat_id, {}).pop(mid, None)  # the end of the turn may try it again
+
+    async def eyes_landed(self, chat_id: int) -> None:
+        """Wait (EYES_WAIT_S at most) for the SEEN the chat's turn start is putting on, so a
+        reaction of its end goes after it: Telegram keeps only the bot's last one."""
+        pending = [t for t in self.eyeing.get(chat_id, ()) if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=EYES_WAIT_S)
+
+    def reacted(self, chat_id: int, mid: int, emoji: str) -> None:
+        """The bot's reaction on message `mid` is now `emoji` (Bot.seen keeps the SEEN ones)."""
+        seen = self.seen.setdefault(chat_id, {})
+        seen.pop(mid, None)
+        if emoji == SEEN:
+            seen[mid] = None
+            while len(seen) > SEEN_KEEP:
+                seen.pop(next(iter(seen)))
 
     def hold(self, chat_id: int, items: list[Item]) -> None:
         """bot.answer_scope all: a turn that failed before anything reached the chat read nothing,
@@ -1991,10 +2073,12 @@ class Bot:
                 log.warning("%s failed: %s", method, e)
         if acts["react"] and to:
             try:
+                await self.eyes_landed(chat_id)  # it replaces the turn's SEEN, never the reverse
                 reaction = [{"type": "emoji", "emoji": acts["react"]}]
                 await self.call(
                     client, "setMessageReaction", chat_id=chat_id, message_id=to, reaction=reaction
                 )
+                self.reacted(chat_id, to, acts["react"])
                 _show(chat_id)
                 return
             except TelegramError as e:
@@ -2437,7 +2521,7 @@ class Bot:
         await self.unbutton(client, chat["id"], mid, f"✓ {label}")
         who = self.person_of(user.get("id", 0))
         # the answer to it replies to the question the choice came from
-        self.take(chat["id"], user, who, {"message_id": mid}, label, asked=True)
+        self.take(chat["id"], user, who, {"message_id": mid}, label, asked=True, tapped=True)
         await self.drive(client, chat["id"])
 
     # ------------------------------------------------------------- the provider's asks
@@ -4263,7 +4347,16 @@ class Bot:
             local = dt.datetime.fromtimestamp(item["at"], self._zone())
             text = t("remind_calendar_turn", when=when, iso=local.isoformat(), text=item["text"])
             grant = {"by": user.get("id"), "at": item["at"], "used": False}
-            self.take(chat["id"], user, who, {"message_id": offer["msg"]}, text, True, grant=grant)
+            self.take(
+                chat["id"],
+                user,
+                who,
+                {"message_id": offer["msg"]},
+                text,
+                True,
+                grant=grant,
+                tapped=True,
+            )
             await self.drive(client, chat["id"])
 
     async def accept_waiting(self, client) -> None:
