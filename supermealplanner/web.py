@@ -21,7 +21,16 @@ from .api import router as api_router
 from .db import DB
 from .i18n import Translator
 from .model import Data, load
-from .planner import ICONS, Plans, day_menu, meals_now, paused_days, plan_for, served_as
+from .planner import (
+    ICONS,
+    Plans,
+    day_menu,
+    meal_of,
+    meals_now,
+    paused_days,
+    plan_for,
+    served_as,
+)
 from .portions import (
     MEAL_ORDER,
     batch_for_text,
@@ -155,8 +164,12 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             for meal, r in menu
             if meal == "nibble"
         ]
-        eaters = {pd.person_id: pd.factor for pd in people}
-        totals = {meal: together(state.data, r, eaters) for meal, r in menu if meal != "nibble"}
+        eaters = {pd.person_id: pd.factor for pd in people}  # the day's: nibbles
+        totals = {
+            meal: together(state.data, r, {pd.person_id: pd.plates[meal].factor for pd in people})
+            for meal, r in menu
+            if meal != "nibble"
+        }
         return tpl.TemplateResponse(
             request,
             "today.html",
@@ -340,10 +353,12 @@ def create_app(root: str | Path | None = None) -> FastAPI:
             raise HTTPException(404)
         day = parse_day(d)
         plan = plan_for(state.data, day)
-        r = served_as(state.data, plan.day(day) if plan else None, rid)  # as that day serves it
+        pday = plan.day(day) if plan else None
+        r = served_as(state.data, pday, rid)  # as that day serves it
+        meal = meal_of(pday, rid)  # sized for that meal; the day's factor when it is not planned
         plates = []
         for p in state.data.household.people:
-            f = day_factor(state.data.household, p, current_kcal(state.db, p), day)
+            f = day_factor(state.data.household, p, current_kcal(state.db, p), day, meal)
             plates.append((p, plate(state.data, r, f, p.swaps)))
         total = together(state.data, r, {p.id: pl.factor for p, pl in plates})
         return tpl.TemplateResponse(

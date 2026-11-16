@@ -27,7 +27,16 @@ from fastapi import APIRouter, HTTPException, Request
 
 from . import __version__, llm, pantry
 from .i18n import Translator
-from .planner import MEAL_HOURS, Plans, day_menu, meals_now, paused_days, plan_for, served_as
+from .planner import (
+    MEAL_HOURS,
+    Plans,
+    day_menu,
+    meal_of,
+    meals_now,
+    paused_days,
+    plan_for,
+    served_as,
+)
 from .portions import (
     MEAL_ORDER,
     batch_for_text,
@@ -262,12 +271,12 @@ def router(state) -> APIRouter:
         swaps = {p.id: p.swaps for p in state.data.household.people}
         now = state.now()
         open_now = meals_now(now.time())
-        eaters = {pd.person_id: pd.factor for pd in people}
         meals = []
         for meal in MEAL_ORDER:
             dishes = [r for m, r in menu if m == meal]
             if not dishes:
                 continue
+            eaters = {pd.person_id: pd.plates[meal].factor for pd in people}
             meals.append(
                 {
                     "meal": meal,
@@ -281,7 +290,12 @@ def router(state) -> APIRouter:
                                     "person": pd.person_id,
                                     "name": pd.name,
                                     **_plate(
-                                        plate(state.data, r, pd.factor, swaps.get(pd.person_id))
+                                        plate(
+                                            state.data,
+                                            r,
+                                            pd.plates[meal].factor,
+                                            swaps.get(pd.person_id),
+                                        )
                                     ),
                                 }
                                 for pd in people
@@ -453,16 +467,18 @@ def router(state) -> APIRouter:
         who = whose(row, person)
         date = _day(d, state.today())
         day_plan = plan_for(state.data, date)
-        r = served_as(state.data, day_plan.day(date) if day_plan else None, rid)
+        pday = day_plan.day(date) if day_plan else None
+        r = served_as(state.data, pday, rid)
+        meal = meal_of(pday, rid)  # sized for that meal; the day's factor when it is not planned
+        hh = state.data.household
+        factor = {p.id: day_factor(hh, p, current_kcal(state.db, p), date, meal) for p in hh.people}
         mine = None
         if who:
             plan = plan_for(state.data, date)
             for pd in person_days(state.data, state.db, plan, date) if plan else []:
                 if pd.person_id == who:
                     swaps = {p.id: p.swaps for p in state.data.household.people}
-                    mine = _plate(plate(state.data, r, pd.factor, swaps.get(who)))
-        hh = state.data.household
-        factor = {p.id: day_factor(hh, p, current_kcal(state.db, p), date) for p in hh.people}
+                    mine = _plate(plate(state.data, r, factor[who], swaps.get(who)))
         return {
             "recipe": r.model_dump(mode="json"),
             "plate": mine,

@@ -28,7 +28,7 @@
       <div class="people">
       {% for pd in people %}
         <div class="who">
-          <h3>{{ pd.name }} <small>×{{ '%.2f' | format(pd.factor) }}</small></h3>
+          <h3>{{ pd.name }} <small>×{{ '%.2f' | format(pd.plates[meal].factor) }}</small></h3>
           <ul>{% for line in pd.plates[meal].lines %}<li>{{ line }}</li>{% endfor %}</ul>
         </div>
       {% endfor %}

@@ -38,6 +38,7 @@ PILL_SLOTS = ("waking", "breakfast", "lunch", "dinner", "bedtime")
 # kcal added on a training day when the person does not say: roughly what a strength session of
 # 45-60 minutes uses above resting, kept modest so a plate grows a little, not a meal
 TRAINING_EXTRA_KCAL = 150
+MEAL_FACTOR_MIN, MEAL_FACTOR_MAX = 0.5, 1.5  # Person.meal_factors: half to one and a half
 
 
 class Strict(BaseModel):
@@ -212,12 +213,29 @@ class Person(Loose):
     swaps: dict[str, str] = {}
     training_days: list[Weekday] = []  # strength training: the day's energy target rises
     training_extra_kcal: float = Field(default=TRAINING_EXTRA_KCAL, ge=0, le=600)
+    # meal -> how much of the day's portion this person eats at it (dinner: 0.8 is a smaller
+    # dinner); nothing moves to another meal. Unset meals eat 1.
+    meal_factors: dict[str, float] = {}
 
     @model_validator(mode="after")
     def _pill_slots(self) -> Person:
         bad = set(self.pills) - set(PILL_SLOTS)
         if bad:
             raise ValueError(f"unknown pill slots {sorted(bad)}; use {PILL_SLOTS}")
+        return self
+
+    @model_validator(mode="after")
+    def _meal_factors(self) -> Person:
+        from .planner import MEALS
+
+        bad = set(self.meal_factors) - set(MEALS)
+        if bad:
+            raise ValueError(f"meal_factors: unknown meals {sorted(bad)}; use {list(MEALS)}")
+        for meal, f in self.meal_factors.items():
+            if not MEAL_FACTOR_MIN <= f <= MEAL_FACTOR_MAX:
+                raise ValueError(
+                    f"meal_factors.{meal}: {f} is outside {MEAL_FACTOR_MIN} to {MEAL_FACTOR_MAX}"
+                )
         return self
 
     def age(self, on: dt.date) -> int:

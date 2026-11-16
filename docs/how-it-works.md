@@ -45,6 +45,8 @@ A recipe is written for one reference serving, what a person eating 2,000 kcal a
 
 Weigh-ins are smoothed with a 10% daily moving average. Calories change by one step at most every `kcal.every_weeks` (four by default), only once at least three readings cover most of that window, and never below the person's floor. Losing faster than `goal.max_loss_kg_week` (0.5 by default) adds food; faster than 1.4 kg a week shows a doctor flag. At or below the goal band the person switches to maintenance, so nobody keeps losing past their goal. With the `binge-eating-safe` pack, a window with any binge never cuts food, and four binges in four weeks show a note to seek help. Editing `kcal.start` resets the target to the new value.
 
+A person's `meal_factors` shrinks or grows one meal only (`dinner: 0.8` is a dinner a fifth smaller). Nothing moves to another meal: the day simply has less food, and the calorie target stays where it is.
+
 A plan is never redone when the data changes, because lunches may already be cooked. A slot whose recipe was deleted or renamed, or which now breaks an avoided ingredient or a dinner rule, gets a substitute of the same kind (same protein first, then the least used). A lunch already cooked stays as it is, and the log says so. Weekly minimums and repeat limits apply from the next plan.
 
 ## Shopping
