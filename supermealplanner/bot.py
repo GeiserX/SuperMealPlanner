@@ -580,6 +580,15 @@ class Bot:
                 ears.append(heard)
         return sent.get("message_id") if isinstance(sent, dict) else None
 
+    def quiet(self, chat_id: int, text: str) -> None:
+        """A line the chat never reads (a reminder set, moved or cancelled): kept in the chat's
+        history so the AI knows, and heard by a spoken turn listening in that chat, whose person
+        asked and would otherwise hear nothing back."""
+        self.state.db.add_chat(chat_id, "assistant", None, text)
+        for chat, ears in HEARING.get():
+            if chat == chat_id:
+                ears.append(text)
+
     async def announce_version(self, client) -> None:
         """A new version says so once: privately to each admin, or in the group when no admin can
         be written to. The version is kept only once a message went out, so a failed send retries
@@ -2500,7 +2509,7 @@ class Bot:
         if pending.get("applied") and pending.get("cancels"):  # what the change made wrong
             gone = self.cancel_reminders(chat_id, pending["cancels"], None, True)
             if gone:
-                self.state.db.add_chat(chat_id, "assistant", None, "\n".join(gone))
+                self.quiet(chat_id, "\n".join(gone))
         await self.send(client, chat_id, reply, reply_to)
         if pending.get("applied"):
             await self.checkup(client, chat_id, before, reply_to)
@@ -4181,7 +4190,7 @@ class Bot:
             if met:
                 done[-1] += " " + t("remind_joined", time=met[1])
         if done:  # not said in the chat: only the AI's memory hears it
-            self.state.db.add_chat(chat_id, "assistant", None, "\n".join(done))
+            self.quiet(chat_id, "\n".join(done))
             await self.checkup(client, chat_id, before, reply_to, tail, offering)
         return [r for r in items if not ((uid or self.direct) and r.get("set"))]
 
@@ -4496,7 +4505,7 @@ class Bot:
                 if item.get("applied") and item.get("cancels"):
                     gone = self.cancel_reminders(chat, item["cancels"], None, True)
                     if gone:
-                        self.state.db.add_chat(chat, "assistant", None, "\n".join(gone))
+                        self.quiet(chat, "\n".join(gone))
                 elif not item.get("applied") and line in refusal:
                     line = t("auto_accept_dropped")
                 label = t("auto_accept_label") if item.get("applied") else None
@@ -4517,7 +4526,7 @@ class Bot:
                     line = None
                 r["done"] = "here" if line else "timeout"
                 if line:  # not said in the chat: only the AI's memory hears it
-                    self.state.db.add_chat(chat, "assistant", None, line)
+                    self.quiet(chat, line)
                     quiet.add(chat)
             await self.rekey(client, chat, o.get("msg"), self._remind_rows(o["key"], o["items"]))
         for chat, lines in said.items():
@@ -5030,7 +5039,7 @@ class Bot:
             if r and db.settle_reminder(r["id"], "cancelled"):
                 line = t("doctor_reminder_cancelled", when=self._when(r["at"]), text=r["text"])
                 # the AI hears it, the chat does not
-                db.add_chat(r["chat"], "assistant", None, line)
+                self.quiet(r["chat"], line)
         # a step nobody marked is asked about with buttons in the day message: not said twice
         rest = [p for p in found if p.kind not in ("stale_reminder", "unused", "unconfirmed")]
         new = [p for p in rest if p.key not in before] if before is not None else []

@@ -97,6 +97,23 @@ def test_a_spoken_question_is_answered_in_the_chat_and_read_back(chef, data_dir)
     assert "[voice]" in turn["rules"]  # the AI is told how to answer one
 
 
+def test_a_spoken_ask_for_a_reminder_hears_it_was_set_while_the_chat_reads_nothing(chef, data_dir):
+    """The chat never reads that a reminder was set; the person who asked by voice still hears
+    it, so an answer that is only the reminder does not come back as failed."""
+    from .test_reminders import ahead
+    from .test_reminders import block as reminders
+
+    client, b = chef
+    me = token(data_dir, client)
+    when, _ = ahead(1, 21)
+    reply(data_dir, text=reminders((when, "Soak the chickpeas", "luis", "set")))
+    got = answer(client, me, say(client, me, "remind me at 21:00 to soak the chickpeas"))
+    assert got["state"] == "done" and "Soak the chickpeas" in got["text"]
+    (r,) = b.state.db.reminders(LUIS)
+    assert r["text"] == "Soak the chickpeas"
+    assert not any("Soak the chickpeas" in p["text"] for p in sent(b))
+
+
 def test_a_long_answer_is_folded_in_the_chat_and_read_back_whole(chef, data_dir):
     client, b = chef
     me = token(data_dir, client)
