@@ -18,7 +18,7 @@ from .test_menu import committed
 from .test_reminders import ahead, is_offer
 from .test_reminders import block as reminders
 from .test_settings_stores_bot import msg, run
-from .test_turns import buttons, drain, sends, tap
+from .test_turns import buttons, drain, heard, sends, tap
 
 ANSWER = (
     "Ana, noted: on Sunday you are 6 🍛 I change the chicken dish like this:\n"
@@ -88,7 +88,8 @@ def test_a_turn_with_a_change_cancels_and_reminders_sends_one_message(
     assert "https://meals.example/recipe/pollo-0" in text
     assert "Pollo 0" not in text  # the old name nowhere
     assert "→" not in text and "kcal" not in text and "Dice the breast" not in text
-    assert "🗑 Reminder removed" in text  # the cancelled one, in the same message
+    assert "Reminder removed" not in text  # the cancelled one: only the AI hears it
+    assert "🗑 Reminder removed" in heard(b)
     assert is_offer(said) and len(buttons(said)) == 3  # the offer under it, a button each
     # the long answer reads short: its detail is folded, the question stays in sight
     assert "<blockquote expandable>" in text
@@ -316,7 +317,9 @@ def test_reminders_set_with_the_ones_an_answer_cancels_are_put_back_to_the_ai(da
     turns = [json.loads(x) for x in path.read_text().splitlines()]
     # said in the follow-up, which is not reviewed again
     assert len(turns) == 2
-    note = turns[1]["new"][0]["content"]
+    new = [m["content"] for m in turns[1]["new"]]
+    assert any(m.startswith("🗑 Reminder removed") for m in new)  # the quiet line, for the AI
+    (note,) = [m for m in new if "were set together" in m]
     assert f"Reminders {kept} were set together with the ones this answer cancels ({gone})" in note
     assert str(later) not in note.split("(")[0]
     assert verifier.left_behind(db, -100, [{"cancel": later}]) == []  # alone: nothing to say

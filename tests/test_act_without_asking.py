@@ -18,7 +18,7 @@ from supermealplanner.i18n import Translator
 from .test_quiet_turns import own_turn
 from .test_reminders import ahead, block, is_offer
 from .test_settings_stores_bot import run
-from .test_turns import cfg, sends
+from .test_turns import cfg, heard, sends
 from .test_verifier import say, vsetup
 from .test_whose_yes import burst
 
@@ -120,7 +120,9 @@ def test_a_listed_reminder_is_set_at_once_for_the_person_it_names(data_dir, tmp_
     out = sends(b, -100)
     assert not any(is_offer(p) for p in out)
     assert not any(p.get("reply_markup") for p in out)  # no buttons at all
-    assert any("⏰" in p["text"] and "Sacar la merluza" in p["text"] for p in out)
+    # set in silence: the chat reads only the answer, the AI's memory has the line
+    assert not any("Sacar la merluza" in p["text"] for p in out)
+    assert "Sacar la merluza" in heard(b)
 
 
 def test_control_by_default_a_listed_reminder_is_only_offered(data_dir, tmp_path):
@@ -225,7 +227,8 @@ def test_what_waited_is_accepted_once_by_the_bot_at_the_next_tick(data_dir, tmp_
     (r,) = db.reminders(-100)
     assert (r["person"], r["at"]) == ("ana", at)
     (said,) = [p for p in sends(b, -100) if p["text"].startswith(b.t("auto_accepted", lines=""))]
-    assert "Sacar la merluza" in said["text"]
+    assert "Sacar la merluza" not in said["text"]  # the change is said, the reminder is not
+    assert "Sacar la merluza" in heard(b)
     # the old messages lose their buttons
     assert any(m == "editMessageReplyMarkup" for m, _ in b.calls)
     b.calls.clear()

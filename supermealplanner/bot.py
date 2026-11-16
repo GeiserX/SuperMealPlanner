@@ -2499,7 +2499,8 @@ class Bot:
             self.settled[pending["key"]] = bool(pending.get("applied"))
         if pending.get("applied") and pending.get("cancels"):  # what the change made wrong
             gone = self.cancel_reminders(chat_id, pending["cancels"], None, True)
-            reply = "\n".join([reply, *gone])
+            if gone:
+                self.state.db.add_chat(chat_id, "assistant", None, "\n".join(gone))
         await self.send(client, chat_id, reply, reply_to)
         if pending.get("applied"):
             await self.checkup(client, chat_id, before, reply_to)
@@ -4179,12 +4180,9 @@ class Bot:
             done.append(t("remind_set_log", when=self._when(r["at"]), text=r["text"]))
             if met:
                 done[-1] += " " + t("remind_joined", time=met[1])
-        if done and tail is not None:
-            tail.extend(done)
+        if done:  # not said in the chat: only the AI's memory hears it
+            self.state.db.add_chat(chat_id, "assistant", None, "\n".join(done))
             await self.checkup(client, chat_id, before, reply_to, tail, offering)
-        elif done:  # recorded in the chat by send, so the AI hears it
-            await self.send(client, chat_id, "\n".join(done), reply_to)
-            await self.checkup(client, chat_id, before, reply_to, offered=offering)
         return [r for r in items if not ((uid or self.direct) and r.get("set"))]
 
     def move_same_steps(self, chat_id: int, items: list[dict], uid, member: bool) -> list[str]:
@@ -4481,6 +4479,8 @@ class Bot:
         before = await self.problem_keys()
         refusal = {t("change_invalid"), t("change_failed")}
         said: dict[int, list[str]] = {}
+        # chats where only reminders were set: nothing to say there, still checked
+        quiet: set[int] = set()
         for chat, items in waiting.items():
             for item in items:
                 if item not in self.pending(chat):  # a newer change replaced it meanwhile
@@ -4495,7 +4495,8 @@ class Bot:
                     self.settled[item["key"]] = bool(item.get("applied"))
                 if item.get("applied") and item.get("cancels"):
                     gone = self.cancel_reminders(chat, item["cancels"], None, True)
-                    line = "\n".join([line, *gone])
+                    if gone:
+                        self.state.db.add_chat(chat, "assistant", None, "\n".join(gone))
                 elif not item.get("applied") and line in refusal:
                     line = t("auto_accept_dropped")
                 label = t("auto_accept_label") if item.get("applied") else None
@@ -4515,15 +4516,16 @@ class Bot:
                     log.warning("accepting an offered reminder failed: %s", safe(e))
                     line = None
                 r["done"] = "here" if line else "timeout"
-                if line:
-                    said.setdefault(chat, []).append(line)
+                if line:  # not said in the chat: only the AI's memory hears it
+                    self.state.db.add_chat(chat, "assistant", None, line)
+                    quiet.add(chat)
             await self.rekey(client, chat, o.get("msg"), self._remind_rows(o["key"], o["items"]))
         for chat, lines in said.items():
             try:
                 await self.send(client, chat, t("auto_accepted", lines="\n".join(lines)))
             except TelegramError as e:  # made either way; only the notice is lost
                 log.warning("could not say what was accepted: %s", safe(e))
-        for chat in said:
+        for chat in [*said, *(c for c in quiet if c not in said)]:
             await self.checkup(client, chat, before)
 
     def accept_reminder(self, chat: int, r: dict) -> str | None:
@@ -5012,7 +5014,7 @@ class Bot:
     ) -> list[doctor.Problem]:
         """Run the consistency check after a write (before: the problems it found just before it)
         or in the morning (before None). A linked reminder the menu no longer backs is cancelled
-        here, with one line in its chat. After a write, in chat_id: one line naming the problems
+        here, with one line the AI hears and the chat does not. After a write, in chat_id: one line naming the problems
         the write left that were not there before. The morning says no list here: raise_plan says
         the plan's problems once, as a turn where the chef proposes the fixes or, when no turn can
         come, as one list. Food bought and on no dish is left to the AI: it can stay true for days once it
@@ -5027,7 +5029,8 @@ class Bot:
             r = db.reminder(p.reminder) if p.reminder else None
             if r and db.settle_reminder(r["id"], "cancelled"):
                 line = t("doctor_reminder_cancelled", when=self._when(r["at"]), text=r["text"])
-                said.setdefault(r["chat"], []).append(line)
+                # the AI hears it, the chat does not
+                db.add_chat(r["chat"], "assistant", None, line)
         # a step nobody marked is asked about with buttons in the day message: not said twice
         rest = [p for p in found if p.kind not in ("stale_reminder", "unused", "unconfirmed")]
         new = [p for p in rest if p.key not in before] if before is not None else []
