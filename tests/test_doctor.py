@@ -17,7 +17,7 @@ from .conftest import MONDAY
 from .test_conversations import block as change
 from .test_reminders import ZONE, ahead, block, setup
 from .test_settings_stores_bot import msg, run
-from .test_turns import cfg, sends
+from .test_turns import cfg, heard, sends
 
 
 def D(n):
@@ -238,12 +238,10 @@ def test_a_dish_swapped_out_cancels_its_reminder_and_one_line_says_so(data_dir, 
     run(b.handle(None, msg("@chefbot another fish on Thursday", message_id=1)))
     assert db.reminder(fish)["state"] == "cancelled"
     assert db.reminder(breakfast)["state"] == db.reminder(plain)["state"] == "pending"
-    (said,) = [p["text"] for p in sends(b, -100)]  # one message: the answer says it all
-    assert said.endswith(
-        f"\n\n🗑 Reminder cancelled, the menu no longer has its dish: {b._when(at)}: "
-        "Move the fish to the fridge"
-    )
-    assert said.count("the menu no longer has its dish") == 1
+    (said,) = [p["text"] for p in sends(b, -100)]  # one message: the answer, no reminder line
+    assert "no longer has its dish" not in said
+    line = f"🗑 Reminder cancelled, the menu no longer has its dish: {b._when(at)}: "
+    assert heard(b).count(line + "Move the fish to the fridge") == 1
 
 
 def test_a_stale_reminder_never_reaches_the_facts_of_any_chat(data_dir, tmp_path):

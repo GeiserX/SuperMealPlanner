@@ -15,7 +15,7 @@ from supermealplanner import verifier
 from .conftest import MONDAY
 from .test_reminders import ZONE, ahead, block, is_offer
 from .test_settings_stores_bot import msg, run
-from .test_turns import cfg, sends
+from .test_turns import cfg, heard, sends
 from .test_verifier import judged, lines, merluza_wednesday, say, vsetup
 
 
@@ -178,7 +178,9 @@ def test_a_reminder_listed_again_at_its_time_keeps_its_place_with_the_new_words(
     (kept,) = db.reminders(-100)
     assert (kept["id"], kept["text"]) == (rid, "Heat the rice tray, with 1 boiled egg each")
     assert dt.datetime.fromtimestamp(kept["at"], ZONE).hour == 22
-    said = "\n".join(p["text"] for p in sends(b, -100))
+    sent = "\n".join(p["text"] for p in sends(b, -100))
+    assert "Reminder removed" not in sent and "Reminder kept" not in sent
+    said = heard(b)  # what the bot did to a reminder, kept for the AI only
     assert "Reminder removed" not in said and "Reminder kept, with new words" in said
     (offer,) = [p for p in sends(b, -100) if is_offer(p)]
     offered = offer["text"].split("shall I remind you?")[1]
@@ -210,7 +212,9 @@ def test_a_reminder_at_the_same_time_for_another_dish_is_not_a_reword(data_dir, 
     run(b.handle(None, msg("@chefbot no chickpeas, hake instead", message_id=1)))
     assert db.reminder(rid)["state"] == "cancelled"
     assert db.reminder(rid)["text"] == "Soak the chickpeas"
-    said = "\n".join(p["text"] for p in sends(b, -100))
+    sent = "\n".join(p["text"] for p in sends(b, -100))
+    assert "Reminder removed" not in sent and "Reminder kept" not in sent
+    said = heard(b)  # what the bot did to a reminder, kept for the AI only
     assert "Reminder removed" in said and "Reminder kept, with new words" not in said
     assert any("Take the hake out" in p["text"] for p in sends(b, -100) if is_offer(p))
 
@@ -245,7 +249,9 @@ def test_an_automatic_turn_rewords_a_reminder_only_on_a_tap(data_dir, tmp_path):
     own_turn(b, lambda: b.take(-100, who, "ana", None, "x", True, followup=True))
     r = db.reminder(rid)
     assert (r["state"], r["text"]) == ("pending", "Soak the beans and the chickpeas")
-    said = "\n".join(p["text"] for p in sends(b, -100))
+    sent = "\n".join(p["text"] for p in sends(b, -100))
+    assert "Reminder removed" not in sent and "Reminder kept" not in sent
+    said = heard(b)  # what the bot did to a reminder, kept for the AI only
     assert "Reminder removed" not in said and "Reminder kept" not in said
     offer = offer_of(b)
     (here,) = buttons(offer)

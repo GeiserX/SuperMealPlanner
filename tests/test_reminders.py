@@ -14,7 +14,7 @@ from supermealplanner.db import DB
 
 from .test_conversations import ChatBot, plugin_data
 from .test_settings_stores_bot import msg, run
-from .test_turns import buttons, cfg, drain, lines, sends, tap, toasts, until
+from .test_turns import buttons, cfg, drain, heard, lines, sends, tap, toasts, until
 
 PLUGIN = """
 import json, pathlib, threading, time
@@ -545,8 +545,9 @@ def test_a_reminder_the_person_asked_for_is_set_at_once_without_an_offer(data_di
     (r,) = db.reminders(-100)
     assert (r["person"], r["at"], r["text"], r["by"]) == ("ana", at, "Order the shopping", 7)
     assert not [p for p in sends(b, -100) if is_offer(p)]
-    (said,) = sends(b, -100)  # the answer says it was set, in the same message
-    assert said["text"].startswith("Done.\n\n⏰ Reminder set for")
+    (said,) = sends(b, -100)  # the answer only: the line that it was set is for the AI
+    assert said["text"] == "Done."
+    assert "⏰ Reminder set for" in heard(b)
 
 
 def test_a_reminder_a_change_made_wrong_is_cancelled_and_the_ai_sees_the_chats_reminders(
@@ -566,7 +567,8 @@ def test_a_reminder_a_change_made_wrong_is_cancelled_and_the_ai_sees_the_chats_r
     run(b.handle(None, msg("@chefbot no mackerel, hake", message_id=1)))
     assert db.reminders(-100) == [] and db.reminder(stale)["state"] == "cancelled"
     assert db.reminder(elsewhere)["state"] == "pending"  # never another chat's
-    assert any("Reminder removed" in p["text"] for p in sends(b, -100))
+    assert not any("Reminder removed" in p["text"] for p in sends(b, -100))
+    assert "Reminder removed" in heard(b)
 
 
 def test_a_stranger_let_in_by_group_open_cannot_have_the_ai_cancel_a_reminder(data_dir, tmp_path):

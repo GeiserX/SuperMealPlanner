@@ -13,7 +13,7 @@ from .test_chains import at
 from .test_reminders import ahead, block, setup
 from .test_settings_stores_bot import msg, run
 from .test_task_done import BATCH, at_clock, evening_session, tick
-from .test_turns import buttons, cfg, sends, tap, toasts
+from .test_turns import buttons, cfg, heard, sends, tap, toasts
 
 
 def soon(days=2):
@@ -125,10 +125,11 @@ def test_the_same_words_at_about_the_same_time_are_not_set_again(data_dir, tmp_p
     run(b.handle(None, msg("@chefbot remind Ana at 21:00 to order the shopping", message_id=1)))
     assert len(db.reminders(-100)) == 1  # nothing new stored
     (said,) = sends(b, -100)
-    assert "The 21:10 reminder already says this, not set again" in said["text"]
+    assert "already says this" not in said["text"]
+    assert "The 21:10 reminder already says this, not set again" in heard(b)
 
 
-def test_a_new_reminder_near_another_joins_it_and_the_chat_says_so(data_dir, tmp_path):
+def test_a_new_reminder_near_another_joins_it_and_only_the_ai_hears_so(data_dir, tmp_path):
     b, db = setup(data_dir, tmp_path)
     when, t = ahead(1, 21)
     db.add_reminder(-100, "ana", t + 900, "Freeze the shopping", 7)
@@ -136,7 +137,8 @@ def test_a_new_reminder_near_another_joins_it_and_the_chat_says_so(data_dir, tmp
     run(b.handle(None, msg("@chefbot remind Ana at 21:00 to soak", message_id=1)))
     assert len(db.reminders(-100)) == 2  # stored as usual, its own step
     (said,) = sends(b, -100)
-    assert "(added to the 21:15 reminder: they go out as one message)" in said["text"]
+    assert "added to the 21:15 reminder" not in said["text"]
+    assert "(added to the 21:15 reminder: they go out as one message)" in heard(b)
 
 
 def test_a_tap_near_the_apps_own_reminder_joins_it_and_a_repeat_tap_sets_nothing(

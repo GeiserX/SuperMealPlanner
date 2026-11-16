@@ -78,6 +78,12 @@ def sends(b, chat=None):
     return [p for m, p in b.calls if m == "sendMessage" and chat in (None, p["chat_id"])]
 
 
+def heard(b, chat=-100):
+    """What the AI remembers of the chat: the bot's quiet lines (a reminder set, moved or
+    removed) are stored there and never sent."""
+    return "\n".join(r["text"] for r in b.state.db.recent_chat(chat, 1000))
+
+
 def buttons(params):
     return [btn for row in params["reply_markup"]["inline_keyboard"] for btn in row]
 
