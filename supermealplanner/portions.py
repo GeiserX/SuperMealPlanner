@@ -59,13 +59,18 @@ def shared(r: Recipe) -> bool:
 
 
 def factors(
-    data: Data, db: DB, day: dt.date, kcal: dict[str, float] | None = None
+    data: Data,
+    db: DB,
+    day: dt.date,
+    kcal: dict[str, float] | None = None,
+    meal: str | None = None,
 ) -> dict[str, float]:
-    """Each person's servings that day. kcal: their current targets, when the caller already read
-    them (a walk over many days asks once)."""
+    """Each person's servings that day, at `meal` when given (targets.day_factor). kcal: their
+    current targets, when the caller already read them (a walk over many days asks once)."""
     hh = data.household
     return {
-        p.id: day_factor(hh, p, kcal[p.id] if kcal else current_kcal(db, p), day) for p in hh.people
+        p.id: day_factor(hh, p, kcal[p.id] if kcal else current_kcal(db, p), day, meal)
+        for p in hh.people
     }
 
 
@@ -189,7 +194,7 @@ def together(data: Data, r: Recipe, servings: dict[str, float]) -> Plate:
 class PersonDay:
     person_id: str
     name: str
-    factor: float
+    factor: float  # the day's; a meal's own is plates[meal].factor (Person.meal_factors)
     kcal_target: float
     protein_target: float
     plates: dict[str, Plate] = field(default_factory=dict)
@@ -228,7 +233,8 @@ def person_days(data: Data, db: DB, plan: Plan, day: dt.date) -> list[PersonDay]
         for meal in MEALS:
             r = served(data, d, meal)
             if r is not None:
-                pd.plates[meal] = plate(data, r, f, p.swaps)
+                mf = day_factor(data.household, p, kcal, day, meal)
+                pd.plates[meal] = plate(data, r, mf, p.swaps)
         short = p.protein_g.target - pd.protein
         for top in data.settings.toppers:
             if short <= 5:
@@ -330,6 +336,7 @@ def servings_on(
     eaten on them. One day's is what is cooked that day, which the pantry takes its food from. A
     meal with ingredient swaps counts under its own key (Served; recipe_of reads it)."""
     hh = data.household
+    kcal = kcal or {p.id: current_kcal(db, p) for p in hh.people}  # read once, not per meal
     total: dict[str, dict[str, float]] = {}
 
     def add(rid: str, eaters: dict[str, float]):
@@ -350,16 +357,15 @@ def servings_on(
             if x.cook in days:
                 for e in x.eat:
                     k = key(plan.day(e), "lunch", x.recipe)
-                    add(k, factors(data, db, e, kcal))
+                    add(k, factors(data, db, e, kcal, "lunch"))
                     if e.weekday() == 6:
                         add(k, {"guests": guests})
     for d in plan.days:
         if d.date in days:
-            f = factors(data, db, d.date, kcal)
             for meal in ("breakfast", "dinner", "snack", "side"):
                 rid = getattr(d, meal)
                 if rid:
-                    add(key(d, meal, rid), f)
+                    add(key(d, meal, rid), factors(data, db, d.date, kcal, meal))
     return total
 
 
@@ -551,7 +557,7 @@ def batch_sheet(data: Data, db: DB, plan: Plan, session_date: dt.date) -> list[B
                 continue
             conts, total, eaters, need = [], 0.0, {}, {}
             for e in x.eat:
-                f = factors(data, db, e)
+                f = factors(data, db, e, meal="lunch")
                 if e.weekday() == 6 and data.household.guests.get("sunday_lunch"):
                     f["guests"] = data.household.guests["sunday_lunch"]
                 day = plan.day(e)
@@ -645,7 +651,7 @@ def thaw_for(data: Data, db: DB, plan: Plan, day: dt.date) -> list[Thaw]:
         r = served(data, d, meal)
         if r is None:
             continue
-        eaters = factors(data, db, day)
+        eaters = factors(data, db, day, meal=meal)
         if meal == "lunch" and day.weekday() == 6 and data.household.guests.get("sunday_lunch"):
             eaters["guests"] = data.household.guests["sunday_lunch"]
         for iid, qty in amounts(data, r, eaters).items():

@@ -403,13 +403,18 @@ def served(data: Data, day: Day | None, meal: str) -> Recipe | None:
     return r.model_copy(update={"ingredients": items})
 
 
+def meal_of(day: Day | None, rid: str) -> str | None:
+    """The first of `day`'s meals that serves the recipe, or None when the day does not have it."""
+    if day is None:
+        return None
+    return next((meal for meal in MEALS if getattr(day, meal) == rid), None)
+
+
 def served_as(data: Data, day: Day | None, rid: str) -> Recipe | None:
-    """A recipe as `day` serves it, in the first of its meals that has it (a recipe page opened
-    for that day); the recipe as written when the day does not have it."""
-    for meal in MEALS:
-        if day is not None and getattr(day, meal) == rid:
-            return served(data, day, meal)
-    return data.recipes.get(rid)
+    """A recipe as `day` serves it, in the first of its meals that has it (meal_of: a recipe page
+    opened for that day); the recipe as written when the day does not have it."""
+    meal = meal_of(day, rid)
+    return served(data, day, meal) if meal else data.recipes.get(rid)
 
 
 def day_menu(data: Data, day: Day) -> list[tuple[str, Recipe]]:

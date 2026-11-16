@@ -176,8 +176,12 @@ def training_extra(p: Person, day: dt.date) -> float:
     return p.training_extra_kcal if WEEKDAYS[day.weekday()] in p.training_days else 0.0
 
 
-def day_factor(hh: Household, p: Person, kcal: float, day: dt.date) -> float:
-    """How much of a reference serving this person eats on this day."""
+def day_factor(
+    hh: Household, p: Person, kcal: float, day: dt.date, meal: str | None = None
+) -> float:
+    """How much of a reference serving this person eats on this day; with `meal`, at that meal:
+    the day's factor times the person's meal_factors for it (1 when it has none). Nothing moves to
+    another meal, so a smaller dinner makes a smaller day."""
     f = (kcal + training_extra(p, day)) / hh.reference_kcal
     if p.glp1:
         from .model import WEEKDAYS
@@ -188,7 +192,8 @@ def day_factor(hh: Household, p: Person, kcal: float, day: dt.date) -> float:
             f *= p.glp1.early_week_factor
         elif since >= 4:
             f *= p.glp1.late_week_factor
-    return round(f, 3)
+    f = round(f, 3)
+    return f * p.meal_factors.get(meal, 1.0) if meal else f  # exactly that share of the day's
 
 
 def days_since_injection(p: Person, day: dt.date) -> int | None:
