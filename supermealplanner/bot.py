@@ -477,6 +477,13 @@ class Bot:
                 await asyncio.sleep(2 * (_tries + 1))
                 return await self.call(client, method, _tries + 1, _files, **params)
             raise TelegramError(method, safe(e)) from None
+        except httpx.RemoteProtocolError as e:
+            # Telegram closed the connection without an answer, almost always a kept-alive one it had
+            # already dropped, so it never read the request. Once more on a new connection: a rare
+            # double post beats an answer lost behind "something failed".
+            if method != "getUpdates" and _tries == 0:
+                return await self.call(client, method, 1, _files, **params)
+            raise TelegramError(method, safe(e)) from None
         except (httpx.HTTPError, ValueError) as e:
             raise TelegramError(method, safe(e)) from None
         if body.get("ok"):

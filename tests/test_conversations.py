@@ -995,6 +995,38 @@ def test_a_send_that_never_reached_telegram_is_tried_again(data_dir, tmp_path, m
     assert len(tries) == 1
 
 
+def test_a_send_telegram_dropped_without_an_answer_is_tried_once_more(data_dir, tmp_path):
+    b = Bot(FakeState(bot_data(data_dir), DB(tmp_path / "b.db"), MONDAY))
+    b.token = "x"
+    tries = []
+    drops = [1]
+
+    def answer(request):
+        tries.append(request.url.path)
+        if len(tries) <= drops[0]:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 7}})
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as c:
+            got = await b.call(c, "sendMessage", chat_id=1, text="hola")
+            sent = len(tries)
+            tries.clear()
+            drops[0] = 2
+            with pytest.raises(TelegramError):
+                await b.call(c, "sendMessage", chat_id=1, text="hola")  # once more, never twice
+            again = len(tries)
+            tries.clear()
+            with pytest.raises(TelegramError):
+                await b.call(c, "getUpdates")  # its own loop asks again
+            return got, sent, again
+
+    got, sent, again = run(go())
+    assert got == {"message_id": 7} and sent == 2
+    assert again == 2
+    assert len(tries) == 1
+
+
 def test_strangers_start_nothing_and_a_failed_step_is_said(data_dir, tmp_path):
     data = plugin_data(data_dir, group_open=True)
     db = DB(tmp_path / "b.db")
