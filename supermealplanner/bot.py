@@ -452,7 +452,13 @@ class Bot:
         return self.t(f"{key}_direct" if self.direct else key, **kw)
 
     async def call(
-        self, client: httpx.AsyncClient, method: str, _tries: int = 0, _files=None, **params
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        _tries: int = 0,
+        _files=None,
+        _dropped: bool = False,
+        **params,
     ):
         """One Bot API call. `_files` ({field: (name, bytes, mime)}) sends it as multipart, the
         other params as form fields (non-strings as JSON)."""
@@ -475,7 +481,16 @@ class Bot:
             # The request never reached Telegram, so sending it again cannot post it twice.
             if method != "getUpdates" and _tries < 2:
                 await asyncio.sleep(2 * (_tries + 1))
-                return await self.call(client, method, _tries + 1, _files, **params)
+                return await self.call(
+                    client, method, _tries + 1, _files, _dropped=_dropped, **params
+                )
+            raise TelegramError(method, safe(e)) from None
+        except httpx.RemoteProtocolError as e:
+            # Telegram closed the connection without an answer, almost always a kept-alive one it had
+            # already dropped, so it never read the request. Once more on a new connection: a rare
+            # double post beats an answer lost behind "something failed".
+            if method != "getUpdates" and not _dropped:
+                return await self.call(client, method, _tries, _files, _dropped=True, **params)
             raise TelegramError(method, safe(e)) from None
         except (httpx.HTTPError, ValueError) as e:
             raise TelegramError(method, safe(e)) from None
@@ -486,7 +501,7 @@ class Bot:
         )
         if err.code == 429 and method != "getUpdates" and _tries < 2:  # flood control: wait as told
             await asyncio.sleep(min(int(err.params.get("retry_after", 5)), 60))
-            return await self.call(client, method, _tries + 1, _files, **params)
+            return await self.call(client, method, _tries + 1, _files, _dropped=_dropped, **params)
         raise err
 
     async def download(self, client, file_id: str) -> tuple[bytes, str]:
