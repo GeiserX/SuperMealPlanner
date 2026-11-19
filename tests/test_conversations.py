@@ -1027,6 +1027,30 @@ def test_a_send_telegram_dropped_without_an_answer_is_tried_once_more(data_dir, 
     assert len(tries) == 1
 
 
+def test_a_drop_after_a_connect_retry_still_gets_its_own_retry(data_dir, tmp_path, monkeypatch):
+    b = Bot(FakeState(bot_data(data_dir), DB(tmp_path / "b.db"), MONDAY))
+    b.token = "x"
+    errors = [httpx.ConnectError("unreachable"), httpx.RemoteProtocolError("Server disconnected.")]
+    tries = []
+
+    def answer(request):
+        tries.append(1)
+        if errors:
+            raise errors.pop(0)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 7}})
+
+    async def no_wait(s):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as c:
+            return await b.call(c, "sendMessage", chat_id=1, text="hola")
+
+    assert run(go()) == {"message_id": 7} and len(tries) == 3
+
+
 def test_strangers_start_nothing_and_a_failed_step_is_said(data_dir, tmp_path):
     data = plugin_data(data_dir, group_open=True)
     db = DB(tmp_path / "b.db")
