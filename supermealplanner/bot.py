@@ -212,7 +212,9 @@ VOICE_WAIT_S = 30
 VOICE_PER_S = 3
 # {"key", "on", "found"}: the plan last raised in the chat, the day and what it said. While its turn
 # has not answered, also "row" (the turn's chat row), "tries" (turns queued for it that day) and
-# "at" (when the last was queued): a turn that fails leaves "row", and raise_plan raises it again
+# "at" (when the last was queued): a turn that fails leaves "row", and raise_plan raises it again;
+# "read" (the key of the plan the turn read, which is the one raised once it answers) and "drawn"
+# (a plan the app drew while the turn was pending, raised after it unless the turn read it)
 PLAN_RAISED = "verifier.plan_raised"
 PLAN_RAISE_H = 2  # hours after bot.checkup_at a finished plan check may still raise its problems
 # a plan-check turn whose answer never reached the chat is raised again this long after the last
@@ -344,6 +346,9 @@ class Item:
     # `mid` is a bot's message (no reaction goes on it): the question a button was tapped under,
     # the echo the bot posted of something said to the app, or another bot's message that called it
     bots_mid: bool = False
+    # the provider's conversation took it before a restart (ask): what it answered then was
+    # never seen here, so a later answer that covers it did not raise a plan's problems
+    replayed: bool = False
 
 
 @dataclass
@@ -1302,7 +1307,8 @@ class Bot:
                     if covered is AGAIN:
                         continue  # its messages are queued again, for the turn that answers them
                     self.answered(items, covered, ears)
-                    self.plan_answered([*items, *pulled], reached if covered is None else covered)
+                    took = reached if covered is None else covered
+                    self.plan_answered([*items, *pulled], [i for i in took if not i.replayed])
                     if (
                         chat_id not in self.held
                     ):  # its held lines went out: a new failure starts over
@@ -1400,8 +1406,10 @@ class Bot:
         row = raised.get("row")
         if row is None or row not in {i.row for i in took}:
             return
-        kept = ("key", "on", "found", "redo")
-        db.set_kv(PLAN_RAISED, {k: v for k, v in raised.items() if k in kept})
+        done = {k: v for k, v in raised.items() if k in ("key", "on", "found", "drawn")}
+        if raised.get("read"):  # the plan as its turn read it is the one raised
+            done["key"] = raised["read"]
+        db.set_kv(PLAN_RAISED, done)
 
     def _finish(self, spoken: Spoken, state: str, ears: list[str]) -> None:
         said = speakable(ears, self.t)
@@ -1497,22 +1505,26 @@ class Bot:
             for r in rows
             if r["id"] > seen and r["id"] not in done and not (seen and r["who"] == AI)
         ]
-        if conv.get("id") and not any(r["role"] == "user" for r in fresh):
-            # a plan-check turn replayed after a restart: the conversation took it, but its
-            # problems were raised only when its answer reached the chat. The AI's answer is
-            # logged only once Telegram took it, and `seen` is the newest row that turn read when
-            # it started, so an answer after both is its own (an earlier turn's came before
-            # `seen`). A restart before the send leaves the row for raise_plan to raise again,
-            # one after it never raises it twice
+        # messages the conversation took before a restart (a plan-check turn among them): its
+        # problems were raised only when its answer reached the chat. The AI's answer is logged
+        # only once Telegram took it, and `seen` is the newest row that turn read when it
+        # started, so an answer after both is its own (an earlier turn's came before `seen`). A
+        # restart before the send leaves the row for raise_plan to raise again, one after it
+        # never raises it twice, and a question that came meanwhile never answers it
+        taken = [i for i in items if conv.get("id") and (i.row <= seen or i.row in done)]
+        if taken:
             sent = [
                 i
-                for i in items
+                for i in taken
                 if any(
                     r["role"] == "assistant" and r["who"] == AI and r["id"] > max(seen, i.row)
                     for r in rows
                 )
             ]
-            self.plan_answered(items, sent)
+            self.plan_answered(taken, sent)
+            for i in taken:
+                i.replayed = True
+        if conv.get("id") and not any(r["role"] == "user" for r in fresh):
             return None  # an earlier turn already took these messages
         # pulled: the caller's list of what the turn is handed while it runs (drive holds those too)
         turn_state = Turn(chat_id, items, pulled if pulled is not None else [])
@@ -1542,6 +1554,10 @@ class Bot:
                 context.facts, data, db, self.state.today(), viewer, not private
             )
             facts += self.chat_reminders(chat_id)
+            if (db.get_kv(PLAN_RAISED) or {}).get("row") in {i.row for i in items}:
+                # the plan-check turn reads the plan as it is now: that one is raised (read)
+                _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
+                db.set_kv(PLAN_RAISED, {**(db.get_kv(PLAN_RAISED) or {}), "read": read})
             turn = {
                 "conversation": conv.get("id"),
                 "rules": self.rules(),
@@ -5183,7 +5199,7 @@ class Bot:
         raises it (verifier.ACT among the check's findings), and never the same problems twice. A
         turn whose answer never reached the chat (it failed, or was lost) did not raise them: they
         are raised again (PLAN_RETRY_S), never while that turn is still queued or running. A plan
-        drawn while that turn runs is raised once it ends."""
+        drawn while that turn is pending is raised once it ends, unless that turn read it."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
         chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
         no_ai = data.settings.llm.provider == "none"
@@ -5199,16 +5215,18 @@ class Bot:
         waiting = row is not None and row in {
             x["row"] for x in (db.get_kv(QUEUED) or {}).get(str(chat)) or []
         }
-        if waiting:  # its turn is still to answer: one still queued reads the plan as it runs
-            turn = self.running.get(chat)
-            if at_once and turn is not None and row in turn.rows():
-                # a plan drawn while it runs: it read the one before, so this one is raised
-                # by the first tick after it ends (redo)
-                db.set_kv(PLAN_RAISED, {**raised, "redo": True})
+        if waiting:  # its turn is still to answer
+            if at_once and not raised.get("drawn"):
+                # a plan drawn meanwhile: raised by the first tick after that turn ends, unless
+                # the turn read it (its key is then the one raised)
+                db.set_kv(PLAN_RAISED, {**raised, "drawn": True})
             return
-        if raised.pop("redo", False):  # a plan drawn while the last turn ran: raised now
-            at_once = True
-            db.set_kv(PLAN_RAISED, raised)
+        at_once = at_once or bool(raised.get("drawn"))
+
+        def settled() -> None:  # the plan drawn meanwhile needs no turn of its own
+            if raised.get("drawn"):
+                db.set_kv(PLAN_RAISED, {k: v for k, v in raised.items() if k != "drawn"})
+
         failed = row is not None
         tries = raised.get("tries", 1) if raised.get("on") == on else 0
         again = failed and (
@@ -5235,6 +5253,7 @@ class Bot:
         today = self.state.today()
         _, key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
         if raised.get("key") == key and not again:
+            settled()
             return  # raised, or its turn is still to answer
         found = await self.problems() or []
         sure = [p for p in found if p.kind not in (*verifier.SKIP, "avoided", "unconfirmed")]
@@ -5259,11 +5278,14 @@ class Bot:
         if not (sure or found):
             if late:
                 db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # nothing to say today
+            else:
+                settled()
             return
         said = hashlib.sha256(
             "\n".join([*found, *sorted(p.key for p in sure)]).encode()
         ).hexdigest()
         if raised.get("found") == said and not failed:
+            settled()
             return  # the same findings as the last turn: it would say the same again
         user = {"first_name": self.t("plan_check_who")}
         row = self.take(chat, user, who, None, self.tt("plan_check_turn"), True, review=True)
