@@ -14,6 +14,7 @@ from supermealplanner.model import WEEKDAYS, load
 from supermealplanner.planner import plan_for
 
 from .conftest import MONDAY
+from .test_conversations import ChatBot
 from .test_doctor import D, edit_plan, household, keys
 from .test_reminders import ZONE, setup
 from .test_settings_stores_bot import msg, run
@@ -688,6 +689,130 @@ def test_a_private_checkup_chat_of_no_one_gets_the_list_one_line_each(data_dir, 
     assert taken == [] and report.startswith(
         "⚠️ The plan has something to fix:\n• the batch session"
     )
+
+
+# a provider that fails while plugins/down exists; every turn it gets is counted
+FLAKY = """
+def converse(turn, settings):
+    with (HERE / "plan_turns.txt").open("a") as f:
+        f.write("turn\\n")
+    if (HERE / "down").exists():
+        raise RuntimeError("down")
+    return {"text": "The batch session moves to Wednesday.", "conversation": "c1"}
+"""
+
+
+def plan_turn_setup(data_dir, tmp_path, monkeypatch, down):
+    """certain_setup with the real queue and turns, the sure problems raised now (the window is
+    over), and the provider down or up."""
+    from supermealplanner import bot as bot_module
+
+    b, db, _taken = certain_setup(data_dir, tmp_path)
+    del b.take, b.drive
+    (data_dir / "plugins" / "ai.py").write_text(PLUGIN + FLAKY)
+    if down:
+        (data_dir / "plugins" / "down").write_text("")
+    monkeypatch.setattr(bot_module, "PLAN_RAISE_H", 0)
+    return b, db
+
+
+def raise_now(b):
+    async def go():
+        await b.raise_plan(None)
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+
+
+def plan_turns(data_dir):
+    path = data_dir / "plugins" / "plan_turns.txt"
+    return len(path.read_text().splitlines()) if path.exists() else 0
+
+
+def earlier(db, seconds):
+    """The plan's last turn was queued `seconds` earlier than it was."""
+    raised = db.get_kv("verifier.plan_raised")
+    db.set_kv("verifier.plan_raised", {**raised, "at": raised["at"] - seconds})
+
+
+def answers(b):
+    return [
+        p["text"] for p in sends(b, -100) if p["text"] == "The batch session moves to Wednesday."
+    ]
+
+
+def test_a_failed_plan_turn_raises_the_same_problems_again_by_itself(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and sends(b, -100) == []  # failed, and told to no one
+    raise_now(b)
+    assert plan_turns(data_dir) == 1  # the next try waits
+    earlier(db, PLAN_RETRY_S[0])
+    (data_dir / "plugins" / "down").unlink()
+    raise_now(b)  # the same plan, the same day, nobody wrote
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_a_plan_turn_still_queued_is_never_raised_twice_even_after_a_restart(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+
+    async def parked(client, chat):  # the turn waits in the queue (another chat's turn runs)
+        pass
+
+    b.drive = parked
+    raise_now(b)
+    earlier(db, 86400)
+    raise_now(b)
+    assert len(db.get_kv("bot.queued")["-100"]) == 1 and plan_turns(data_dir) == 0
+    # a restart: the new process finds the turn in QUEUED, never raises a second one, and runs it
+    b = ChatBot(b.data, db)
+    raise_now(b)
+    assert len(db.get_kv("bot.queued")["-100"]) == 1
+
+    async def restart():
+        await b.resume(None)
+        await asyncio.gather(*b.tasks)
+
+    run(restart())
+    assert plan_turns(data_dir) == 1 and not db.get_kv("bot.queued")  # it failed
+    (data_dir / "plugins" / "down").unlink()
+    raise_now(b)  # what the lost turn did not say is said
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_a_provider_that_keeps_failing_gets_the_plan_turn_a_few_times_a_day(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    for _ in range(len(PLAN_RETRY_S) + 3):
+        raise_now(b)
+        earlier(db, 86400)
+    assert plan_turns(data_dir) == len(PLAN_RETRY_S) + 1
+    raised = db.get_kv("verifier.plan_raised")
+    db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})  # the next day: tried again
+    raise_now(b)
+    assert plan_turns(data_dir) == len(PLAN_RETRY_S) + 2
+
+
+def test_a_plan_turn_that_answered_is_never_raised_again(data_dir, tmp_path, monkeypatch):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    raised = db.get_kv("verifier.plan_raised")
+    db.set_kv("verifier.plan_raised", {**raised, "at": 0})  # hours later
+    raise_now(b)
+    db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})  # the same plan, next day
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    assert "row" not in raised  # nothing waits for a retry
 
 
 def test_a_step_a_cook_could_misread_is_kept_and_every_chat_sees_it(data_dir, tmp_path):
