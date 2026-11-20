@@ -857,6 +857,63 @@ def test_a_plan_turn_that_failed_after_its_answer_showed_is_not_raised_again(
     assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
 
 
+# a person's turn takes the plan turn while it runs and does not answer it; the plan turn
+# that follows fails while plugins/down exists
+PULLS = """
+import time
+
+def converse(turn, settings):
+    with (HERE / "plan_turns.txt").open("a") as f:
+        f.write("turn\\n")
+    if turn["review"]:
+        if (HERE / "down").exists():
+            raise RuntimeError("down")
+        return {"text": "The batch session moves to Wednesday.", "conversation": "c1"}
+    (HERE / "waiting").write_text("")
+    while not (HERE / "go").exists():
+        time.sleep(0.01)
+    turn["incoming"]()
+    return {"text": "Lentils tonight.", "conversation": "c1", "covers": []}
+"""
+
+
+def test_a_plan_turn_another_turn_took_and_did_not_answer_is_raised_again_when_it_fails(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    plugins = data_dir / "plugins"
+    (plugins / "ai.py").write_text(PLUGIN + PULLS)
+    real = b.answer_text
+    broke = []
+
+    async def answer_text(*a, **k):  # the person's answer went out, then a later step broke
+        await real(*a, **k)
+        if not broke:
+            broke.append(1)
+            raise RuntimeError("broke")
+
+    b.answer_text = answer_text
+
+    async def go():
+        b.take(-100, {"id": 7, "first_name": "Luis"}, "luis", None, "qué cenamos", True)
+        person = asyncio.ensure_future(b.drive(None, -100))
+        while not (plugins / "waiting").exists():
+            await asyncio.sleep(0.01)
+        await b.raise_plan(None)  # the plan turn joins the running one
+        (plugins / "go").write_text("")
+        await person
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    assert broke and plan_turns(data_dir) == 2 and answers(b) == []  # the plan turn failed
+    (plugins / "down").unlink()
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)
+    assert plan_turns(data_dir) == 3 and len(answers(b)) == 1
+
+
 def test_a_restart_once_the_plan_turn_answered_never_raises_it_again(
     data_dir, tmp_path, monkeypatch
 ):

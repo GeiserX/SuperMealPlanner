@@ -1262,7 +1262,7 @@ class Bot:
                     shown: list[bool] = []
                     pulled: list[Item] = []
                     showing = SHOWN.set((*SHOWN.get(), (chat_id, shown)))
-                    covered, reached = None, False
+                    covered, reached = None, []
                     try:
                         covered = await self.ask(client, chat_id, items, rows, pulled)
                         # bot.answer_scope all: an answer that showed nothing (the AI's
@@ -1275,7 +1275,12 @@ class Bot:
                         raise
                     except Exception as e:  # noqa: BLE001  the next turn of the chat still runs
                         log.warning("a turn failed: %s", safe(e))
-                        reached = bool(shown)  # its answer reached the chat before it failed
+                        if shown:  # its answer reached the chat before it failed: it took
+                            # what it was started with and what it was handed and did not put
+                            # back in the queue
+                            with self.qlock:
+                                back = {i.row for i in self.queues.get(chat_id, [])}
+                            reached = [i for i in [*items, *pulled] if i.row not in back]
                         if not shown:  # nothing was read: no 👀, and they go with the next turn
                             self.hold(chat_id, [*items, *pulled])
                         # nobody asked: "try again in a minute" would answer no one
@@ -1297,7 +1302,7 @@ class Bot:
                     if covered is AGAIN:
                         continue  # its messages are queued again, for the turn that answers them
                     self.answered(items, covered, ears)
-                    self.plan_answered([*items, *pulled], covered, reached)
+                    self.plan_answered([*items, *pulled], reached if covered is None else covered)
                     if (
                         chat_id not in self.held
                     ):  # its held lines went out: a new failure starts over
@@ -1382,17 +1387,18 @@ class Bot:
                 continue
             self._finish(spoken, "done" if i.row in done and ears else "failed", ears)
 
-    def plan_answered(self, items: list[Item], covered: list[Item] | None, reached: bool) -> None:
-        """A turn ended: when it was the plan check's (raise_plan) and its answer reached the chat
-        (covered it, even with nothing to say, or got out before the turn failed), its problems
-        were raised and its row goes from PLAN_RAISED. A turn that failed leaves the row, so a
-        later raise_plan raises the same problems again; a busy provider's turn stays queued."""
+    def plan_answered(self, items: list[Item], took: list[Item]) -> None:
+        """A turn ended: when it was the plan check's (raise_plan) and an answer that reached the
+        chat took it (`took`: covered it, even with nothing to say, or got out before the turn
+        failed), its problems were raised and its row goes from PLAN_RAISED. A turn that failed,
+        or one that left it in the queue, leaves the row, so a later raise_plan raises the same
+        problems again; a busy provider's turn stays queued."""
         if not any(i.review for i in items):
             return
         db = self.state.db
         raised = db.get_kv(PLAN_RAISED) or {}
         row = raised.get("row")
-        if row is None or row not in {i.row for i in (items if reached else covered or [])}:
+        if row is None or row not in {i.row for i in took}:
             return
         db.set_kv(PLAN_RAISED, {k: v for k, v in raised.items() if k in ("key", "on", "found")})
 
@@ -1505,7 +1511,7 @@ class Bot:
                     for r in rows
                 )
             ]
-            self.plan_answered(items, sent, False)
+            self.plan_answered(items, sent)
             return None  # an earlier turn already took these messages
         # pulled: the caller's list of what the turn is handed while it runs (drive holds those too)
         turn_state = Turn(chat_id, items, pulled if pulled is not None else [])
