@@ -1400,7 +1400,8 @@ class Bot:
         row = raised.get("row")
         if row is None or row not in {i.row for i in took}:
             return
-        db.set_kv(PLAN_RAISED, {k: v for k, v in raised.items() if k in ("key", "on", "found")})
+        kept = ("key", "on", "found", "redo")
+        db.set_kv(PLAN_RAISED, {k: v for k, v in raised.items() if k in kept})
 
     def _finish(self, spoken: Spoken, state: str, ears: list[str]) -> None:
         said = speakable(ears, self.t)
@@ -2002,6 +2003,7 @@ class Bot:
         the chat's messages by itself when it is back. A message that arrives meanwhile waits too."""
         seconds = max(float(seconds), BUSY_MIN_S)
         self.resting[chat_id] = self.clock() + seconds
+        self.spawn(self.wake(client, chat_id, seconds))  # first: a notice Telegram refuses too
         if chat_id not in self.told_busy:
             self.told_busy.add(chat_id)
             minutes = max(1, round(seconds / 60))
@@ -2010,10 +2012,12 @@ class Bot:
                 if minutes < 90
                 else self.t("busy_hours", n=round(minutes / 60))
             )
-            await self.send(
-                client, chat_id, self.t("bot_busy", wait=wait), _reply_to(items), record=False
-            )
-        self.spawn(self.wake(client, chat_id, seconds))
+            try:
+                await self.send(
+                    client, chat_id, self.t("bot_busy", wait=wait), _reply_to(items), record=False
+                )
+            except TelegramError as e:  # only the notice: the messages still go when it is back
+                log.warning("could not say the provider is busy: %s", safe(e))
 
     async def wake(self, client, chat_id: int, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -5178,7 +5182,8 @@ class Bot:
         raised now rather than the next morning. Only what goes wrong in the kitchen or for health
         raises it (verifier.ACT among the check's findings), and never the same problems twice. A
         turn whose answer never reached the chat (it failed, or was lost) did not raise them: they
-        are raised again (PLAN_RETRY_S), never while that turn is still queued or running."""
+        are raised again (PLAN_RETRY_S), never while that turn is still queued or running. A plan
+        drawn while that turn runs is raised once it ends."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
         chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
         no_ai = data.settings.llm.provider == "none"
@@ -5194,8 +5199,16 @@ class Bot:
         waiting = row is not None and row in {
             x["row"] for x in (db.get_kv(QUEUED) or {}).get(str(chat)) or []
         }
-        if waiting:
-            return  # its turn is still to answer: it reads the plan as it is when it runs
+        if waiting:  # its turn is still to answer: one still queued reads the plan as it runs
+            turn = self.running.get(chat)
+            if at_once and turn is not None and row in turn.rows():
+                # a plan drawn while it runs: it read the one before, so this one is raised
+                # by the first tick after it ends (redo)
+                db.set_kv(PLAN_RAISED, {**raised, "redo": True})
+            return
+        if raised.pop("redo", False):  # a plan drawn while the last turn ran: raised now
+            at_once = True
+            db.set_kv(PLAN_RAISED, raised)
         failed = row is not None
         tries = raised.get("tries", 1) if raised.get("on") == on else 0
         again = failed and (

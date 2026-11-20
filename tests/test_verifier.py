@@ -742,6 +742,19 @@ def answers(b):
     ]
 
 
+async def reach(path, turn=None, seconds=10):
+    """Wait for the fake provider's checkpoint `path`, never forever; a turn that ended first
+    says why."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + seconds
+    while not path.exists():
+        if turn is not None and turn.done():
+            turn.result()  # what it raised, if it did
+            raise AssertionError("the turn ended before the provider's checkpoint")
+        assert loop.time() < end, "the provider's checkpoint never came"
+        await asyncio.sleep(0.01)
+
+
 def test_a_failed_plan_turn_raises_the_same_problems_again_by_itself(
     data_dir, tmp_path, monkeypatch
 ):
@@ -872,7 +885,8 @@ def converse(turn, settings):
     (HERE / "waiting").write_text("")
     while not (HERE / "go").exists():
         time.sleep(0.01)
-    turn["incoming"]()
+    took = [m["id"] for m in turn["incoming"]()]
+    (HERE / "took.json").write_text(json.dumps(took))
     return {"text": "Lentils tonight.", "conversation": "c1", "covers": []}
 """
 
@@ -899,19 +913,65 @@ def test_a_plan_turn_another_turn_took_and_did_not_answer_is_raised_again_when_i
     async def go():
         b.take(-100, {"id": 7, "first_name": "Luis"}, "luis", None, "qué cenamos", True)
         person = asyncio.ensure_future(b.drive(None, -100))
-        while not (plugins / "waiting").exists():
-            await asyncio.sleep(0.01)
-        await b.raise_plan(None)  # the plan turn joins the running one
-        (plugins / "go").write_text("")
+        try:
+            await reach(plugins / "waiting", person)
+            await b.raise_plan(None)  # the plan turn joins the running one
+        finally:
+            (plugins / "go").write_text("")  # the provider's thread never waits forever
         await person
         await asyncio.gather(*b.tasks)
 
     run(go())
+    row = db.get_kv("verifier.plan_raised")["row"]
+    assert json.loads((plugins / "took.json").read_text()) == [row]  # taken, not answered
     assert broke and plan_turns(data_dir) == 2 and answers(b) == []  # the plan turn failed
     (plugins / "down").unlink()
     earlier(db, PLAN_RETRY_S[0])
     raise_now(b)
     assert plan_turns(data_dir) == 3 and len(answers(b)) == 1
+
+
+# the plan turn's provider answers once plugins/go exists
+HOLDS = """
+import time
+
+def converse(turn, settings):
+    with (HERE / "plan_turns.txt").open("a") as f:
+        f.write("turn\\n")
+    (HERE / "waiting").write_text("")
+    while not (HERE / "go").exists():
+        time.sleep(0.01)
+    return {"text": "The batch session moves to Wednesday.", "conversation": "c1"}
+"""
+
+
+def test_a_plan_drawn_while_the_plan_turn_runs_is_raised_once_it_ends(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    plugins = data_dir / "plugins"
+    (plugins / "ai.py").write_text(PLUGIN + HOLDS)
+    b.data.settings.bot.checkup_at = ""  # nothing raises it the next morning
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
+
+    async def go():
+        await b.raise_plan(None, at_once=True)
+        try:
+            await reach(plugins / "waiting")
+            raised = db.get_kv("verifier.plan_raised")  # the turn read the plan before this one
+            db.set_kv("verifier.plan_raised", {**raised, "key": "old", "found": "old"})
+            await b.raise_plan(None, at_once=True)  # a plan drawn now: never a second turn at once
+        finally:
+            (plugins / "go").write_text("")
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    raise_now(b)  # the first tick after it ended
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
+    raise_now(b)
+    assert plan_turns(data_dir) == 2
 
 
 def test_a_restart_once_the_plan_turn_answered_never_raises_it_again(
@@ -1309,6 +1369,7 @@ def test_a_restart_before_the_plan_answer_went_out_raises_it_again(data_dir, tmp
     assert plan_turns(data_dir) == 1 and answers(b) == []
     b2 = ChatBot(b.data, db)  # the new process replays it: taken, but never sent
     run(go(b2, False))
+    assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
     earlier(db, PLAN_RETRY_S[0])
     raise_now(b2)  # what never reached the chat goes again
     assert plan_turns(data_dir) == 2 and len(answers(b2)) == 1
@@ -1384,6 +1445,7 @@ def test_an_earlier_turns_answer_is_not_taken_for_the_plan_answer_after_a_restar
     assert plan_turns(data_dir) == 1 and answers(b) == []
     b2 = ChatBot(b.data, db)  # the replay must not take "Lunch is at two." for its answer
     run(go(b2, False))
+    assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
     earlier(db, PLAN_RETRY_S[0])
     raise_now(b2)
     assert plan_turns(data_dir) == 2 and len(answers(b2)) == 1
