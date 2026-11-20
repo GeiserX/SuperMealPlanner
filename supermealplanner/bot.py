@@ -216,8 +216,8 @@ VOICE_PER_S = 3
 PLAN_RAISED = "verifier.plan_raised"
 PLAN_RAISE_H = 2  # hours after bot.checkup_at a finished plan check may still raise its problems
 # a plan-check turn whose answer never reached the chat is raised again this long after the last
-# was queued, one wait per failure in a row: at most 4 turns a day for one plan, then none until
-# the next day or a new plan, so a provider that keeps failing is not called at every tick
+# was queued, one wait per failure in a row: at most 4 turns a day (4 more for each plan the app
+# draws), then none until the next day, so a provider that keeps failing is not called every tick
 PLAN_RETRY_S = (600, 1800, 3600)
 # what an automatic turn's change block may hold: the menu of the days ahead, the pantry and what
 # was done of a step. Never a recipe's text, a new ingredient, a setting or a note nobody asked for
@@ -1491,6 +1491,9 @@ class Bot:
             if r["id"] > seen and r["id"] not in done and not (seen and r["who"] == AI)
         ]
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
+            # a plan-check turn replayed after a restart that came once its answer was sent: the
+            # conversation has it, so its problems were raised, never raised again (raise_plan)
+            self.plan_answered(items, items, False)
             return None  # an earlier turn already took these messages
         # pulled: the caller's list of what the turn is handed while it runs (drive holds those too)
         turn_state = Turn(chat_id, items, pulled if pulled is not None else [])
@@ -5163,20 +5166,16 @@ class Bot:
         no_ai = data.settings.llm.provider == "none"
         if chat is None or (at_once and no_ai):
             return
-        if not at_once and not cfg.checkup_at:
-            return
         now = dt.datetime.now(self._zone())
         on = now.date().isoformat()
         kept, raised = db.get_kv(verifier.PLAN_KEY) or {}, db.get_kv(PLAN_RAISED) or {}
-        # a turn raised and not answered: queued or running (QUEUED keeps it across a restart, and
-        # resume runs it), or failed before its answer reached the chat, so it is raised again:
+        # a turn raised and not answered: queued or running (QUEUED keeps it until the turn ends,
+        # and across a restart, where resume runs it), or failed before its answer reached the chat, so it is raised again:
         # PLAN_RETRY_S after the last try that day, any time on a later day
         row = raised.get("row")
-        turn = self.running.get(chat)
-        waiting = row is not None and (
-            row in {x["row"] for x in (db.get_kv(QUEUED) or {}).get(str(chat)) or []}
-            or (turn is not None and row in turn.rows())
-        )
+        waiting = row is not None and row in {
+            x["row"] for x in (db.get_kv(QUEUED) or {}).get(str(chat)) or []
+        }
         failed = row is not None and not waiting
         tries = raised.get("tries", 1) if raised.get("on") == on else 0
         again = failed and (
@@ -5186,8 +5185,10 @@ class Bot:
                 and now.timestamp() >= raised.get("at", 0) + PLAN_RETRY_S[tries - 1]
             )
         )
+        if not (at_once or again or cfg.checkup_at):
+            return  # no morning checkup: only a plan just drawn raises, and its failed turn again
         late = False
-        if not at_once:
+        if not at_once and cfg.checkup_at:
             h, m = (int(x) for x in cfg.checkup_at.split(":"))
             when = now.replace(hour=h, minute=m, second=0, microsecond=0)
             if now < when or not db.was_sent("checkup", now.date(), cfg.checkup_at):
@@ -5230,9 +5231,10 @@ class Bot:
             return  # the same findings as the last turn: it would say the same again
         user = {"first_name": self.t("plan_check_who")}
         row = self.take(chat, user, who, None, self.tt("plan_check_turn"), True, review=True)
-        same = failed and raised.get("key") == key
+        # the tries count per day whatever the key (a ticked step moves it too); a plan the app
+        # just drew starts again
         mark = {"key": key, "on": on, "found": said, "row": row, "at": now.timestamp()}
-        db.set_kv(PLAN_RAISED, {**mark, "tries": tries + 1 if same else 1})
+        db.set_kv(PLAN_RAISED, {**mark, "tries": 1 if at_once else tries + 1})
         self.spawn(self.drive(client, chat))
 
     async def cmd_reminders(self, who, arg, user, chat=None):

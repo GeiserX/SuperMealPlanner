@@ -732,7 +732,8 @@ def plan_turns(data_dir):
 def earlier(db, seconds):
     """The plan's last turn was queued `seconds` earlier than it was."""
     raised = db.get_kv("verifier.plan_raised")
-    db.set_kv("verifier.plan_raised", {**raised, "at": raised["at"] - seconds})
+    if "at" in raised:  # an answered turn keeps no time: nothing waits
+        db.set_kv("verifier.plan_raised", {**raised, "at": raised["at"] - seconds})
 
 
 def answers(b):
@@ -813,6 +814,123 @@ def test_a_plan_turn_that_answered_is_never_raised_again(data_dir, tmp_path, mon
     raise_now(b)
     assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
     assert "row" not in raised  # nothing waits for a retry
+
+
+def test_a_plan_turn_whose_answer_telegram_lost_is_raised_again(data_dir, tmp_path, monkeypatch):
+    from supermealplanner.bot import PLAN_RETRY_S, TelegramError
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    real = b.call
+
+    async def call(client, method, _tries=0, **params):
+        if method == "sendMessage":  # the provider answered, the chat never got it
+            raise TelegramError(method, "Bad Gateway", 502)
+        return await real(client, method, _tries, **params)
+
+    b.call = call
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and answers(b) == []
+    b.call = real
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_a_plan_turn_that_failed_after_its_answer_showed_is_not_raised_again(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    real = b.answer_text
+
+    async def answer_text(*a, **k):  # the answer went out, then a later step of the turn broke
+        await real(*a, **k)
+        raise RuntimeError("broke")
+
+    b.answer_text = answer_text
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    b.answer_text = real
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+
+
+def test_a_restart_once_the_plan_turn_answered_never_raises_it_again(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    real = b.answer_text
+
+    async def answer_text(*a, **k):  # the process stops once the answer went out
+        await real(*a, **k)
+        raise asyncio.CancelledError
+
+    b.answer_text = answer_text
+
+    async def go(bot, first):
+        await (bot.raise_plan(None) if first else bot.resume(None))
+        await asyncio.gather(*bot.tasks, return_exceptions=True)
+
+    run(go(b, True))
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    assert db.get_kv("bot.queued") and "row" in db.get_kv("verifier.plan_raised")
+    b2 = ChatBot(b.data, db)  # the new process replays the turn: the conversation has it
+    run(go(b2, False))
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b2)
+    assert plan_turns(data_dir) == 1 and answers(b2) == []
+
+
+def test_a_new_plan_is_raised_again_after_a_failed_turn_with_the_morning_checkup_off(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    b.data.settings.bot.checkup_at = ""
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})  # checked, with the sure problems alone
+
+    async def drawn():
+        await b.raise_plan(None, at_once=True)
+        await asyncio.gather(*b.tasks)
+
+    run(drawn())
+    assert plan_turns(data_dir) == 1
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)  # the tick: no checkup, the failed turn still goes again
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+    raise_now(b)
+    assert plan_turns(data_dir) == 2
+
+
+def test_the_plan_turn_tries_count_per_day_whatever_moves_the_key(data_dir, tmp_path, monkeypatch):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    for _ in range(len(PLAN_RETRY_S) + 3):
+        raise_now(b)
+        raised = db.get_kv("verifier.plan_raised")  # a step ticked: the key moved, not the plan
+        db.set_kv("verifier.plan_raised", {**raised, "key": "before-the-tick"})
+        earlier(db, 86400)
+    assert plan_turns(data_dir) == len(PLAN_RETRY_S) + 1
+    # a plan the app just drew gets its own tries the same day
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
+
+    async def drawn():
+        await b.raise_plan(None, at_once=True)
+        await asyncio.gather(*b.tasks)
+
+    run(drawn())
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)
+    assert plan_turns(data_dir) == len(PLAN_RETRY_S) + 3
 
 
 def test_a_step_a_cook_could_misread_is_kept_and_every_chat_sees_it(data_dir, tmp_path):
