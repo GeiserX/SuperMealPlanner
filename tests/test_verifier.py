@@ -1232,3 +1232,64 @@ def test_answers_sent_while_a_review_runs_get_one_review_of_the_latest_state(
     assert "Primera." in latest and "Segunda." in latest
     follow = [t for t in lines(data_dir, "turns.jsonl") if b.t("verify_who") in t["new"][-1]]
     assert len(follow) == 1  # one follow-up for both
+
+
+def test_a_restart_before_the_plan_answer_went_out_raises_it_again(data_dir, tmp_path, monkeypatch):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+
+    async def answer_text(*a, **k):  # the conversation took it, then the process stopped
+        raise asyncio.CancelledError
+
+    b.answer_text = answer_text
+
+    async def go(bot, first):
+        await (bot.raise_plan(None) if first else bot.resume(None))
+        await asyncio.gather(*bot.tasks, return_exceptions=True)
+
+    run(go(b, True))
+    assert plan_turns(data_dir) == 1 and answers(b) == []
+    b2 = ChatBot(b.data, db)  # the new process replays it: taken, but never sent
+    run(go(b2, False))
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b2)  # what never reached the chat goes again
+    assert plan_turns(data_dir) == 2 and len(answers(b2)) == 1
+
+
+def test_a_plan_turn_still_queued_on_a_later_day_is_not_replaced(data_dir, tmp_path, monkeypatch):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+
+    async def parked(client, chat):  # the turn waits in the queue
+        pass
+
+    b.drive = parked
+    raise_now(b)
+    raised = db.get_kv("verifier.plan_raised")
+    # the next day, with another plan and other findings, its turn has still not run
+    db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01", "key": "old", "found": "old"})
+    raise_now(b)
+    assert len(db.get_kv("bot.queued")["-100"]) == 1
+    assert db.get_kv("verifier.plan_raised")["row"] == raised["row"]  # still the one to retry
+
+
+def test_a_failed_turn_of_a_new_plan_is_retried_before_the_morning_checkup(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    monkeypatch.setattr(db, "was_sent", lambda *a: False)  # today's checkup has not gone yet
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
+
+    async def drawn():
+        await b.raise_plan(None, at_once=True)
+        await asyncio.gather(*b.tasks)
+
+    run(drawn())
+    assert plan_turns(data_dir) == 1
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)  # its retry is due: it goes now, not after the checkup
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1

@@ -1491,9 +1491,18 @@ class Bot:
             if r["id"] > seen and r["id"] not in done and not (seen and r["who"] == AI)
         ]
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
-            # a plan-check turn replayed after a restart that came once its answer was sent: the
-            # conversation has it, so its problems were raised, never raised again (raise_plan)
-            self.plan_answered(items, items, False)
+            # a plan-check turn replayed after a restart: the conversation took it, but its
+            # problems were raised only when its answer reached the chat. The AI's answer is
+            # logged only once Telegram took it, so a restart before the send leaves the row
+            # for raise_plan to raise again, and one after it never raises it twice
+            sent = [
+                i
+                for i in items
+                if any(
+                    r["role"] == "assistant" and r["who"] == AI and r["id"] > i.row for r in rows
+                )
+            ]
+            self.plan_answered(items, sent, False)
             return None  # an earlier turn already took these messages
         # pulled: the caller's list of what the turn is handed while it runs (drive holds those too)
         turn_state = Turn(chat_id, items, pulled if pulled is not None else [])
@@ -5176,7 +5185,9 @@ class Bot:
         waiting = row is not None and row in {
             x["row"] for x in (db.get_kv(QUEUED) or {}).get(str(chat)) or []
         }
-        failed = row is not None and not waiting
+        if waiting:
+            return  # its turn is still to answer: it reads the plan as it is when it runs
+        failed = row is not None
         tries = raised.get("tries", 1) if raised.get("on") == on else 0
         again = failed and (
             tries == 0
@@ -5191,10 +5202,13 @@ class Bot:
         if not at_once and cfg.checkup_at:
             h, m = (int(x) for x in cfg.checkup_at.split(":"))
             when = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            if now < when or not db.was_sent("checkup", now.date(), cfg.checkup_at):
-                return  # after the checkup
-            if raised.get("on") == on and not again:
-                return
+            # a retry of today's failed turn goes at its time, never waiting for the checkup; the
+            # first raise of a day still waits for it
+            if not (again and tries):
+                if now < when or not db.was_sent("checkup", now.date(), cfg.checkup_at):
+                    return  # after the checkup
+                if raised.get("on") == on and not again:
+                    return
             late = now >= when + dt.timedelta(hours=PLAN_RAISE_H)
         today = self.state.today()
         _, key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
