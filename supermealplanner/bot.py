@@ -1493,13 +1493,16 @@ class Bot:
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
             # a plan-check turn replayed after a restart: the conversation took it, but its
             # problems were raised only when its answer reached the chat. The AI's answer is
-            # logged only once Telegram took it, so a restart before the send leaves the row
-            # for raise_plan to raise again, and one after it never raises it twice
+            # logged only once Telegram took it, and `seen` is the newest row that turn read when
+            # it started, so an answer after both is its own (an earlier turn's came before
+            # `seen`). A restart before the send leaves the row for raise_plan to raise again,
+            # one after it never raises it twice
             sent = [
                 i
                 for i in items
                 if any(
-                    r["role"] == "assistant" and r["who"] == AI and r["id"] > i.row for r in rows
+                    r["role"] == "assistant" and r["who"] == AI and r["id"] > max(seen, i.row)
+                    for r in rows
                 )
             ]
             self.plan_answered(items, sent, False)

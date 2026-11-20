@@ -1293,3 +1293,40 @@ def test_a_failed_turn_of_a_new_plan_is_retried_before_the_morning_checkup(
     earlier(db, PLAN_RETRY_S[0])
     raise_now(b)  # its retry is due: it goes now, not after the checkup
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_an_earlier_turns_answer_is_not_taken_for_the_plan_answer_after_a_restart(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import AI, PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+
+    async def parked(client, chat):  # another turn of the chat runs: the plan turn waits
+        pass
+
+    b.drive = parked
+    raise_now(b)
+    # that turn answers after the plan-check line was queued, without covering it
+    db.add_chat(-100, "assistant", AI, "Lunch is at two.")
+    del b.drive
+
+    async def answer_text(*a, **k):  # the plan turn: the conversation took it, then a restart
+        raise asyncio.CancelledError
+
+    b.answer_text = answer_text
+
+    async def go(bot, first):
+        try:
+            await (bot.drive(None, -100) if first else bot.resume(None))
+        except asyncio.CancelledError:  # the process stopped
+            pass
+        await asyncio.gather(*bot.tasks, return_exceptions=True)
+
+    run(go(b, True))
+    assert plan_turns(data_dir) == 1 and answers(b) == []
+    b2 = ChatBot(b.data, db)  # the replay must not take "Lunch is at two." for its answer
+    run(go(b2, False))
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b2)
+    assert plan_turns(data_dir) == 2 and len(answers(b2)) == 1
