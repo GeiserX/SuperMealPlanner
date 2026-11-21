@@ -1409,6 +1409,8 @@ class Bot:
         done = {k: v for k, v in raised.items() if k in ("key", "on", "found", "drawn")}
         if raised.get("read"):  # the plan as its turn read it is the one raised
             done["key"] = raised["read"]
+            if (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == raised["read"]:
+                done.pop("drawn", None)  # the plan drawn before the turn read it: raised now
         db.set_kv(PLAN_RAISED, done)
 
     def _finish(self, spoken: Spoken, state: str, ears: list[str]) -> None:
@@ -1556,12 +1558,13 @@ class Bot:
             facts += self.chat_reminders(chat_id)
             if (db.get_kv(PLAN_RAISED) or {}).get("row") in {i.row for i in items}:
                 # the plan-check turn reads the plan as it is now. When the check judged it, that
-                # plan is the one raised (read), and a plan drawn before it is raised by this turn;
-                # one the check has not judged is raised once it is (the key stays the raise's)
+                # plan is the one raised (read) once the answer reaches the chat (plan_answered),
+                # and so is a plan drawn before it; a failed turn keeps the drawn mark, so the
+                # drawn plan gets its own tries. One the check has not judged is raised once it is
+                # (the key stays the raise's)
                 _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
                 raised = {k: v for k, v in (db.get_kv(PLAN_RAISED) or {}).items() if k != "read"}
                 if (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read:
-                    raised.pop("drawn", None)
                     raised["read"] = read
                 db.set_kv(PLAN_RAISED, raised)
             turn = {

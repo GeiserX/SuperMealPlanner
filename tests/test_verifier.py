@@ -1131,6 +1131,7 @@ def test_a_plan_drawn_while_the_plan_turn_waits_is_raised_once(data_dir, tmp_pat
 
     run(drawn())
     del b.drive
+    drew = db.get_kv(verifier.PLAN_KEY)["key"]
 
     async def go():
         await b.drive(None, -100)
@@ -1138,7 +1139,8 @@ def test_a_plan_drawn_while_the_plan_turn_waits_is_raised_once(data_dir, tmp_pat
 
     run(go())  # the waiting turn reads the plan drawn meanwhile
     assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
-    assert "drawn" not in db.get_kv("verifier.plan_raised")
+    raised = db.get_kv("verifier.plan_raised")
+    assert "drawn" not in raised and raised["key"] == drew  # the plan it read is the one raised
     # the plan moves before the next tick (a step ticked) and is judged: the turn already raised
     # the drawn plan
     dinner(b.data, MONDAY + dt.timedelta(days=3))
@@ -1149,6 +1151,102 @@ def test_a_plan_drawn_while_the_plan_turn_waits_is_raised_once(data_dir, tmp_pat
     raise_now(b)
     raise_now(b)
     assert plan_turns(data_dir) == 1
+
+
+def parked_drawn(b, db, data_dir, tries=None):
+    """A plan turn is raised and waits behind another turn of the chat (its try `tries` of the
+    day), and a plan is drawn and raised at once meanwhile: it sets drawn."""
+
+    async def parked(client, chat):
+        pass
+
+    b.drive = parked
+
+    async def drawn():
+        await b.raise_plan(None, at_once=True)
+        if tries:
+            db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "tries": tries})
+        drawn_meanwhile(b, db, data_dir)
+        await b.raise_plan(None, at_once=True)
+
+    run(drawn())
+    del b.drive
+    assert db.get_kv("verifier.plan_raised").get("drawn")
+
+
+def drive_plan_turn(b):
+    async def go():
+        await b.drive(None, -100)
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+
+
+def test_a_drawn_plan_read_by_a_turn_that_fails_keeps_its_own_tries(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    b.data.settings.bot.checkup_at = ""
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
+    parked_drawn(b, db, data_dir, tries=len(PLAN_RETRY_S) + 1)  # the day's last try waits
+    drive_plan_turn(b)  # it reads the drawn plan, and the provider fails
+    assert plan_turns(data_dir) == 1 and db.get_kv("verifier.plan_raised").get("drawn")
+    (data_dir / "plugins" / "down").unlink()
+    raise_now(b)  # the drawn plan starts its own tries
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+    assert db.get_kv("verifier.plan_raised").get("drawn") is None
+
+
+def test_a_drawn_plan_outlives_a_turn_that_read_a_plan_not_judged_yet(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    b.data.settings.bot.checkup_at = ""  # only the drawn mark can raise it
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
+    parked_drawn(b, db, data_dir)
+    dinner(b.data, MONDAY + dt.timedelta(days=3))  # the plan moves again before the turn runs
+    b.state.reload()
+    b.data.settings.bot.checkup_at = ""
+    drive_plan_turn(b)  # it reads a plan the check has not judged
+    raised = db.get_kv("verifier.plan_raised")
+    assert plan_turns(data_dir) == 1 and raised.get("drawn") and "read" not in raised
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})  # judged
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
+
+
+def test_only_the_plan_turn_marks_the_plan_it_read(data_dir, tmp_path, monkeypatch):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    plugins = data_dir / "plugins"
+    (plugins / "ai.py").write_text(PLUGIN + HOLDS)
+    b.data.settings.bot.checkup_at = ""
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
+
+    async def go():
+        await b.raise_plan(None, at_once=True)
+        try:
+            await reach(plugins / "waiting")
+            drawn_meanwhile(b, db, data_dir)
+            await b.raise_plan(None, at_once=True)
+        finally:
+            (plugins / "go").write_text("")
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    before = db.get_kv("verifier.plan_raised")
+    assert before.get("drawn")
+    # a person writes before the next tick: their turn reads the plan too, and marks nothing
+    b.take(-100, {"id": 7, "first_name": "Luis"}, "luis", None, "qué cenamos", True)
+    drive_plan_turn(b)
+    assert db.get_kv("verifier.plan_raised") == before
+    raise_now(b)
+    assert plan_turns(data_dir) == 3
 
 
 def no_problems(b):
