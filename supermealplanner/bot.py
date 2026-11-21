@@ -212,18 +212,36 @@ VOICE_WAIT_S = 30
 VOICE_PER_S = 3
 # {"key", "on", "found"}: the plan last raised in the chat, the day and what it said. While its turn
 # has not answered, also "row" (the turn's chat row), "tries" (turns queued for it that day) and
-# "at" (when the last was queued): a turn that fails leaves "row", and raise_plan raises it again;
-# "read" (the key of the plan the turn read, which is the one raised once it answers) and "drawn"
-# (a plan the app drew while the turn was pending, raised after it unless the turn read it)
+# "at" (when the last was queued, or ended without reaching the chat): a turn that fails leaves
+# "row", and raise_plan raises it again; "read" (the key of the plan the turn read, which is the one
+# raised once it answers) with "read_found" (what it had to say of it), and "drawn" (a plan the app
+# drew while the turn was pending, raised after it unless the turn read it)
 PLAN_RAISED = "verifier.plan_raised"
 PLAN_RAISE_H = 2  # hours after bot.checkup_at a finished plan check may still raise its problems
 # a plan-check turn whose answer never reached the chat is raised again this long after the last
-# was queued, one wait per failure in a row: at most 4 turns a day (4 more for each plan the app
+# try ended, one wait per failure in a row: at most 4 turns a day (4 more for each plan the app
 # draws), then none until the next day, so a provider that keeps failing is not called every tick
 PLAN_RETRY_S = (600, 1800, 3600)
 # what an automatic turn's change block may hold: the menu of the days ahead, the pantry and what
 # was done of a step. Never a recipe's text, a new ingredient, a setting or a note nobody asked for
 AUTO_KEYS = frozenset({"plan", "pantry", "tasks"})
+
+
+def sure_problems(found: list) -> list:
+    """The consistency check's problems a plan turn raises: the ones it is sure of."""
+    return [p for p in found if p.kind not in (*verifier.SKIP, "avoided", "unconfirmed")]
+
+
+def verifier_act(found: list[str]) -> list[str]:
+    """The plan check's findings a plan turn raises (timeline, health, nonsense), in order."""
+    return sorted(f for f in found if f.split(":", 1)[0] in verifier.ACT)
+
+
+def plan_said(found: list[str], sure: list) -> str:
+    """The fingerprint of what a plan turn says, so the same problems are never raised twice."""
+    return hashlib.sha256("\n".join([*found, *sorted(p.key for p in sure)]).encode()).hexdigest()
+
+
 PLAN_EVERY_S = 600  # how often the plan as it stands is checked again (judged only when it changed)
 # a new plan's announcement waits for the plan check of the plan as it stands, at most this long;
 # then it goes, saying the review could not run
@@ -1412,8 +1430,10 @@ class Bot:
         done = {k: v for k, v in raised.items() if k in ("key", "on", "found", "drawn")}
         if raised.get("read"):  # the plan as its turn read it is the one raised
             done["key"] = raised["read"]
-            if raised["read"] != raised.get("key"):  # what it said is not what was found then
+            if raised["read"] != raised.get("key"):  # it said the plan it read, not the raised one
                 done.pop("found", None)
+                if raised.get("read_found"):
+                    done["found"] = raised["read_found"]
             if (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == raised["read"]:
                 done.pop("drawn", None)  # the plan drawn before the turn read it: raised now
         db.set_kv(PLAN_RAISED, done)
@@ -1573,9 +1593,18 @@ class Bot:
                 # drawn plan gets its own tries. One the check has not judged is raised once it is
                 # (the key stays the raise's)
                 _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
-                raised = {k: v for k, v in (db.get_kv(PLAN_RAISED) or {}).items() if k != "read"}
+                raised = {
+                    k: v
+                    for k, v in (db.get_kv(PLAN_RAISED) or {}).items()
+                    if k not in ("read", "read_found")
+                }
                 if read == before and (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read:
-                    raised["read"] = read
+                    raised["read"] = read  # and what the turn has to say of it, as raise_plan
+                    found = await asyncio.to_thread(
+                        verifier.plan_findings, data, db, self.state.today()
+                    )
+                    sure = sure_problems(await self.problems() or [])
+                    raised["read_found"] = plan_said(verifier_act(found), sure)
                 db.set_kv(PLAN_RAISED, raised)
             turn = {
                 "conversation": conv.get("id"),
@@ -5276,8 +5305,7 @@ class Bot:
         if raised.get("key") == key and not again:
             settled()
             return  # raised, or its turn is still to answer
-        found = await self.problems() or []
-        sure = [p for p in found if p.kind not in (*verifier.SKIP, "avoided", "unconfirmed")]
+        sure = sure_problems(await self.problems() or [])
         # a private checkup chat: the turn is that person's, so it sees only what they may see
         who = self.person_of(chat) if chat > 0 else None
         if no_ai or (chat > 0 and who is None):  # no turn can come: a private chat of no one
@@ -5295,7 +5323,7 @@ class Bot:
         if not checked and not late:
             return  # the check has not judged this plan yet
         found = await asyncio.to_thread(verifier.plan_findings, data, db, today) if checked else []
-        found = sorted(f for f in found if f.split(":", 1)[0] in verifier.ACT)
+        found = verifier_act(found)
         if not (sure or found):
             if not checked:  # nothing sure, and the check has not judged the plan: never raised
                 if not (failed or drawn):  # today's raise is over; once judged, it goes tomorrow
@@ -5310,9 +5338,7 @@ class Bot:
             else:
                 settled()
             return
-        said = hashlib.sha256(
-            "\n".join([*found, *sorted(p.key for p in sure)]).encode()
-        ).hexdigest()
+        said = plan_said(found, sure)
         if raised.get("found") == said and not failed:
             settled()
             return  # the same findings as the last turn: it would say the same again

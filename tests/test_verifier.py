@@ -1478,6 +1478,18 @@ def test_problems_a_failed_turn_never_said_are_no_repeat_when_they_come_back(
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
 
 
+def test_a_plan_turn_that_failed_on_an_earlier_day_goes_on_the_first_tick(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    raise_now(b)  # it fails late at night: its retry would wait an hour that day
+    assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    (data_dir / "plugins" / "down").unlink()
+    raise_now(b)  # a new day: at once
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
 def test_a_plan_turn_that_failed_late_waits_from_its_failure(data_dir, tmp_path, monkeypatch):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
 
@@ -1496,26 +1508,37 @@ def test_a_plan_turn_that_failed_late_waits_from_its_failure(data_dir, tmp_path,
     assert plan_turns(data_dir) == 2
 
 
-def test_a_plan_turn_that_said_another_plan_keeps_no_fingerprint(data_dir, tmp_path, monkeypatch):
+@pytest.mark.parametrize("comes_back", ["what_it_said", "what_was_queued"])
+def test_a_plan_turn_that_said_another_plan_keeps_what_it_said(
+    data_dir, tmp_path, monkeypatch, comes_back
+):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)  # the window is over
     checked_only(b, db)  # plan A, problems X
+    said_b = "Tuesday's dinner needs the oven while it is in use"
 
-    async def parked(client, chat):
+    async def parked(client, chat):  # a busy provider holds the turn for a while
         pass
 
     b.drive = parked
     raise_now(b)
     del b.drive
-    moved(b)  # before its turn runs, plan B is drawn and judged, with other problems
-    checked_only(b, db, "Tuesday's dinner needs the oven while it is in use")
-    drive_plan_turn(b)  # it reads B and says B's problems
+    queued = db.get_kv("verifier.plan_raised")["found"]  # X
+    moved(b)  # before its turn runs, plan B is drawn and judged, with problems Y
+    checked_only(b, db, said_b)
+    drive_plan_turn(b)  # it reads B and says Y
     raised = db.get_kv("verifier.plan_raised")
-    assert plan_turns(data_dir) == 1 and "found" not in raised
-    moved(b, day=3)  # plan C has A's problems, which the chat never heard
-    checked_only(b, db)
-    db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})
+    assert plan_turns(data_dir) == 1 and "row" not in raised and raised["found"] != queued
+    moved(b, day=3)  # the next day the plan moves again: Y again, or X, which the chat never heard
+    if comes_back == "what_it_said":
+        checked_only(b, db, said_b)
+    else:
+        checked_only(b, db)
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
     raise_now(b)
-    assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
+    if comes_back == "what_it_said":  # Y again: already said
+        assert plan_turns(data_dir) == 1
+    else:
+        assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
 
 
 def test_a_plan_turn_marks_no_plan_that_moved_while_its_facts_were_built(
