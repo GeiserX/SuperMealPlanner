@@ -1762,6 +1762,8 @@ def test_a_plan_drawn_on_an_earlier_day_is_not_raised_at_once(data_dir, tmp_path
     raised = db.get_kv("verifier.plan_raised")
     old = {"key": "old", "found": "old", "drawn": "2000-01-01"}  # another plan, other findings
     db.set_kv("verifier.plan_raised", {**raised, **old})
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})  # judged: only the day keeps it from going at once
     raise_now(b)
     assert plan_turns(data_dir) == 1
 
@@ -1932,6 +1934,27 @@ def test_a_retry_that_went_without_the_check_and_failed_goes_again_with_no_morni
     earlier(db, 600)
     raise_now(b)  # a later day: no morning checkup waits for the check
     assert plan_turns(data_dir) == 4 and len(answers(b)) == 1
+
+
+def test_a_retry_whose_plan_moved_overnight_waits_for_the_next_mornings_check(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as bot_module
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # its turn fails in the evening
+    assert db.get_kv("verifier.plan_raised")["pending"]["judged"] is True
+    monkeypatch.setattr(bot_module, "PLAN_RAISE_H", 2)  # the next morning, just after the checkup
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    earlier(db, 10 * 3600)
+    (data_dir / "plugins" / "down").unlink()
+    moved(b)  # the plan as it is that morning: its check has not ended
+    raise_now(b)
+    assert plan_turns(data_dir) == 1
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # with what the check found
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
 
 
 def test_a_retry_that_went_without_the_check_waits_for_the_next_mornings_check(
@@ -2231,6 +2254,38 @@ def test_a_plan_turn_that_said_another_plan_keeps_what_it_said(
         assert plan_turns(data_dir) == 1
     else:
         assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
+
+
+def test_a_plan_turn_whose_plan_moved_back_while_its_facts_were_built_marks_nothing(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import context
+
+    b, db = drawn_judged(data_dir, tmp_path, monkeypatch, down=False)
+    plan = min((data_dir / "state" / "plans").glob("*.yaml"))
+    before = plan.read_text()
+    b.drive = parked
+    draw_now(b)  # queued for plan A, judged
+    moved(b)  # plan B when the turn starts
+    facts, undone = context.facts, []
+
+    def facts_then_undo(*a, **k):  # the facts are of B; then B is undone, back to A
+        out = facts(*a, **k)
+        if not undone:
+            plan.write_text(before)
+            b.state.reload()
+            b.data.settings.bot.checkup_at = ""
+            undone.append(True)
+        return out
+
+    monkeypatch.setattr(context, "facts", facts_then_undo)
+    del b.drive
+    drive_plan_turn(b)
+    raised = db.get_kv("verifier.plan_raised")
+    assert undone and plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    assert "key" not in raised and "found" not in raised  # A's problems were never read
+    draw_now(b)
+    assert plan_turns(data_dir) == 2
 
 
 def test_a_plan_turn_marks_no_plan_that_moved_while_its_facts_were_built(

@@ -5363,14 +5363,13 @@ class Bot:
         checked = kept.get("key") == key
         # the check has not judged this plan yet: a plan just drawn waits for it that day, and a
         # retry whose plan moved since for PLAN_CHECK_WAIT_S, then goes with or without the
-        # morning checkup; one whose failed turn already went without the check goes so again
-        # that day, and on a later day too when no morning checkup waits for the check
+        # morning checkup; one whose failed turn already went without the check goes so again.
+        # On a later day a morning checkup's own check comes first, as for any first raise
         moved = failed and pending.get("key") != key
-        blind = (
-            failed and not moved and not pending.get("judged") and bool(tries or not cfg.checkup_at)
-        )
+        blind = failed and not moved and not pending.get("judged")
+        retry = (moved or blind) and bool(tries or not cfg.checkup_at)
         waits = drawn or (moved and now.timestamp() < raised.get("at", 0) + PLAN_CHECK_WAIT_S)
-        if not checked and (waits or not (late or moved or blind)):
+        if not checked and (waits or not (late or retry)):
             return
         found = (
             await asyncio.to_thread(verifier.plan_findings, data, db, today, None, kept)
