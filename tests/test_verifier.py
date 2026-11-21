@@ -797,6 +797,9 @@ def test_a_plan_turn_still_queued_is_never_raised_twice_even_after_a_restart(
     run(restart())
     assert plan_turns(data_dir) == 1 and not db.get_kv("bot.queued")  # it failed
     (data_dir / "plugins" / "down").unlink()
+    raise_now(b)  # its retry waits from its failure, not from a day ago
+    assert plan_turns(data_dir) == 1
+    earlier(db, 600)
     raise_now(b)  # what the lost turn did not say is said
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
 
