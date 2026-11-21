@@ -5352,8 +5352,9 @@ class Bot:
         # the tries count per day whatever the key (a ticked step moves it too); a plan the app
         # just drew starts again
         # a plan the check has not judged (its window is over) is not the one raised: once judged,
-        # its findings are raised too
-        raised_key = key if checked else raised.get("key")
+        # its findings are raised too. The key kept is the last one that reached the chat, never
+        # a failed turn's (an undo back to that plan raises it)
+        raised_key = key if checked else (None if failed else raised.get("key"))
         mark = {"key": raised_key, "on": on, "found": said, "row": row, "at": now.timestamp()}
         db.set_kv(PLAN_RAISED, {**mark, "tries": 1 if at_once else tries + 1})
         self.spawn(self.drive(client, chat))

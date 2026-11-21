@@ -1554,6 +1554,27 @@ def test_a_late_retry_on_a_plan_not_judged_yet_leaves_its_findings_to_be_raised(
     assert plan_turns(data_dir) == 3 and len(answers(b)) == 2
 
 
+def test_a_late_retry_never_counts_the_failed_plan_as_raised(data_dir, tmp_path, monkeypatch):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
+    plan = min((data_dir / "state" / "plans").glob("*.yaml"))
+    before = plan.read_text()
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # its turn fails
+    moved(b)  # a step ticked: the check has not judged the plan yet
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, 600)
+    raise_now(b)  # the retry goes with the sure problems alone
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+    checkup = b.data.settings.bot.checkup_at
+    plan.write_text(before)  # the tick is undone: the failed plan again, whose finding nobody heard
+    b.state.reload()
+    b.data.settings.bot.checkup_at = checkup
+    judge(b, db, {"nonsense": [OVEN]})
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)
+    assert plan_turns(data_dir) == 3 and len(answers(b)) == 2
+
+
 def test_a_drawn_mark_set_while_the_plan_turn_reads_the_plan_stays(data_dir, tmp_path, monkeypatch):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
 
