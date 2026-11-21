@@ -5332,9 +5332,10 @@ class Bot:
                 return  # a failed turn's retry and a drawn plan wait for the check
             if late:
                 db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # nothing to say today
-            elif failed:  # what its failed turn had to say is gone: no turn is owed, and what
-                done = ("key", "on")  # it never said is no repeat if it comes back
-                db.set_kv(PLAN_RAISED, {k: v for k, v in raised.items() if k in done})
+            elif failed:  # what its failed turn had to say is gone: no turn is owed. The plan
+                # raised is this one, with nothing to say: the failed one, if it comes back (an
+                # undo), and what it never said are raised then
+                db.set_kv(PLAN_RAISED, {"key": key, "on": on})
             else:
                 settled()
             return

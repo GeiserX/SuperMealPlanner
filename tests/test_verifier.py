@@ -1490,6 +1490,36 @@ def test_a_plan_turn_that_failed_on_an_earlier_day_goes_on_the_first_tick(
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
 
 
+def test_a_failed_plan_undone_after_its_retry_was_cancelled_is_raised(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    b.data.settings.bot.checkup_at = ""
+    plan = min((data_dir / "state" / "plans").glob("*.yaml"))
+    before = plan.read_text()
+    checked_only(b, db)  # plan A, problems X
+
+    async def drawn():
+        await b.raise_plan(None, at_once=True)
+        await asyncio.gather(*b.tasks)
+
+    run(drawn())  # its turn fails
+    moved(b)  # fixed before the retry: the check finds nothing
+    checked_only(b, db, None)
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and "row" not in db.get_kv("verifier.plan_raised")
+    plan.write_text(before)  # the change is undone: plan A again, whose problems nobody heard
+    b.state.reload()
+    b.data.settings.bot.checkup_at = ""
+    checked_only(b, db)
+    run(drawn())
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
 def test_a_plan_turn_that_failed_late_waits_from_its_failure(data_dir, tmp_path, monkeypatch):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
 
