@@ -5364,8 +5364,11 @@ class Bot:
         # the check has not judged this plan yet: a plan just drawn waits for it that day, and a
         # retry whose plan moved since for PLAN_CHECK_WAIT_S, then goes with or without the
         # morning checkup; one whose failed turn already went without the check goes so again
+        # that day, and on a later day too when no morning checkup waits for the check
         moved = failed and pending.get("key") != key
-        blind = failed and not moved and not pending.get("judged")
+        blind = (
+            failed and not moved and not pending.get("judged") and bool(tries or not cfg.checkup_at)
+        )
         waits = drawn or (moved and now.timestamp() < raised.get("at", 0) + PLAN_CHECK_WAIT_S)
         if not checked and (waits or not (late or moved or blind)):
             return
@@ -5377,6 +5380,8 @@ class Bot:
         found = verifier_act(found)
         _, now_key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
         if now_key != key:  # it moved while its problems were gathered: decided on the next tick
+            if at_once and not drawn:  # the plan just drawn is owed its raise, as one drawn
+                db.set_kv(PLAN_RAISED, {**(db.get_kv(PLAN_RAISED) or {}), "drawn": on})
             return
         if not (sure or found):
             if not checked:  # nothing sure, and the check has not judged the plan: never raised

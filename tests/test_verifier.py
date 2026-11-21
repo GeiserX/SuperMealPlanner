@@ -1924,10 +1924,97 @@ def test_a_retry_that_went_without_the_check_and_failed_goes_again_with_no_morni
     earlier(db, 600)
     raise_now(b)  # the retry goes with the sure problems, and fails too
     assert plan_turns(data_dir) == 2 and not answers(b)
-    (data_dir / "plugins" / "down").unlink()
     earlier(db, 1800)
-    raise_now(b)  # its own retry, still with no verdict
-    assert plan_turns(data_dir) == 3 and len(answers(b)) == 1
+    raise_now(b)  # its own retry that day, still with no verdict, fails too
+    assert plan_turns(data_dir) == 3 and not answers(b)
+    (data_dir / "plugins" / "down").unlink()
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    earlier(db, 600)
+    raise_now(b)  # a later day: no morning checkup waits for the check
+    assert plan_turns(data_dir) == 4 and len(answers(b)) == 1
+
+
+def test_a_retry_that_went_without_the_check_waits_for_the_next_mornings_check(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as bot_module
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    raise_now(b)  # the window is over: the sure problems alone, and its turn fails
+    assert db.get_kv("verifier.plan_raised")["pending"]["judged"] is False
+    monkeypatch.setattr(bot_module, "PLAN_RAISE_H", 2)  # the next morning, just after the checkup
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    earlier(db, 600)
+    (data_dir / "plugins" / "down").unlink()
+    raise_now(b)  # that morning's check has not ended: the retry waits for it
+    assert plan_turns(data_dir) == 1
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # with what the check found
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_a_plan_drawn_that_moves_while_its_problems_are_gathered_is_still_raised(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = drawn_judged(data_dir, tmp_path, monkeypatch, down=False)
+    judge(b, db, {"nonsense": [OVEN]})
+    real = b.problems
+
+    async def moving():  # a step is ticked while the consistency check runs
+        b.problems = real
+        moved(b)
+        return await real()
+
+    b.problems = moving
+    draw_now(b)  # its one raise at once: decided on the next tick
+    assert plan_turns(data_dir) == 0
+    judge(b, db, {"nonsense": [OVEN]})  # the plan as it is now
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    raise_now(b)
+    assert plan_turns(data_dir) == 1
+
+
+def test_a_plan_turn_whose_consistency_check_could_not_run_marks_no_unjudged_plan(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    b.drive = parked
+    raise_now(b)  # the window is over: queued with the sure problems alone
+    assert db.get_kv("verifier.plan_raised")["pending"]["judged"] is False
+    real = b.problems
+
+    async def could_not_run():  # None, once, as the turn gathers what it has to say
+        b.problems = real
+
+    b.problems = could_not_run
+    del b.drive
+    drive_plan_turn(b)
+    raised = db.get_kv("verifier.plan_raised")
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1 and "key" not in raised
+    judge(b, db, {"nonsense": [OVEN]})
+    db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})  # the next morning
+    raise_now(b)  # what the check found was never said
+    assert plan_turns(data_dir) == 2
+
+
+def test_a_private_checkup_chat_counts_what_it_cannot_see_as_said(data_dir, tmp_path, monkeypatch):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    cfg = b.data.settings.bot
+    cfg.checkup_chat = cfg.people["ana"]
+    health = "health: Luis gets the salt he must avoid"
+    judge(b, db, {"health": [health.split(": ", 1)[1]]})
+    raise_now(b)  # the turn answers in ana's chat, which never sees health findings
+    assert plan_turns(data_dir) == 1
+    assert sends(b, cfg.people["ana"]) and health not in verifier.plan_findings(
+        b.data, db, b.state.today(), "ana"
+    )
+    moved(b, rid="merluza-cena-1")  # another plan, the same problems
+    cfg.checkup_chat = cfg.people["ana"]
+    judge(b, db, {"health": [health.split(": ", 1)[1]]})
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)  # nothing it did not say
+    assert plan_turns(data_dir) == 1
 
 
 def test_a_retry_whose_plan_moves_while_its_problems_are_gathered_waits_for_the_next_tick(
