@@ -106,13 +106,27 @@ def test_the_rules_tell_the_ai_what_an_automatic_turn_may_touch(data_dir, tmp_pa
 
 def plan_turns(b, monkeypatch):
     taken = []
-    b.take = lambda chat, user, who, m, text, asked, **k: taken.append(text)
+
+    def take(chat, user, who, m, text, asked, **k):
+        taken.append(text)
+        return 1000 + len(taken)  # its log row, as the real take returns
+
+    b.take = take
 
     async def drive(client, chat):
         pass
 
     b.drive = drive
     return taken
+
+
+def answered(b):
+    """The plan turn's answer reached the chat, as the drive reports it."""
+    from types import SimpleNamespace
+
+    row = (b.state.db.get_kv("verifier.plan_raised") or {}).get("row")
+    item = SimpleNamespace(row=row, review=True)
+    b.plan_answered([item], [item])
 
 
 def test_a_new_plan_is_raised_once_and_never_for_the_same_findings(data_dir, tmp_path, monkeypatch):
@@ -127,6 +141,7 @@ def test_a_new_plan_is_raised_once_and_never_for_the_same_findings(data_dir, tmp
     run(verifier.check_plan(b.data, db, MONDAY))
     run(b.raise_plan(None, at_once=True))
     assert taken == [b.t("plan_check_turn")]
+    answered(b)
     run(b.raise_plan(None, at_once=True))  # the same plan: raised once
     assert len(taken) == 1
     # a new plan the same day, with findings of its own: raised now, not tomorrow
@@ -136,6 +151,7 @@ def test_a_new_plan_is_raised_once_and_never_for_the_same_findings(data_dir, tmp
     run(verifier.check_plan(b.data, db, MONDAY))
     run(b.raise_plan(None, at_once=True))
     assert len(taken) == 2
+    answered(b)
     # another day, another plan, the same findings: nothing new to say
     raised = db.get_kv("verifier.plan_raised")
     db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01", "key": "old"})
