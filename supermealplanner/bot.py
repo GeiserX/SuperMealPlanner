@@ -1450,8 +1450,9 @@ class Bot:
             key = found = None
         if key is not None:
             done["key"] = key
-        elif not self.data.settings.bot.checkup_at:  # what the check finds is still owed (owed),
-            # and with no morning checkup to raise it the plan counts as drawn until it is
+        elif not self.data.settings.bot.checkup_at and "drawn" not in done:
+            # what the check finds is still owed (owed), and with no morning checkup to raise it
+            # the plan counts as drawn until it is; a plan drawn meanwhile is owed in full
             done["drawn"] = dt.datetime.now(self._zone()).date().isoformat()
             done["owed"] = True
         if found is not None:
@@ -2422,11 +2423,12 @@ class Bot:
                 # a plan-check row joins only a turn whose facts showed what it was raised for: the
                 # sure problems alone, or the check's verdict on that plan; else, as a file (its
                 # own fetch), it waits for a turn of its own
-                pending = (db.get_kv(PLAN_RAISED) or {}).get("pending") or {}
+                raised = db.get_kv(PLAN_RAISED) or {}
+                pending = raised.get("pending") or {}
                 shown = not pending.get("judged") or pending.get("key") == turn_state.verdict
 
-                def waits(i: Item) -> bool:
-                    return i.file or (i.review and not shown)
+                def waits(i: Item) -> bool:  # a row whose mark is not written yet waits too
+                    return i.file or (i.review and not (shown and raised.get("row") == i.row))
 
                 got = [i for i in queue if not waits(i)]
                 if len(got) < len(queue):
@@ -5385,12 +5387,7 @@ class Bot:
         moved = failed and pending.get("key") != key
         blind = failed and not moved and not pending.get("judged")
         retry = (moved or blind) and bool(tries or not cfg.checkup_at)
-        # a check that is running may judge it: nothing unjudged goes before it ends
-        waits = (
-            drawn
-            or self.checking
-            or (moved and now.timestamp() < raised.get("at", 0) + PLAN_CHECK_WAIT_S)
-        )
+        waits = drawn or (moved and now.timestamp() < raised.get("at", 0) + PLAN_CHECK_WAIT_S)
         if not checked and (waits or not (late or retry)):
             return
         found = (
@@ -5400,12 +5397,12 @@ class Bot:
         )
         found = verifier_act(found)
         _, now_key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
-        if owed and not found and not failed:  # the check found nothing more to say
-            settled()
-            return
         if now_key != key:  # it moved while its problems were gathered: decided on the next tick
             if at_once and not drawn:  # the plan just drawn is owed its raise, as one drawn
                 db.set_kv(PLAN_RAISED, {**(db.get_kv(PLAN_RAISED) or {}), "drawn": on})
+            return
+        if owed and not found and not failed:  # the check found nothing more to say
+            settled()
             return
         if not (sure or found):
             if not checked:  # nothing sure, and the check has not judged the plan: never raised

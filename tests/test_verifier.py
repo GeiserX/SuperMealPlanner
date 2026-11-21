@@ -1241,6 +1241,38 @@ def test_a_plan_drawn_while_the_plan_turn_runs_is_raised_once_it_ends(
     assert plan_turns(data_dir) == 2 and "drawn" not in db.get_kv("verifier.plan_raised")
 
 
+def test_a_plan_drawn_while_an_unjudged_plan_turn_runs_is_raised_in_full(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    plugins = data_dir / "plugins"
+    (plugins / "ai.py").write_text(PLUGIN + HOLDS)
+    b.data.settings.bot.checkup_at = ""
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
+    b.drive = parked
+    draw_now(b)  # queued for plan A, judged
+    moved(b, day=3)  # the turn reads a plan the check has not judged
+    del b.drive
+
+    async def go():
+        turn = asyncio.ensure_future(b.drive(None, -100))
+        try:
+            await reach(plugins / "waiting", turn)
+            drawn_meanwhile(b, db, data_dir)  # judged with nothing found, its sure problems
+            await b.raise_plan(None, at_once=True)
+        finally:
+            (plugins / "go").write_text("")
+        await turn
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    raised = db.get_kv("verifier.plan_raised")
+    assert plan_turns(data_dir) == 1 and raised.get("drawn") and not raised.get("owed")
+    raise_now(b)  # the plan drawn meanwhile, raised as any drawn plan
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
+
+
 def test_a_plan_drawn_while_the_plan_turn_waits_is_raised_once(data_dir, tmp_path, monkeypatch):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
     b.data.settings.bot.checkup_at = ""
@@ -1944,7 +1976,7 @@ def test_a_retry_whose_plan_moved_goes_after_its_wait_with_no_morning_checkup(
     assert plan_turns(data_dir) == 3
 
 
-def test_a_retry_whose_plan_moved_overnight_waits_for_a_running_check_with_no_checkup(
+def test_a_retry_whose_plan_moved_overnight_still_owes_the_checks_findings(
     data_dir, tmp_path, monkeypatch
 ):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
@@ -1954,11 +1986,7 @@ def test_a_retry_whose_plan_moved_overnight_waits_for_a_running_check_with_no_ch
     db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
     earlier(db, 3 * 3600)  # longer ago than the wait for the check
     (data_dir / "plugins" / "down").unlink()
-    moved(b)  # the plan as it is today
-    b.checking = True  # its check runs, started by the same tick
-    raise_now(b)
-    assert plan_turns(data_dir) == 1
-    b.checking = False  # it ended with no verdict
+    moved(b)  # the plan as it is today, not judged yet
     raise_now(b)  # with the sure problems alone
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
     judge(b, db, {"nonsense": [OVEN]})
