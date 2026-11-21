@@ -1545,32 +1545,48 @@ def test_a_plan_turn_says_none_of_a_verdict_that_came_while_its_facts_were_built
     assert plan_turns(data_dir) == 2
 
 
-def test_a_plan_turn_counts_as_said_a_verdict_its_facts_showed(data_dir, tmp_path, monkeypatch):
+def test_a_plan_turn_shows_no_verdict_that_came_while_its_facts_were_built(
+    data_dir, tmp_path, monkeypatch
+):
     from supermealplanner import context
 
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
     b.drive = parked
     raise_now(b)  # the window is over: queued with the sure problems alone
-    problems_now, verdicts = context.problems_now, []
+    problems_now, verdicts, shown = context.problems_now, [], []
 
     def verdict_then_problems(*a, **k):  # the check ends while the facts are built
         if not verdicts:
             verdicts.append(judge(b, db, {"nonsense": [OVEN]}))
-        return problems_now(*a, **k)
+        out = problems_now(*a, **k)
+        shown.append("\n".join(out))
+        return out
 
     monkeypatch.setattr(context, "problems_now", verdict_then_problems)
     del b.drive
     drive_plan_turn(b)
+    assert verdicts and shown and OVEN not in shown[0]  # the turn could not say it
     raised = db.get_kv("verifier.plan_raised")
-    assert verdicts and plan_turns(data_dir) == 1 and raised.get("key")
+    assert plan_turns(data_dir) == 1 and "key" not in raised
     db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})  # the next morning
-    raise_now(b)  # the turn said what the check found: never again
-    assert plan_turns(data_dir) == 1
-    moved(b, rid="merluza-cena-1")  # another plan, the same problems
-    b.data.settings.bot.checkup_at = ""
+    raise_now(b)  # what the check found is said now
+    assert plan_turns(data_dir) == 2
+
+
+def test_a_plan_turn_with_no_kept_conversation_keeps_its_chat_working(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    (data_dir / "plugins" / "ai.py").write_text(
+        PLUGIN + FLAKY.replace('"conversation": "c1"}', '"conversation": "c1", "kept": False}')
+    )
     judge(b, db, {"nonsense": [OVEN]})
-    draw_now(b)
-    assert plan_turns(data_dir) == 1
+    raise_now(b)  # answered, and the provider kept no conversation
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    assert isinstance(db.get_kv("bot.conversation.-100")["seen"], int)
+    db.set_kv("verifier.plan_raised", None)  # raised again: the chat still answers
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
 
 
 def test_a_plan_turn_whose_plan_moved_with_the_same_problems_counts_them_as_said(
@@ -1892,6 +1908,47 @@ def test_a_retry_whose_plan_moved_goes_after_its_wait_with_no_morning_checkup(
     monkeypatch.setattr(bot_module, "PLAN_CHECK_WAIT_S", 0)  # the wait is over
     raise_now(b)  # with the sure problems alone, though no checkup runs
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_a_retry_that_went_without_the_check_and_failed_goes_again_with_no_morning_checkup(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as bot_module
+
+    monkeypatch.setattr(bot_module, "PLAN_CHECK_WAIT_S", 0)  # the check never ends in time
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # its turn fails
+    moved(b)  # the check of the plan as it is never ends
+    b.data.settings.bot.checkup_at = ""
+    earlier(db, 600)
+    raise_now(b)  # the retry goes with the sure problems, and fails too
+    assert plan_turns(data_dir) == 2 and not answers(b)
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, 1800)
+    raise_now(b)  # its own retry, still with no verdict
+    assert plan_turns(data_dir) == 3 and len(answers(b)) == 1
+
+
+def test_a_retry_whose_plan_moves_while_its_problems_are_gathered_waits_for_the_next_tick(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # its turn fails
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, 600)
+    real = b.problems
+
+    async def moving():  # a step is ticked while the consistency check runs
+        b.problems = real
+        moved(b)
+        return await real()
+
+    b.problems = moving
+    raise_now(b)  # neither said with the check's findings left out, nor cancelled
+    raised = db.get_kv("verifier.plan_raised")
+    assert plan_turns(data_dir) == 1 and raised.get("row") and "key" not in raised
 
 
 def test_a_late_retry_never_counts_the_failed_plan_as_raised(data_dir, tmp_path, monkeypatch):

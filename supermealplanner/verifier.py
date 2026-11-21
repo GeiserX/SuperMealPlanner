@@ -636,11 +636,12 @@ async def check_plan(data: Data, db: DB, today: dt.date) -> dict | None:
     return kept
 
 
-def plan_findings(data: Data, db: DB, today: dt.date, viewer=None) -> list[str]:
+def plan_findings(data: Data, db: DB, today: dt.date, viewer=None, kept=None) -> list[str]:
     """What the plan check found about the plan as it is now, for the AI's facts: nothing when the
     plan changed since (the next check is about the new one). In a private chat only the timeline
-    and the plain mistakes: the others may name someone else's notes or health."""
-    kept = db.get_kv(PLAN_KEY) or {}
+    and the plain mistakes: the others may name someone else's notes or health. kept: the check's
+    verdict as read earlier (PLAN_KEY), so a caller knows which one the facts show."""
+    kept = (db.get_kv(PLAN_KEY) or {}) if kept is None else kept
     if not kept.get("found") or kept.get("key") != plan_brief(data, db, today)[1]:
         return []
     return [

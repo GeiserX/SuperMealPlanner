@@ -1597,12 +1597,17 @@ class Bot:
                 _, before = await asyncio.to_thread(
                     verifier.plan_brief, data, db, self.state.today()
                 )
-                # the facts show the check's findings of a plan it judged before they were built,
-                # and of one judged while they were, only when the verdict came before their
-                # problems section (verifier.plan_findings reads it then)
-                shown = (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == before
+                # the check's verdict the facts show: the one kept before they are built, so a
+                # verdict that ends meanwhile is in neither the facts nor what the turn said
+                shown = db.get_kv(verifier.PLAN_KEY) or {}
             facts = await asyncio.to_thread(
-                context.facts, data, db, self.state.today(), viewer, not private
+                context.facts,
+                data,
+                db,
+                self.state.today(),
+                viewer,
+                not private,
+                shown if plan_turn else None,
             )
             facts += self.chat_reminders(chat_id)
             if plan_turn:
@@ -1615,15 +1620,11 @@ class Bot:
                 # drawn mark, so the drawn plan gets its own tries. One the check had not judged
                 # is raised once it is, with what the check finds
                 found = await asyncio.to_thread(
-                    verifier.plan_findings, data, db, self.state.today()
+                    verifier.plan_findings, data, db, self.state.today(), None, shown
                 )
                 listed = await self.problems()  # None: the consistency check could not run
                 _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
-                # a verdict that came while the facts were built counts as said by its lines in them
-                seen = [f for f in found if f"\n- {f}\n" in f"{facts}\n"]
-                judged = (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read and (
-                    shown or bool(seen)
-                )
+                judged = shown.get("key") == read
                 # read and written with no wait between: a drawn mark set meanwhile stays
                 raised = {
                     k: v
@@ -1632,7 +1633,7 @@ class Bot:
                 }
                 raised["read"] = read if read == before else ""
                 if read == before and listed is not None:
-                    act = verifier_act(found if shown else seen) if judged else []
+                    act = verifier_act(found) if judged else []
                     raised["read_found"] = plan_said(act, sure_problems(listed))
                     raised["read_judged"] = judged
                 db.set_kv(PLAN_RAISED, raised)
@@ -5362,13 +5363,21 @@ class Bot:
         checked = kept.get("key") == key
         # the check has not judged this plan yet: a plan just drawn waits for it that day, and a
         # retry whose plan moved since for PLAN_CHECK_WAIT_S, then goes with or without the
-        # morning checkup
+        # morning checkup; one whose failed turn already went without the check goes so again
         moved = failed and pending.get("key") != key
+        blind = failed and not moved and not pending.get("judged")
         waits = drawn or (moved and now.timestamp() < raised.get("at", 0) + PLAN_CHECK_WAIT_S)
-        if not checked and (waits or not (late or moved)):
+        if not checked and (waits or not (late or moved or blind)):
             return
-        found = await asyncio.to_thread(verifier.plan_findings, data, db, today) if checked else []
+        found = (
+            await asyncio.to_thread(verifier.plan_findings, data, db, today, None, kept)
+            if checked
+            else []
+        )
         found = verifier_act(found)
+        _, now_key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
+        if now_key != key:  # it moved while its problems were gathered: decided on the next tick
+            return
         if not (sure or found):
             if not checked:  # nothing sure, and the check has not judged the plan: never raised
                 if not (failed or drawn):  # today's raise is over; once judged, it goes tomorrow

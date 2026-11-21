@@ -276,6 +276,28 @@ def test_a_busy_notice_telegram_refuses_still_wakes_the_chat_when_the_provider_i
     assert refused == ["sendMessage"] and b.t("bot_error") not in ChatBot.texts(b)
 
 
+def test_the_wake_is_set_before_the_busy_notice_goes(data_dir, tmp_path):
+    b = ChatBot(plugin_data(data_dir), DB(tmp_path / "b.db"))
+    woken = []
+
+    def wake(client, chat_id, seconds):
+        woken.append((chat_id, seconds))
+        return asyncio.sleep(0)
+
+    async def send(*a, **k):  # a send that breaks with no TelegramError
+        raise RuntimeError("the send broke")
+
+    b.wake, b.send = wake, send
+
+    async def go():
+        with pytest.raises(RuntimeError):
+            await b.rest(None, 7, [], 600)
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    assert woken == [(7, 600.0)]  # its messages still go when the provider is back
+
+
 def test_a_busy_spell_of_hours_says_hours(data_dir, tmp_path):
     data = plugin_data(data_dir)
     b = ChatBot(data, DB(tmp_path / "b.db"))
