@@ -1433,16 +1433,17 @@ class Bot:
         if row not in {i.row for i in took}:  # not raised: its retry waits from now
             db.set_kv(PLAN_RAISED, {**raised, "at": time.time()})
             return
-        # what it said reached the chat: the plan it read, else the one it was raised for (a plan
+        # what it said reached the chat: what the turn read, else what it was raised for (a plan
         # the check had not judged leaves the last raised key, so it is raised once judged). A
-        # turn that read another plan the check had not judged, or one that moved as it read it,
-        # said nothing that can be told apart: nothing is counted as raised
+        # turn that read another plan it cannot tell what it said of (it moved as the turn read
+        # it, or the consistency check could not run) counts nothing as raised
         done = {k: v for k, v in raised.items() if k in ("key", "on", "found", "drawn")}
         pending = raised.get("pending") or {}
         key, found = pending.get("key") if pending.get("judged") else None, pending.get("found")
         if "read_found" in raised:
-            key, found = raised["read"], raised["read_found"]
-            if (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == raised["read"]:
+            found = raised["read_found"]
+            key = raised["read"] if raised.get("read_judged") else None
+            if key is not None and (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == key:
                 done.pop("drawn", None)  # the plan drawn before the turn read it: raised now
         elif "read" in raised and raised["read"] != pending.get("key"):
             key = found = None
@@ -1596,35 +1597,39 @@ class Bot:
                 _, before = await asyncio.to_thread(
                     verifier.plan_brief, data, db, self.state.today()
                 )
+                # the facts show the check's findings only of a plan it judged before they were
+                # built (verifier.plan_findings): one judged meanwhile is said with none
+                shown = (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == before
             facts = await asyncio.to_thread(
                 context.facts, data, db, self.state.today(), viewer, not private
             )
             facts += self.chat_reminders(chat_id)
             if plan_turn:
                 # the plan-check turn reads the plan as it is now (read; "" when it moved while
-                # the turn gathered it). When the check judged it, that plan is the one raised
-                # once the answer reaches the chat (plan_answered), and so is a plan drawn before
-                # it; a failed turn keeps the drawn mark, so the drawn plan gets its own tries.
-                # One the check has not judged is raised once it is. What it has to say of it, as
-                # raise_plan, is gathered before the key is read again, so both are of one plan
+                # the turn gathered it) and says what the facts show of it (read_found, as
+                # raise_plan's fingerprint), gathered before the key is read again, so both are of
+                # one plan. Once the answer reaches the chat (plan_answered) that is what was
+                # said; the plan itself counts as raised only when the check had judged it
+                # (read_judged), and so does a plan drawn before it; a failed turn keeps the
+                # drawn mark, so the drawn plan gets its own tries. One the check had not judged
+                # is raised once it is, with what the check finds
                 found = await asyncio.to_thread(
                     verifier.plan_findings, data, db, self.state.today()
                 )
                 listed = await self.problems()  # None: the consistency check could not run
                 _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
-                said = None
-                judged = (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read
-                if read == before and judged and listed is not None:
-                    said = plan_said(verifier_act(found), sure_problems(listed))
+                judged = shown and (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read
                 # read and written with no wait between: a drawn mark set meanwhile stays
                 raised = {
                     k: v
                     for k, v in (db.get_kv(PLAN_RAISED) or {}).items()
-                    if k not in ("read", "read_found")
+                    if k not in ("read", "read_found", "read_judged")
                 }
                 raised["read"] = read if read == before else ""
-                if said is not None:
-                    raised["read_found"] = said
+                if read == before and listed is not None:
+                    act = verifier_act(found) if judged else []
+                    raised["read_found"] = plan_said(act, sure_problems(listed))
+                    raised["read_judged"] = judged
                 db.set_kv(PLAN_RAISED, raised)
             turn = {
                 "conversation": conv.get("id"),

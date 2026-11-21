@@ -1040,6 +1040,10 @@ def test_a_plan_turn_another_turn_took_and_answered_is_never_raised_again(
     earlier(db, PLAN_RETRY_S[0])
     raise_now(b)
     assert plan_turns(data_dir) == 1
+    raised = db.get_kv("verifier.plan_raised")
+    db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})  # the next morning
+    raise_now(b)  # the same problems: what the plan turn was raised for was said
+    assert plan_turns(data_dir) == 1
 
 
 @pytest.mark.parametrize("sent", [True, False])
@@ -1311,8 +1315,7 @@ def test_a_drawn_plan_outlives_a_turn_that_read_a_plan_not_judged_yet(
     drive_plan_turn(b)  # it reads a plan the check has not judged
     raised = db.get_kv("verifier.plan_raised")
     assert plan_turns(data_dir) == 1 and raised.get("drawn") and "read" not in raised
-    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
-    db.set_kv(verifier.PLAN_KEY, {"key": key})  # judged
+    judge(b, db, {"nonsense": [OVEN]})  # judged, with a finding that turn never saw
     raise_now(b)
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
 
@@ -1383,8 +1386,7 @@ def test_a_plan_turn_that_read_a_plan_the_check_had_not_judged_leaves_it_to_be_r
     raised = db.get_kv("verifier.plan_raised")
     # what it said is of neither plan as judged: neither counts as raised
     assert plan_turns(data_dir) == 1 and "key" not in raised and "read" not in raised
-    _brief, new = verifier.plan_brief(b.data, db, b.state.today())
-    db.set_kv(verifier.PLAN_KEY, {"key": new})  # judged
+    judge(b, db, {"nonsense": [OVEN]})  # judged, with a finding that turn never saw
     db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})  # the next morning
     raise_now(b)
     assert plan_turns(data_dir) == 2  # its findings are raised
@@ -1515,6 +1517,69 @@ def test_a_plan_turn_that_read_another_plan_the_check_had_not_judged_counts_noth
     b.data.settings.bot.checkup_at = ""
     draw_now(b)
     assert plan_turns(data_dir) == 2
+
+
+def test_a_plan_turn_says_none_of_a_verdict_that_came_while_its_facts_were_built(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import context
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    b.drive = parked
+    raise_now(b)  # the window is over: queued with the sure problems alone
+    facts, verdicts = context.facts, []
+
+    def facts_then_verdict(*a, **k):  # built with no verdict; then the check ends
+        out = facts(*a, **k)
+        if not verdicts:
+            verdicts.append(judge(b, db, {"nonsense": [OVEN]}))
+        return out
+
+    monkeypatch.setattr(context, "facts", facts_then_verdict)
+    del b.drive
+    drive_plan_turn(b)
+    raised = db.get_kv("verifier.plan_raised")
+    assert verdicts and plan_turns(data_dir) == 1 and "key" not in raised
+    db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})  # the next morning
+    raise_now(b)  # what the check found was never said
+    assert plan_turns(data_dir) == 2
+
+
+def test_a_plan_turn_whose_plan_moved_with_the_same_problems_counts_them_as_said(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = drawn_judged(data_dir, tmp_path, monkeypatch, down=False)
+    b.drive = parked
+    draw_now(b)  # queued for plan A
+    moved(b, rid="merluza-cena-1")  # plan B, the same problems, not judged yet
+    del b.drive
+    drive_plan_turn(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})  # B judged: nothing the turn did not say
+    draw_now(b)
+    assert plan_turns(data_dir) == 1
+
+
+def test_a_plan_turn_whose_consistency_check_could_not_run_keeps_what_it_was_raised_for(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = drawn_judged(data_dir, tmp_path, monkeypatch, down=False)
+    b.drive = parked
+    draw_now(b)  # queued for plan A, its sure problems
+    real = b.problems
+
+    async def could_not_run():  # None, once, as the turn gathers what it has to say
+        b.problems = real
+
+    b.problems = could_not_run
+    del b.drive
+    drive_plan_turn(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    raised = db.get_kv("verifier.plan_raised")
+    db.set_kv("verifier.plan_raised", {**raised, "key": "another-plan"})  # the same problems
+    draw_now(b)
+    assert plan_turns(data_dir) == 1
 
 
 def test_a_drawn_plan_needs_no_turn_with_the_same_problems_or_none(data_dir, tmp_path, monkeypatch):
