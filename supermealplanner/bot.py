@@ -1597,8 +1597,9 @@ class Bot:
                 _, before = await asyncio.to_thread(
                     verifier.plan_brief, data, db, self.state.today()
                 )
-                # the facts show the check's findings only of a plan it judged before they were
-                # built (verifier.plan_findings): one judged meanwhile is said with none
+                # the facts show the check's findings of a plan it judged before they were built,
+                # and of one judged while they were, only when the verdict came before their
+                # problems section (verifier.plan_findings reads it then)
                 shown = (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == before
             facts = await asyncio.to_thread(
                 context.facts, data, db, self.state.today(), viewer, not private
@@ -1618,7 +1619,11 @@ class Bot:
                 )
                 listed = await self.problems()  # None: the consistency check could not run
                 _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
-                judged = shown and (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read
+                # a verdict that came while the facts were built counts as said by its lines in them
+                seen = [f for f in found if f"\n- {f}\n" in f"{facts}\n"]
+                judged = (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read and (
+                    shown or bool(seen)
+                )
                 # read and written with no wait between: a drawn mark set meanwhile stays
                 raised = {
                     k: v
@@ -1627,7 +1632,7 @@ class Bot:
                 }
                 raised["read"] = read if read == before else ""
                 if read == before and listed is not None:
-                    act = verifier_act(found) if judged else []
+                    act = verifier_act(found if shown else seen) if judged else []
                     raised["read_found"] = plan_said(act, sure_problems(listed))
                     raised["read_judged"] = judged
                 db.set_kv(PLAN_RAISED, raised)
@@ -5356,10 +5361,11 @@ class Bot:
         # end in the window gives the turn the sure problems alone.
         checked = kept.get("key") == key
         # the check has not judged this plan yet: a plan just drawn waits for it that day, and a
-        # retry whose plan moved since for PLAN_CHECK_WAIT_S
+        # retry whose plan moved since for PLAN_CHECK_WAIT_S, then goes with or without the
+        # morning checkup
         moved = failed and pending.get("key") != key
         waits = drawn or (moved and now.timestamp() < raised.get("at", 0) + PLAN_CHECK_WAIT_S)
-        if not checked and (not late or waits):
+        if not checked and (waits or not (late or moved)):
             return
         found = await asyncio.to_thread(verifier.plan_findings, data, db, today) if checked else []
         found = verifier_act(found)
