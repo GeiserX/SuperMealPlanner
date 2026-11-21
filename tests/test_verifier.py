@@ -961,6 +961,33 @@ def converse(turn, settings):
 """
 
 
+def test_a_plan_turn_judged_after_a_running_turns_facts_waits_for_a_turn_of_its_own(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    plugins = data_dir / "plugins"
+    (plugins / "ai.py").write_text(PLUGIN + PULLS)
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+
+    async def go():
+        b.take(-100, {"id": 7, "first_name": "Luis"}, "luis", None, "qué cenamos", True)
+        person = asyncio.ensure_future(b.drive(None, -100))
+        try:
+            await reach(plugins / "waiting", person)  # its facts are built: no verdict in them
+            db.set_kv(verifier.PLAN_KEY, {"key": key, "found": {"nonsense": [OVEN]}})
+            await b.raise_plan(None)  # raised for what the check found
+        finally:
+            (plugins / "go").write_text("")  # the provider's thread never waits forever
+        await person
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    assert json.loads((plugins / "took.json").read_text()) == []  # not taken by that turn
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1  # its own turn said it
+    raise_now(b)
+    assert plan_turns(data_dir) == 2
+
+
 def test_a_plan_turn_another_turn_took_and_did_not_answer_is_raised_again_when_it_fails(
     data_dir, tmp_path, monkeypatch
 ):
@@ -1917,25 +1944,54 @@ def test_a_retry_whose_plan_moved_goes_after_its_wait_with_no_morning_checkup(
     assert plan_turns(data_dir) == 3
 
 
-def test_a_retry_whose_plan_moved_overnight_waits_for_that_days_check_with_no_checkup(
+def test_a_retry_whose_plan_moved_overnight_waits_for_a_running_check_with_no_checkup(
     data_dir, tmp_path, monkeypatch
 ):
-    from supermealplanner import bot as bot_module
-
-    monkeypatch.setattr(bot_module, "PLAN_CHECK_WAIT_S", 24 * 3600)  # the check runs late
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
     judge(b, db, {"nonsense": [OVEN]})
     raise_now(b)  # its turn fails
     b.data.settings.bot.checkup_at = ""
     db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
-    earlier(db, 30 * 3600)  # longer ago than the wait: only the new day counts
+    earlier(db, 3 * 3600)  # longer ago than the wait for the check
     (data_dir / "plugins" / "down").unlink()
-    moved(b)  # the plan as it is today: its check has not ended
+    moved(b)  # the plan as it is today
+    b.checking = True  # its check runs, started by the same tick
     raise_now(b)
     assert plan_turns(data_dir) == 1
-    judge(b, db, {"nonsense": [OVEN]})
-    raise_now(b)  # with what the check found
+    b.checking = False  # it ended with no verdict
+    raise_now(b)  # with the sure problems alone
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # what the check found was still owed
+    assert plan_turns(data_dir) == 3 and len(answers(b)) == 2
+
+
+def test_a_plan_owed_only_its_checks_findings_says_no_sure_problem_again(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as bot_module
+
+    monkeypatch.setattr(bot_module, "PLAN_CHECK_WAIT_S", 0)  # the check never ended in time
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # its turn fails
+    moved(b)
+    b.data.settings.bot.checkup_at = ""
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, 600)
+    raise_now(b)  # with the sure problems alone: what the check finds is owed
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+    real = b.problems
+
+    async def one_fixed():  # the answer fixed one of the sure problems
+        listed = await real()
+        first = next(p for p in listed if p.kind == "off_day")
+        return [p for p in listed if p is not first]
+
+    b.problems = one_fixed
+    judge(b, db, {})  # the check finds nothing
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and "drawn" not in db.get_kv("verifier.plan_raised")
 
 
 def test_a_failed_turn_whose_plan_came_back_unjudged_waits_for_its_check(

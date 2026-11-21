@@ -401,6 +401,7 @@ class Turn:
     pulled: list[Item] = field(default_factory=list)  # handed to it while it ran
     asks: list[str] = field(default_factory=list)  # keys of the provider's asks it posted
     closed: bool = False
+    verdict: str | None = None  # the key of the plan check's verdict its facts show
 
     def rows(self) -> set[int]:
         return {i.row for i in [*self.items, *self.pulled]}
@@ -1449,9 +1450,10 @@ class Bot:
             key = found = None
         if key is not None:
             done["key"] = key
-        elif not self.data.settings.bot.checkup_at:  # what the check finds is still owed, and
-            # with no morning checkup to raise it the plan counts as drawn until it is
+        elif not self.data.settings.bot.checkup_at:  # what the check finds is still owed (owed),
+            # and with no morning checkup to raise it the plan counts as drawn until it is
             done["drawn"] = dt.datetime.now(self._zone()).date().isoformat()
+            done["owed"] = True
         if found is not None:
             done["found"] = found
         db.set_kv(PLAN_RAISED, done)
@@ -1600,17 +1602,13 @@ class Bot:
                 _, before = await asyncio.to_thread(
                     verifier.plan_brief, data, db, self.state.today()
                 )
-                # the check's verdict the facts show: the one kept before they are built, so a
-                # verdict that ends meanwhile is in neither the facts nor what the turn said
-                shown = db.get_kv(verifier.PLAN_KEY) or {}
+            # the check's verdict the facts show: the one kept before they are built, so a
+            # verdict that ends meanwhile is in neither the facts nor what the turn said, and a
+            # plan-check row joins this turn only for it (incoming)
+            shown = db.get_kv(verifier.PLAN_KEY) or {}
+            turn_state.verdict = shown.get("key")
             facts = await asyncio.to_thread(
-                context.facts,
-                data,
-                db,
-                self.state.today(),
-                viewer,
-                not private,
-                shown if plan_turn else None,
+                context.facts, data, db, self.state.today(), viewer, not private, shown
             )
             facts += self.chat_reminders(chat_id)
             if plan_turn:
@@ -2421,9 +2419,18 @@ class Bot:
                 if turn_state.closed:
                     return []
                 queue = self.queues.pop(chat_id, [])
-                got = [i for i in queue if not i.file]
+                # a plan-check row joins only a turn whose facts showed what it was raised for: the
+                # sure problems alone, or the check's verdict on that plan; else, as a file (its
+                # own fetch), it waits for a turn of its own
+                pending = (db.get_kv(PLAN_RAISED) or {}).get("pending") or {}
+                shown = not pending.get("judged") or pending.get("key") == turn_state.verdict
+
+                def waits(i: Item) -> bool:
+                    return i.file or (i.review and not shown)
+
+                got = [i for i in queue if not waits(i)]
                 if len(got) < len(queue):
-                    self.queues[chat_id] = [i for i in queue if i.file]
+                    self.queues[chat_id] = [i for i in queue if waits(i)]
                 turn_state.pulled.extend(got)
             rows = {r["id"]: r for r in db.chat_by_ids(chat_id, [i.row for i in got])}
             return [
@@ -5304,12 +5311,19 @@ class Bot:
                 db.set_kv(PLAN_RAISED, {**raised, "drawn": on})
             return
         # a drawn plan is owed that day; with no morning checkup to raise it, until a turn does
+        if at_once and raised.get("owed"):  # a plan just drawn is owed in full, as any drawn one
+            raised = {k: v for k, v in raised.items() if k != "owed"}
+            db.set_kv(PLAN_RAISED, raised)
         drawn = raised.get("drawn") == on or bool(raised.get("drawn") and not cfg.checkup_at)
+        # owed: only what the check finds is owed, the turn already said the sure problems
+        owed = bool(drawn and raised.get("owed"))
         at_once = at_once or drawn
 
         def settled() -> None:  # the plan drawn meanwhile needs no turn of its own
             if raised.get("drawn"):
-                db.set_kv(PLAN_RAISED, {k: v for k, v in raised.items() if k != "drawn"})
+                db.set_kv(
+                    PLAN_RAISED, {k: v for k, v in raised.items() if k not in ("drawn", "owed")}
+                )
 
         failed = row is not None
         tries = raised.get("tries", 1) if raised.get("on") == on else 0
@@ -5371,12 +5385,12 @@ class Bot:
         moved = failed and pending.get("key") != key
         blind = failed and not moved and not pending.get("judged")
         retry = (moved or blind) and bool(tries or not cfg.checkup_at)
-        # the wait runs from the failure, and on a later day from that day's start: its plan's
-        # check starts again then
-        since = raised.get("at", 0)
-        if not tries:
-            since = max(since, now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
-        waits = drawn or (moved and now.timestamp() < since + PLAN_CHECK_WAIT_S)
+        # a check that is running may judge it: nothing unjudged goes before it ends
+        waits = (
+            drawn
+            or self.checking
+            or (moved and now.timestamp() < raised.get("at", 0) + PLAN_CHECK_WAIT_S)
+        )
         if not checked and (waits or not (late or retry)):
             return
         found = (
@@ -5386,6 +5400,9 @@ class Bot:
         )
         found = verifier_act(found)
         _, now_key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
+        if owed and not found and not failed:  # the check found nothing more to say
+            settled()
+            return
         if now_key != key:  # it moved while its problems were gathered: decided on the next tick
             if at_once and not drawn:  # the plan just drawn is owed its raise, as one drawn
                 db.set_kv(PLAN_RAISED, {**(db.get_kv(PLAN_RAISED) or {}), "drawn": on})
