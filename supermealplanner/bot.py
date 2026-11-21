@@ -5366,9 +5366,14 @@ class Bot:
                 settled()
             return
         said = plan_said(found, sure)
-        if raised.get("found") == said and not failed:
-            settled()
-            return  # the same findings as the last turn: it would say the same again
+        if raised.get("found") == said:  # what reached the chat last: it would say the same again
+            if failed:  # nor is a failed turn about another plan owed anything now
+                db.set_kv(
+                    PLAN_RAISED, {k: v for k, v in raised.items() if k in ("key", "on", "found")}
+                )
+            else:
+                settled()
+            return
         user = {"first_name": self.t("plan_check_who")}
         row = self.take(chat, user, who, None, self.tt("plan_check_turn"), True, review=True)
         # the tries count per day whatever the key (a ticked step moves it too); a plan the app

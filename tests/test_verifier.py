@@ -794,6 +794,50 @@ def test_the_same_plan_drawn_again_never_brings_a_failed_turns_retry_forward(
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
 
 
+def test_a_failed_turn_whose_plan_went_back_to_what_was_said_raises_nothing(
+    data_dir, tmp_path, monkeypatch
+):
+    import time
+
+    from supermealplanner.bot import PLAN_CHECK_WAIT_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1  # these problems reached the chat
+    said = db.get_kv("verifier.plan_raised")
+    # a turn about another plan failed since; the plan as it is says again what was said
+    other = {"key": "another-plan", "found": "other", "judged": True}
+    failed = {"row": 99999, "at": time.time(), "tries": 1, "pending": other}
+    db.set_kv("verifier.plan_raised", {**said, "key": "before", **failed})
+    earlier(db, PLAN_CHECK_WAIT_S)
+    raise_now(b)
+    raised = db.get_kv("verifier.plan_raised")
+    assert plan_turns(data_dir) == 1  # never the same problems twice
+    assert "row" not in raised and "pending" not in raised and raised["found"] == said["found"]
+
+
+def test_a_failed_turn_with_nothing_sure_waits_for_the_check_of_its_plan(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    raise_now(b)
+    assert plan_turns(data_dir) == 1  # failed
+    (data_dir / "plugins" / "down").unlink()
+
+    async def nothing_sure():
+        return []
+
+    b.problems = nothing_sure
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)  # nothing sure, and the check has not judged the plan: it waits for it
+    assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
+    checked_only(b, db)
+    raise_now(b)  # judged, with a finding: said that day, not the next
+    assert plan_turns(data_dir) == 2
+
+
 def test_a_plan_turn_still_queued_is_never_raised_twice_even_after_a_restart(
     data_dir, tmp_path, monkeypatch
 ):
@@ -1041,6 +1085,33 @@ def test_a_restart_after_another_turn_took_the_plan_turn(data_dir, tmp_path, mon
     earlier(db, PLAN_RETRY_S[0])
     raise_now(b2)
     assert plan_turns(data_dir) == (1 if sent else 2)
+
+
+def test_an_answer_before_a_pulled_plan_row_is_not_its_answer_after_a_restart(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import AI
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    asked = db.add_chat(-100, "user", "luis", "qué cenamos", asked=True)
+    db.add_chat(-100, "assistant", AI, "Lentils tonight.")  # that turn's answer to Luis
+
+    async def parked(client, chat):
+        pass
+
+    b.drive = parked
+    raise_now(b)
+    row = db.get_kv("verifier.plan_raised")["row"]
+    # the turn that read Luis's question took the plan row too, then the process stopped
+    db.set_kv("bot.conversation.-100", {"id": "group-1", "seen": asked, "done": [row]})
+    b2 = ChatBot(b.data, db)
+
+    async def resume():
+        await b2.resume(None)
+        await asyncio.gather(*b2.tasks, return_exceptions=True)
+
+    run(resume())
+    assert db.get_kv("verifier.plan_raised").get("row") == row  # its answer never went out
 
 
 # the plan turn's answer, or the person's when their message is new to the turn
