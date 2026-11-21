@@ -1593,18 +1593,22 @@ class Bot:
                 # drawn plan gets its own tries. One the check has not judged is raised once it is
                 # (the key stays the raise's)
                 _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
+                said = None
+                if read == before and (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read:
+                    found = await asyncio.to_thread(  # what it has to say of it, as raise_plan
+                        verifier.plan_findings, data, db, self.state.today()
+                    )
+                    said = plan_said(
+                        verifier_act(found), sure_problems(await self.problems() or [])
+                    )
+                # read and written with no wait between: a drawn mark set meanwhile stays
                 raised = {
                     k: v
                     for k, v in (db.get_kv(PLAN_RAISED) or {}).items()
                     if k not in ("read", "read_found")
                 }
-                if read == before and (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read:
-                    raised["read"] = read  # and what the turn has to say of it, as raise_plan
-                    found = await asyncio.to_thread(
-                        verifier.plan_findings, data, db, self.state.today()
-                    )
-                    sure = sure_problems(await self.problems() or [])
-                    raised["read_found"] = plan_said(verifier_act(found), sure)
+                if said is not None:
+                    raised["read"], raised["read_found"] = read, said
                 db.set_kv(PLAN_RAISED, raised)
             turn = {
                 "conversation": conv.get("id"),
@@ -5347,7 +5351,10 @@ class Bot:
         row = self.take(chat, user, who, None, self.tt("plan_check_turn"), True, review=True)
         # the tries count per day whatever the key (a ticked step moves it too); a plan the app
         # just drew starts again
-        mark = {"key": key, "on": on, "found": said, "row": row, "at": now.timestamp()}
+        # a plan the check has not judged (its window is over) is not the one raised: once judged,
+        # its findings are raised too
+        raised_key = key if checked else raised.get("key")
+        mark = {"key": raised_key, "on": on, "found": said, "row": row, "at": now.timestamp()}
         db.set_kv(PLAN_RAISED, {**mark, "tries": 1 if at_once else tries + 1})
         self.spawn(self.drive(client, chat))
 

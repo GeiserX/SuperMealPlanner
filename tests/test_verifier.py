@@ -1357,10 +1357,10 @@ def checked_only(b, db, finding="The oven is used twice at once"):
     assert db.get_kv(verifier.PLAN_KEY)["key"] == key
 
 
-def moved(b, day=2):
+def moved(b, day=2, rid="ensalada-garbanzos"):
     """The plan moves (a new dinner) and the check has not judged it yet."""
     checkup = b.data.settings.bot.checkup_at
-    dinner(b.data, MONDAY + dt.timedelta(days=day))
+    dinner(b.data, MONDAY + dt.timedelta(days=day), rid)
     b.state.reload()
     b.data.settings.bot.checkup_at = checkup
 
@@ -1518,6 +1518,88 @@ def test_a_failed_plan_undone_after_its_retry_was_cancelled_is_raised(
     checked_only(b, db)
     run(drawn())
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def judge(b, db, verdict):
+    """The check judges the plan as it is now with this verdict; the consistency check runs for
+    real (plan_turn_setup's plan has a problem it is sure of)."""
+    _calls, fake = judged(verdict)
+    verifier.llm.complete, real = fake, verifier.llm.complete
+    try:
+        run(verifier.check_plan(b.data, db, b.state.today()))
+    finally:
+        verifier.llm.complete = real
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    assert db.get_kv(verifier.PLAN_KEY)["key"] == key
+
+
+OVEN = "The oven is used twice at once"
+
+
+def test_a_late_retry_on_a_plan_not_judged_yet_leaves_its_findings_to_be_raised(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # its turn fails
+    moved(b)  # a step ticked: the check has not judged the plan yet
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, 600)
+    raise_now(b)  # the retry goes with the sure problems alone
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+    judge(b, db, {"nonsense": [OVEN]})  # judged: what the check found was not said yet
+    raise_now(b)
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)
+    assert plan_turns(data_dir) == 3 and len(answers(b)) == 2
+
+
+def test_a_drawn_mark_set_while_the_plan_turn_reads_the_plan_stays(data_dir, tmp_path, monkeypatch):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+
+    async def parked(client, chat):
+        pass
+
+    b.drive = parked
+    raise_now(b)
+    del b.drive
+    drawn_meanwhile(b, db, data_dir)  # judged before the turn runs: it reads this plan
+    real, fired = b.problems, []
+
+    async def problems(*a, **k):  # the app draws a plan while the turn works out what it says
+        if not fired:
+            fired.append(True)
+            await b.raise_plan(None, at_once=True)
+        return await real(*a, **k)
+
+    b.problems = problems
+    drive_plan_turn(b)  # and fails
+    raised = db.get_kv("verifier.plan_raised")
+    assert fired and raised.get("drawn") and "row" in raised
+
+
+def test_what_a_plan_turn_said_counts_its_sure_problems_and_only_the_findings_it_raises(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)  # the window is over
+    judge(b, db, {"nonsense": [OVEN]})
+
+    async def parked(client, chat):
+        pass
+
+    b.drive = parked
+    raise_now(b)
+    del b.drive
+    moved(b)  # before its turn runs, plan B is judged: other problems, and a wish
+    said_b = "Tuesday's dinner needs the oven while it is in use"
+    judge(b, db, {"nonsense": [said_b], "wishes": ["More fish"]})
+    drive_plan_turn(b)  # it reads B and says it
+    assert plan_turns(data_dir) == 1
+    moved(b, day=3, rid="merluza-cena-1")  # the next day: the same problems, another wish
+    judge(b, db, {"nonsense": [said_b], "wishes": ["Less rice"]})
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)
+    assert plan_turns(data_dir) == 1
 
 
 def test_a_plan_turn_that_failed_late_waits_from_its_failure(data_dir, tmp_path, monkeypatch):
