@@ -1449,6 +1449,9 @@ class Bot:
             key = found = None
         if key is not None:
             done["key"] = key
+        elif not self.data.settings.bot.checkup_at:  # what the check finds is still owed, and
+            # with no morning checkup to raise it the plan counts as drawn until it is
+            done["drawn"] = dt.datetime.now(self._zone()).date().isoformat()
         if found is not None:
             done["found"] = found
         db.set_kv(PLAN_RAISED, done)
@@ -5368,7 +5371,12 @@ class Bot:
         moved = failed and pending.get("key") != key
         blind = failed and not moved and not pending.get("judged")
         retry = (moved or blind) and bool(tries or not cfg.checkup_at)
-        waits = drawn or (moved and now.timestamp() < raised.get("at", 0) + PLAN_CHECK_WAIT_S)
+        # the wait runs from the failure, and on a later day from that day's start: its plan's
+        # check starts again then
+        since = raised.get("at", 0)
+        if not tries:
+            since = max(since, now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        waits = drawn or (moved and now.timestamp() < since + PLAN_CHECK_WAIT_S)
         if not checked and (waits or not (late or retry)):
             return
         found = (

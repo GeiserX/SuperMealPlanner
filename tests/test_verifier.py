@@ -1910,6 +1910,54 @@ def test_a_retry_whose_plan_moved_goes_after_its_wait_with_no_morning_checkup(
     monkeypatch.setattr(bot_module, "PLAN_CHECK_WAIT_S", 0)  # the wait is over
     raise_now(b)  # with the sure problems alone, though no checkup runs
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+    judge(b, db, {"nonsense": [OVEN]})  # judged at last: what it found is still owed
+    raise_now(b)
+    assert plan_turns(data_dir) == 3 and len(answers(b)) == 2
+    raise_now(b)
+    assert plan_turns(data_dir) == 3
+
+
+def test_a_retry_whose_plan_moved_overnight_waits_for_that_days_check_with_no_checkup(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as bot_module
+
+    monkeypatch.setattr(bot_module, "PLAN_CHECK_WAIT_S", 24 * 3600)  # the check runs late
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # its turn fails
+    b.data.settings.bot.checkup_at = ""
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    earlier(db, 30 * 3600)  # longer ago than the wait: only the new day counts
+    (data_dir / "plugins" / "down").unlink()
+    moved(b)  # the plan as it is today: its check has not ended
+    raise_now(b)
+    assert plan_turns(data_dir) == 1
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # with what the check found
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_a_failed_turn_whose_plan_came_back_unjudged_waits_for_its_check(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = drawn_judged(data_dir, tmp_path, monkeypatch, down=True)
+    plan = min((data_dir / "state" / "plans").glob("*.yaml"))
+    before = plan.read_text()
+    judge(b, db, {"nonsense": [OVEN]})
+    draw_now(b)  # its turn fails
+    moved(b)
+    judge(b, db, {})  # the other plan judged: the check's verdict is of it
+    plan.write_text(before)  # back to the failed turn's plan, its verdict no longer kept
+    b.state.reload()
+    b.data.settings.bot.checkup_at = ""
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, 600)
+    raise_now(b)  # it went with the check's findings: its retry waits for them again
+    assert plan_turns(data_dir) == 1
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
 
 
 def test_a_retry_that_went_without_the_check_and_failed_goes_again_with_no_morning_checkup(
