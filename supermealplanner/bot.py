@@ -1434,14 +1434,18 @@ class Bot:
             db.set_kv(PLAN_RAISED, {**raised, "at": time.time()})
             return
         # what it said reached the chat: the plan it read, else the one it was raised for (a plan
-        # the check had not judged leaves the last raised key, so it is raised once judged)
+        # the check had not judged leaves the last raised key, so it is raised once judged). A
+        # turn that read another plan the check had not judged, or one that moved as it read it,
+        # said nothing that can be told apart: nothing is counted as raised
         done = {k: v for k, v in raised.items() if k in ("key", "on", "found", "drawn")}
         pending = raised.get("pending") or {}
         key, found = pending.get("key") if pending.get("judged") else None, pending.get("found")
-        if raised.get("read"):
-            key, found = raised["read"], raised.get("read_found") or found
+        if "read_found" in raised:
+            key, found = raised["read"], raised["read_found"]
             if (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == raised["read"]:
                 done.pop("drawn", None)  # the plan drawn before the turn read it: raised now
+        elif "read" in raised and raised["read"] != pending.get("key"):
+            key = found = None
         if key is not None:
             done["key"] = key
         if found is not None:
@@ -1597,28 +1601,30 @@ class Bot:
             )
             facts += self.chat_reminders(chat_id)
             if plan_turn:
-                # the plan-check turn reads the plan as it is now. When the check judged it, that
-                # plan is the one raised (read) once the answer reaches the chat (plan_answered),
-                # and so is a plan drawn before it; a failed turn keeps the drawn mark, so the
-                # drawn plan gets its own tries. One the check has not judged is raised once it is
-                # (what was raised stays "pending")
+                # the plan-check turn reads the plan as it is now (read; "" when it moved while
+                # the turn gathered it). When the check judged it, that plan is the one raised
+                # once the answer reaches the chat (plan_answered), and so is a plan drawn before
+                # it; a failed turn keeps the drawn mark, so the drawn plan gets its own tries.
+                # One the check has not judged is raised once it is. What it has to say of it, as
+                # raise_plan, is gathered before the key is read again, so both are of one plan
+                found = await asyncio.to_thread(
+                    verifier.plan_findings, data, db, self.state.today()
+                )
+                listed = await self.problems()  # None: the consistency check could not run
                 _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
                 said = None
-                if read == before and (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read:
-                    found = await asyncio.to_thread(  # what it has to say of it, as raise_plan
-                        verifier.plan_findings, data, db, self.state.today()
-                    )
-                    said = plan_said(
-                        verifier_act(found), sure_problems(await self.problems() or [])
-                    )
+                judged = (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read
+                if read == before and judged and listed is not None:
+                    said = plan_said(verifier_act(found), sure_problems(listed))
                 # read and written with no wait between: a drawn mark set meanwhile stays
                 raised = {
                     k: v
                     for k, v in (db.get_kv(PLAN_RAISED) or {}).items()
                     if k not in ("read", "read_found")
                 }
+                raised["read"] = read if read == before else ""
                 if said is not None:
-                    raised["read"], raised["read_found"] = read, said
+                    raised["read_found"] = said
                 db.set_kv(PLAN_RAISED, raised)
             turn = {
                 "conversation": conv.get("id"),
@@ -5294,7 +5300,8 @@ class Bot:
         failed = row is not None
         tries = raised.get("tries", 1) if raised.get("on") == on else 0
         again = failed and (
-            tries == 0
+            # a turn that failed on an earlier day: at once, unless it failed just now
+            (tries == 0 and now.timestamp() >= raised.get("at", 0) + PLAN_RETRY_S[0])
             or (
                 tries <= len(PLAN_RETRY_S)
                 and now.timestamp() >= raised.get("at", 0) + PLAN_RETRY_S[tries - 1]
@@ -5327,7 +5334,8 @@ class Bot:
             return
         if failed and not again and pending.get("key") == key:
             return  # its failed turn's retry is not due yet
-        sure = sure_problems(await self.problems() or [])
+        listed = await self.problems()  # None: the consistency check could not run
+        sure = sure_problems(listed or [])
         # a private checkup chat: the turn is that person's, so it sees only what they may see
         who = self.person_of(chat) if chat > 0 else None
         if no_ai or (chat > 0 and who is None):  # no turn can come: a private chat of no one
@@ -5356,6 +5364,8 @@ class Bot:
                     keep = {k: v for k, v in raised.items() if k in ("key", "found")}
                     db.set_kv(PLAN_RAISED, {**keep, "on": on})
                 return  # a failed turn's retry and a drawn plan wait for the check
+            if failed and listed is None:  # the consistency check could not run: never "nothing"
+                return
             if late:
                 db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # nothing to say today
             elif failed:  # what its failed turn had to say is gone: no turn is owed. The plan

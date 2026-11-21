@@ -1111,6 +1111,7 @@ def test_an_answer_before_a_pulled_plan_row_is_not_its_answer_after_a_restart(
         await asyncio.gather(*b2.tasks, return_exceptions=True)
 
     run(resume())
+    assert not db.get_kv("bot.queued")  # the restart replayed the row
     assert db.get_kv("verifier.plan_raised").get("row") == row  # its answer never went out
 
 
@@ -1380,7 +1381,8 @@ def test_a_plan_turn_that_read_a_plan_the_check_had_not_judged_leaves_it_to_be_r
 
     run(go())  # it reads the new plan, which the check has not judged yet
     raised = db.get_kv("verifier.plan_raised")
-    assert plan_turns(data_dir) == 1 and raised["key"] == key and "read" not in raised
+    # what it said is of neither plan as judged: neither counts as raised
+    assert plan_turns(data_dir) == 1 and "key" not in raised and "read" not in raised
     _brief, new = verifier.plan_brief(b.data, db, b.state.today())
     db.set_kv(verifier.PLAN_KEY, {"key": new})  # judged
     db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})  # the next morning
@@ -1407,6 +1409,112 @@ def test_a_failed_plan_turn_whose_problems_went_away_owes_no_turn(data_dir, tmp_
     earlier(db, PLAN_RETRY_S[0])
     raise_now(b)
     assert plan_turns(data_dir) == 1 and "row" not in db.get_kv("verifier.plan_raised")
+
+
+def drawn_judged(data_dir, tmp_path, monkeypatch, down):
+    """No morning checkup, the plan as it is judged with nothing to say but its sure problems,
+    and a raise for it as for a plan just drawn."""
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=down)
+    b.data.settings.bot.checkup_at = ""
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
+    return b, db
+
+
+def draw_now(b):
+    async def go():
+        await b.raise_plan(None, at_once=True)
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+
+
+async def parked(client, chat):  # another turn of the chat runs: the plan turn waits
+    pass
+
+
+def test_a_failed_turns_retry_waits_out_a_consistency_check_that_could_not_run(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = drawn_judged(data_dir, tmp_path, monkeypatch, down=True)
+    draw_now(b)
+    assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
+    real = b.problems
+
+    async def could_not_run():
+        return None
+
+    b.problems = could_not_run
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)  # it cannot tell what the plan has to say: never "nothing"
+    assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
+    b.problems = real
+    earlier(db, PLAN_RETRY_S[1])
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_a_plan_turn_that_fails_just_after_midnight_still_waits_its_first_retry(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = drawn_judged(data_dir, tmp_path, monkeypatch, down=True)
+    draw_now(b)
+    assert plan_turns(data_dir) == 1
+    # queued the day before, failed just now
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    (data_dir / "plugins" / "down").unlink()
+    raise_now(b)
+    assert plan_turns(data_dir) == 1
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_a_plan_turn_whose_plan_moves_as_it_reads_it_counts_nothing_as_raised(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = drawn_judged(data_dir, tmp_path, monkeypatch, down=False)
+    b.drive = parked
+    draw_now(b)  # queued for plan A
+    real = b.problems
+
+    async def problems():  # the plan moves while the turn gathers what it has to say of it
+        b.problems = real
+        moved(b)  # plan B: one more problem the consistency check is sure of
+        return await real()
+
+    b.problems = problems
+    del b.drive
+    drive_plan_turn(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})  # B judged: what it adds was never said
+    draw_now(b)
+    assert plan_turns(data_dir) == 2
+
+
+def test_a_plan_turn_that_read_another_plan_the_check_had_not_judged_counts_nothing(
+    data_dir, tmp_path, monkeypatch
+):
+    b, _db = drawn_judged(data_dir, tmp_path, monkeypatch, down=False)
+    plan = min((data_dir / "state" / "plans").glob("*.yaml"))
+    before = plan.read_text()
+    b.drive = parked
+    draw_now(b)  # queued for plan A
+    moved(b)  # plan B, which the check has not judged, before the turn reads it
+    del b.drive
+    drive_plan_turn(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+    plan.write_text(before)  # back to plan A, whose problems the turn never read
+    b.state.reload()
+    b.data.settings.bot.checkup_at = ""
+    draw_now(b)
+    assert plan_turns(data_dir) == 2
 
 
 def test_a_drawn_plan_needs_no_turn_with_the_same_problems_or_none(data_dir, tmp_path, monkeypatch):
@@ -1582,6 +1690,7 @@ def test_a_plan_turn_that_failed_on_an_earlier_day_goes_on_the_first_tick(
     raise_now(b)  # it fails late at night: its retry would wait an hour that day
     assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
     db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    earlier(db, 600)  # hours ago: a day went by
     (data_dir / "plugins" / "down").unlink()
     raise_now(b)  # a new day: at once
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
@@ -1887,7 +1996,8 @@ def test_a_plan_turn_marks_no_plan_that_moved_while_its_facts_were_built(
     monkeypatch.setattr(context, "facts", facts_then_move)
     raise_now(b)
     raised = db.get_kv("verifier.plan_raised")
-    assert moves and plan_turns(data_dir) == 1 and raised["key"] == key != moves[0]
+    # it cannot tell which plan its facts were of: neither A nor B counts as raised
+    assert moves and plan_turns(data_dir) == 1 and "key" not in raised and "found" not in raised
 
 
 def test_a_plan_drawn_late_at_night_is_raised_after_midnight_with_no_morning_checkup(
