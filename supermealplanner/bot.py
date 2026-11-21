@@ -1404,11 +1404,16 @@ class Bot:
         db = self.state.db
         raised = db.get_kv(PLAN_RAISED) or {}
         row = raised.get("row")
-        if row is None or row not in {i.row for i in took}:
+        if row is None or row not in {i.row for i in items}:
+            return
+        if row not in {i.row for i in took}:  # not raised: its retry waits from now
+            db.set_kv(PLAN_RAISED, {**raised, "at": time.time()})
             return
         done = {k: v for k, v in raised.items() if k in ("key", "on", "found", "drawn")}
         if raised.get("read"):  # the plan as its turn read it is the one raised
             done["key"] = raised["read"]
+            if raised["read"] != raised.get("key"):  # what it said is not what was found then
+                done.pop("found", None)
             if (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == raised["read"]:
                 done.pop("drawn", None)  # the plan drawn before the turn read it: raised now
         db.set_kv(PLAN_RAISED, done)
@@ -1552,11 +1557,16 @@ class Bot:
             unmarked = NO_MENTION if data.settings.bot.answer_scope == "all" else NOT_TO_YOU
             last_item = items[-1]
             viewer = last_item.who if private else None
+            plan_turn = (db.get_kv(PLAN_RAISED) or {}).get("row") in {i.row for i in items}
+            if plan_turn:  # the plan before the facts: it counts only if it did not move meanwhile
+                _, before = await asyncio.to_thread(
+                    verifier.plan_brief, data, db, self.state.today()
+                )
             facts = await asyncio.to_thread(
                 context.facts, data, db, self.state.today(), viewer, not private
             )
             facts += self.chat_reminders(chat_id)
-            if (db.get_kv(PLAN_RAISED) or {}).get("row") in {i.row for i in items}:
+            if plan_turn:
                 # the plan-check turn reads the plan as it is now. When the check judged it, that
                 # plan is the one raised (read) once the answer reaches the chat (plan_answered),
                 # and so is a plan drawn before it; a failed turn keeps the drawn mark, so the
@@ -1564,7 +1574,7 @@ class Bot:
                 # (the key stays the raise's)
                 _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
                 raised = {k: v for k, v in (db.get_kv(PLAN_RAISED) or {}).items() if k != "read"}
-                if (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read:
+                if read == before and (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read:
                     raised["read"] = read
                 db.set_kv(PLAN_RAISED, raised)
             turn = {
@@ -5230,7 +5240,8 @@ class Bot:
                 # unless the turn read it (its key is then the one raised)
                 db.set_kv(PLAN_RAISED, {**raised, "drawn": on})
             return
-        drawn = raised.get("drawn") == on
+        # a drawn plan is owed that day; with no morning checkup to raise it, until a turn does
+        drawn = raised.get("drawn") == on or bool(raised.get("drawn") and not cfg.checkup_at)
         at_once = at_once or drawn
 
         def settled() -> None:  # the plan drawn meanwhile needs no turn of its own
@@ -5293,8 +5304,8 @@ class Bot:
                 return  # a failed turn's retry and a drawn plan wait for the check
             if late:
                 db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # nothing to say today
-            elif failed:  # what its failed turn had to say is gone: no turn is owed
-                done = ("key", "on", "found")
+            elif failed:  # what its failed turn had to say is gone: no turn is owed, and what
+                done = ("key", "on")  # it never said is no repeat if it comes back
                 db.set_kv(PLAN_RAISED, {k: v for k, v in raised.items() if k in done})
             else:
                 settled()
