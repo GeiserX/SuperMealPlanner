@@ -772,6 +772,28 @@ def test_a_failed_plan_turn_raises_the_same_problems_again_by_itself(
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
 
 
+def test_the_same_plan_drawn_again_never_brings_a_failed_turns_retry_forward(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
+    checked_only(b, db)  # judged, so a plan drawn goes at once
+    raise_now(b)
+    assert plan_turns(data_dir) == 1  # failed
+    (data_dir / "plugins" / "down").unlink()
+
+    async def drawn():  # the plan drawn again, the same as before
+        await b.raise_plan(None, at_once=True)
+        await asyncio.gather(*b.tasks)
+
+    run(drawn())
+    assert plan_turns(data_dir) == 1  # its retry still waits
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)  # the next tick once it is due
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
 def test_a_plan_turn_still_queued_is_never_raised_twice_even_after_a_restart(
     data_dir, tmp_path, monkeypatch
 ):
@@ -1320,6 +1342,8 @@ def test_a_drawn_plan_needs_no_turn_with_the_same_problems_or_none(data_dir, tmp
     from supermealplanner import bot as bot_module
 
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
     raise_now(b)  # the turn answered
     assert plan_turns(data_dir) == 1
     on = db.get_kv("verifier.plan_raised")["on"]
@@ -1435,6 +1459,8 @@ def test_a_morning_raise_that_left_an_unjudged_plan_never_repeats_the_same_probl
 
 def test_a_drawn_plan_already_raised_needs_no_turn(data_dir, tmp_path, monkeypatch):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    db.set_kv(verifier.PLAN_KEY, {"key": key})
     raise_now(b)  # the turn answered
     raised = db.get_kv("verifier.plan_raised")
     db.set_kv("verifier.plan_raised", {**raised, "drawn": raised["on"]})  # the same key
@@ -1536,13 +1562,35 @@ def judge(b, db, verdict):
 OVEN = "The oven is used twice at once"
 
 
-def test_a_late_retry_on_a_plan_not_judged_yet_leaves_its_findings_to_be_raised(
+def test_a_retry_whose_plan_moved_waits_for_the_check_and_says_its_findings(
     data_dir, tmp_path, monkeypatch
 ):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
     judge(b, db, {"nonsense": [OVEN]})
     raise_now(b)  # its turn fails
     moved(b)  # a step ticked: the check has not judged the plan yet
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, 600)
+    raise_now(b)  # the retry is due, and waits for the check
+    assert plan_turns(data_dir) == 1
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # the same day, with what the check found
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)  # said: never again
+    assert plan_turns(data_dir) == 2
+
+
+def test_a_retry_whose_check_never_ends_goes_with_the_sure_problems_and_leaves_the_findings(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner import bot as bot_module
+
+    monkeypatch.setattr(bot_module, "PLAN_CHECK_WAIT_S", 0)  # the check never ended in time
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # its turn fails
+    moved(b)
     (data_dir / "plugins" / "down").unlink()
     earlier(db, 600)
     raise_now(b)  # the retry goes with the sure problems alone
@@ -1555,6 +1603,9 @@ def test_a_late_retry_on_a_plan_not_judged_yet_leaves_its_findings_to_be_raised(
 
 
 def test_a_late_retry_never_counts_the_failed_plan_as_raised(data_dir, tmp_path, monkeypatch):
+    from supermealplanner import bot as bot_module
+
+    monkeypatch.setattr(bot_module, "PLAN_CHECK_WAIT_S", 0)  # the check never ended in time
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
     plan = min((data_dir / "state" / "plans").glob("*.yaml"))
     before = plan.read_text()
@@ -1573,6 +1624,77 @@ def test_a_late_retry_never_counts_the_failed_plan_as_raised(data_dir, tmp_path,
     db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
     raise_now(b)
     assert plan_turns(data_dir) == 3 and len(answers(b)) == 2
+
+
+def test_a_failed_raise_of_an_unjudged_plan_keeps_what_reached_the_chat(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)  # the window is over
+    plan = min((data_dir / "state" / "plans").glob("*.yaml"))
+    before = plan.read_text()
+    judge(b, db, {"nonsense": [OVEN]})
+    raise_now(b)  # plan A reaches the chat
+    a = db.get_kv("verifier.plan_raised")["key"]
+    moved(b)  # the next day the plan is B, which the check has not judged
+    (data_dir / "plugins" / "down").write_text("")
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)  # its late raise goes with the sure problems, and fails
+    assert plan_turns(data_dir) == 2 and db.get_kv("verifier.plan_raised")["key"] == a
+    checkup = b.data.settings.bot.checkup_at
+    plan.write_text(before)  # undone: plan A again, which the chat already heard
+    b.state.reload()
+    b.data.settings.bot.checkup_at = checkup
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, 600)
+    raise_now(b)  # its retry is due: nothing is owed
+    raised = db.get_kv("verifier.plan_raised")
+    assert plan_turns(data_dir) == 2 and raised["key"] == a and "row" not in raised
+    db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01"})
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+BUSY = """
+class Busy(Exception):
+    retry_after = 600
+
+def converse(turn, settings):
+    with (HERE / "plan_turns.txt").open("a") as f:
+        f.write("turn\\n")
+    if (HERE / "busy").exists():
+        raise Busy("busy")
+    return {"text": "The batch session moves to Wednesday.", "conversation": "c1"}
+"""
+
+
+def test_a_plan_turn_a_busy_provider_puts_off_is_never_raised_twice(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    plugins = data_dir / "plugins"
+    (plugins / "ai.py").write_text(PLUGIN + BUSY)
+    (plugins / "busy").write_text("")
+    woken = []
+
+    def wake(client, chat_id, seconds):
+        woken.append((chat_id, seconds))
+        return asyncio.sleep(0)
+
+    b.wake = wake
+    raise_now(b)  # the provider is busy: the turn waits for it
+    raised = db.get_kv("verifier.plan_raised")
+    assert woken and plan_turns(data_dir) == 1
+    assert raised["row"] in [x["row"] for x in db.get_kv("bot.queued")["-100"]]
+    earlier(db, PLAN_RETRY_S[-1] * 2)
+    raise_now(b)  # still waiting: never a second turn
+    assert plan_turns(data_dir) == 1
+    (plugins / "busy").unlink()
+    b.resting.pop(-100)  # the provider is back: what wake() does when its time comes
+    drive_plan_turn(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+    assert "row" not in db.get_kv("verifier.plan_raised")
 
 
 def test_a_drawn_mark_set_while_the_plan_turn_reads_the_plan_stays(data_dir, tmp_path, monkeypatch):
@@ -1655,7 +1777,7 @@ def test_a_plan_turn_that_said_another_plan_keeps_what_it_said(
     b.drive = parked
     raise_now(b)
     del b.drive
-    queued = db.get_kv("verifier.plan_raised")["found"]  # X
+    queued = db.get_kv("verifier.plan_raised")["pending"]["found"]  # X
     moved(b)  # before its turn runs, plan B is drawn and judged, with problems Y
     checked_only(b, db, said_b)
     drive_plan_turn(b)  # it reads B and says Y
@@ -1761,10 +1883,8 @@ def test_a_plan_drawn_meanwhile_waits_for_its_check_when_the_turn_moved_the_plan
 
     run(go())
     raise_now(b)
-    if checkup:  # the window after the checkup is over: its sure problems go without the check
-        assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
-        return
-    # the check has not judged the plan as it is now: it waits, and so does drawn
+    # the check has not judged the plan as it is now: it waits, and so does drawn, even after the
+    # window of the morning checkup
     assert plan_turns(data_dir) == 1 and db.get_kv("verifier.plan_raised").get("drawn")
     _brief, key = verifier.plan_brief(b.data, db, b.state.today())
     db.set_kv(verifier.PLAN_KEY, {"key": key})  # judged
@@ -1831,7 +1951,8 @@ def test_the_plan_turn_tries_count_per_day_whatever_moves_the_key(data_dir, tmp_
     for _ in range(len(PLAN_RETRY_S) + 3):
         raise_now(b)
         raised = db.get_kv("verifier.plan_raised")  # a step ticked: the key moved, not the plan
-        db.set_kv("verifier.plan_raised", {**raised, "key": "before-the-tick"})
+        pending = {**raised["pending"], "key": "before-the-tick"}
+        db.set_kv("verifier.plan_raised", {**raised, "pending": pending})
         earlier(db, 86400)
     assert plan_turns(data_dir) == len(PLAN_RETRY_S) + 1
     # a plan the app just drew gets its own tries the same day
