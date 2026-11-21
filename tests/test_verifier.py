@@ -1336,6 +1336,92 @@ def test_a_drawn_plan_needs_no_turn_with_the_same_problems_or_none(data_dir, tmp
     assert plan_turns(data_dir) == 1 and "drawn" not in db.get_kv("verifier.plan_raised")
 
 
+def checked_only(b, db, finding="The oven is used twice at once"):
+    """The check judges the plan as it is now and finds something; the consistency check is sure
+    of nothing, so only the check's findings can raise it."""
+
+    async def problems():
+        return []
+
+    b.problems = problems
+    _calls, fake = judged({"nonsense": [finding]})
+    verifier.llm.complete, real = fake, verifier.llm.complete
+    try:
+        run(verifier.check_plan(b.data, db, b.state.today()))
+    finally:
+        verifier.llm.complete = real
+    _brief, key = verifier.plan_brief(b.data, db, b.state.today())
+    assert db.get_kv(verifier.PLAN_KEY)["key"] == key
+
+
+def moved(b, day=2):
+    """The plan moves (a new dinner) and the check has not judged it yet."""
+    checkup = b.data.settings.bot.checkup_at
+    dinner(b.data, MONDAY + dt.timedelta(days=day))
+    b.state.reload()
+    b.data.settings.bot.checkup_at = checkup
+
+
+def test_a_late_retry_never_marks_a_plan_the_check_has_not_judged(data_dir, tmp_path, monkeypatch):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)  # the window is over
+    checked_only(b, db)
+    raise_now(b)  # the turn fails
+    assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
+    moved(b)  # a step ticked: the check cannot judge it yet
+    (data_dir / "plugins" / "down").unlink()
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b)  # the retry is due, and waits for the check
+    assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
+    checked_only(b, db, "Tuesday's dinner needs the oven while it is in use")
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 1
+
+
+def test_a_drawn_plan_raised_late_waits_for_its_check(data_dir, tmp_path, monkeypatch):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)  # the window is over
+    checked_only(b, db)
+    raise_now(b)  # the turn answered
+    assert plan_turns(data_dir) == 1
+    raised = db.get_kv("verifier.plan_raised")
+    db.set_kv("verifier.plan_raised", {**raised, "drawn": raised["on"]})  # drawn while it ran
+    moved(b)  # and moved again before the check judged it
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and db.get_kv("verifier.plan_raised").get("drawn")
+    checked_only(b, db, "Tuesday's dinner needs the oven while it is in use")
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
+
+
+def test_a_morning_raise_after_the_window_leaves_an_unjudged_plan_for_the_next_day(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)  # the window is over
+    checked_only(b, db)
+    raise_now(b)
+    assert plan_turns(data_dir) == 1
+    moved(b)  # the plan changes overnight, and the check has not judged it
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)  # nothing sure to say: today's raise is over, the plan is not raised
+    assert plan_turns(data_dir) == 1
+    checked_only(b, db, "Tuesday's dinner needs the oven while it is in use")
+    raise_now(b)  # judged the same day: tomorrow
+    assert plan_turns(data_dir) == 1
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)
+    assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
+
+
+def test_a_drawn_plan_already_raised_needs_no_turn(data_dir, tmp_path, monkeypatch):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+    raise_now(b)  # the turn answered
+    raised = db.get_kv("verifier.plan_raised")
+    db.set_kv("verifier.plan_raised", {**raised, "drawn": raised["on"]})  # the same key
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and "drawn" not in db.get_kv("verifier.plan_raised")
+
+
 def test_a_plan_drawn_on_an_earlier_day_is_not_raised_at_once(data_dir, tmp_path, monkeypatch):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
     raise_now(b)  # today's raise answered: the next one is tomorrow's
@@ -1798,6 +1884,32 @@ def test_a_restart_before_the_plan_answer_went_out_raises_it_again(data_dir, tmp
     assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
     earlier(db, PLAN_RETRY_S[0])
     raise_now(b2)  # what never reached the chat goes again
+    assert plan_turns(data_dir) == 2 and len(answers(b2)) == 1
+
+
+def test_a_restart_never_takes_a_line_of_the_app_for_the_plan_answer(
+    data_dir, tmp_path, monkeypatch
+):
+    from supermealplanner.bot import PLAN_RETRY_S
+
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
+
+    async def answer_text(*a, **k):  # a reminder goes out, then the process stops
+        db.add_chat(-100, "assistant", None, "Reminder: thaw the chicken.")
+        raise asyncio.CancelledError
+
+    b.answer_text = answer_text
+
+    async def go(bot, first):
+        await (bot.raise_plan(None) if first else bot.resume(None))
+        await asyncio.gather(*bot.tasks, return_exceptions=True)
+
+    run(go(b, True))
+    b2 = ChatBot(b.data, db)
+    run(go(b2, False))  # the reminder is no answer of the plan turn
+    assert plan_turns(data_dir) == 1 and "row" in db.get_kv("verifier.plan_raised")
+    earlier(db, PLAN_RETRY_S[0])
+    raise_now(b2)
     assert plan_turns(data_dir) == 2 and len(answers(b2)) == 1
 
 

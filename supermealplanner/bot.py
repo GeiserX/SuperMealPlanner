@@ -5286,6 +5286,11 @@ class Bot:
         found = await asyncio.to_thread(verifier.plan_findings, data, db, today) if checked else []
         found = sorted(f for f in found if f.split(":", 1)[0] in verifier.ACT)
         if not (sure or found):
+            if not checked:  # nothing sure, and the check has not judged the plan: never raised
+                if not (failed or drawn):  # today's raise is over; once judged, it goes tomorrow
+                    keep = {k: v for k, v in raised.items() if k in ("key", "found")}
+                    db.set_kv(PLAN_RAISED, {**keep, "on": on})
+                return  # a failed turn's retry and a drawn plan wait for the check
             if late:
                 db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # nothing to say today
             elif failed:  # what its failed turn had to say is gone: no turn is owed
