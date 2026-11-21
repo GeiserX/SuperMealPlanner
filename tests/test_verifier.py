@@ -1139,9 +1139,9 @@ def test_an_answer_before_a_pulled_plan_row_is_not_its_answer_after_a_restart(
 
     async def resume():
         await b2.resume(None)
-        await asyncio.gather(*b2.tasks, return_exceptions=True)
+        return await asyncio.gather(*b2.tasks, return_exceptions=True)
 
-    run(resume())
+    assert not [e for e in run(resume()) if isinstance(e, BaseException)]
     assert not db.get_kv("bot.queued")  # the restart replayed the row
     assert db.get_kv("verifier.plan_raised").get("row") == row  # its answer never went out
 
@@ -2471,10 +2471,10 @@ def test_a_failed_plan_turn_waits_longer_after_each_failure(data_dir, tmp_path, 
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=True)
     raise_now(b)
     for n, wait in enumerate((600, 1800, 3600), start=1):
-        earlier(db, wait - 5)
+        earlier(db, wait - 120)  # far from the deadline: a slow runner cannot cross it
         raise_now(b)
         assert plan_turns(data_dir) == n  # not yet
-        earlier(db, 5)
+        earlier(db, 120)
         raise_now(b)
         assert plan_turns(data_dir) == n + 1
 
