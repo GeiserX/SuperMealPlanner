@@ -1413,6 +1413,23 @@ def test_a_morning_raise_after_the_window_leaves_an_unjudged_plan_for_the_next_d
     assert plan_turns(data_dir) == 2 and len(answers(b)) == 2
 
 
+def test_a_morning_raise_that_left_an_unjudged_plan_never_repeats_the_same_problems(
+    data_dir, tmp_path, monkeypatch
+):
+    b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)  # the window is over
+    checked_only(b, db)
+    raise_now(b)
+    found = db.get_kv("verifier.plan_raised")["found"]
+    moved(b)  # the plan changes overnight, and the check has not judged it
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)
+    assert db.get_kv("verifier.plan_raised").get("found") == found
+    checked_only(b, db)  # judged: the same problems as the turn already raised
+    db.set_kv("verifier.plan_raised", {**db.get_kv("verifier.plan_raised"), "on": "2000-01-01"})
+    raise_now(b)
+    assert plan_turns(data_dir) == 1 and len(answers(b)) == 1
+
+
 def test_a_drawn_plan_already_raised_needs_no_turn(data_dir, tmp_path, monkeypatch):
     b, db = plan_turn_setup(data_dir, tmp_path, monkeypatch, down=False)
     raise_now(b)  # the turn answered
