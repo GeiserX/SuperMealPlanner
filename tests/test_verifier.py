@@ -1760,7 +1760,8 @@ def test_a_plan_turn_a_busy_provider_puts_off_is_never_raised_twice(
     assert raised["row"] in [x["row"] for x in db.get_kv("bot.queued")["-100"]]
     earlier(db, PLAN_RETRY_S[-1] * 2)
     raise_now(b)  # still waiting: never a second turn
-    assert plan_turns(data_dir) == 1
+    assert plan_turns(data_dir) == 1 and len(db.get_kv("bot.queued")["-100"]) == 1
+    assert db.get_kv("verifier.plan_raised")["row"] == raised["row"]
     (plugins / "busy").unlink()
     b.resting.pop(-100)  # the provider is back: what wake() does when its time comes
     drive_plan_turn(b)
