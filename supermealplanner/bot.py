@@ -210,11 +210,44 @@ DEBOUNCE_S = 2.5
 # a fixed 30 s let a second note miss the turn it belonged to.
 VOICE_WAIT_S = 30
 VOICE_PER_S = 3
-PLAN_RAISED = "verifier.plan_raised"  # {"key", "on"}: the plan last raised in the chat, and the day
+# {"key", "found"}: the plan whose problems last reached the chat and what was said of them, only
+# ever written once an answer reached it; "on": the day of the last raise. While a turn has not
+# answered, also "row" (its chat row), "tries" (turns queued that day), "at" (when the last was
+# queued, or ended without reaching the chat) and "pending" ({"key", "found", "judged"}: the plan
+# and what the turn was raised to say, and whether the check had judged that plan), which become
+# "key" (only a judged one) and "found" once it answers: a turn that fails leaves "row", and raise_plan raises it again. "read"
+# and "read_found" (the plan the turn read, judged, and what it had to say of it) take the place of
+# "pending" when it answers; "drawn": a plan the app drew while the turn was pending, raised after
+# it unless the turn read it
+PLAN_RAISED = "verifier.plan_raised"
 PLAN_RAISE_H = 2  # hours after bot.checkup_at a finished plan check may still raise its problems
+# a plan-check turn whose answer never reached the chat is raised again this long after the last
+# try ended, one wait per failure in a row: at most 4 turns a day (4 more for each plan the app
+# draws), then none until the next day, so a provider that keeps failing is not called every tick
+PLAN_RETRY_S = (600, 1800, 3600)
+# a retry whose plan moved meanwhile waits this long for the check of the plan as it is (a check
+# takes minutes), so it says what the check finds; then it goes with the sure problems alone
+PLAN_CHECK_WAIT_S = 2 * 3600
 # what an automatic turn's change block may hold: the menu of the days ahead, the pantry and what
 # was done of a step. Never a recipe's text, a new ingredient, a setting or a note nobody asked for
 AUTO_KEYS = frozenset({"plan", "pantry", "tasks"})
+
+
+def sure_problems(found: list) -> list:
+    """The consistency check's problems a plan turn raises: the ones it is sure of."""
+    return [p for p in found if p.kind not in (*verifier.SKIP, "avoided", "unconfirmed")]
+
+
+def verifier_act(found: list[str]) -> list[str]:
+    """The plan check's findings a plan turn raises (timeline, health, nonsense), in order."""
+    return sorted(f for f in found if f.split(":", 1)[0] in verifier.ACT)
+
+
+def plan_said(found: list[str], sure: list) -> str:
+    """The fingerprint of what a plan turn says, so the same problems are never raised twice."""
+    return hashlib.sha256("\n".join([*found, *sorted(p.key for p in sure)]).encode()).hexdigest()
+
+
 PLAN_EVERY_S = 600  # how often the plan as it stands is checked again (judged only when it changed)
 # a new plan's announcement waits for the plan check of the plan as it stands, at most this long;
 # then it goes, saying the review could not run
@@ -337,6 +370,9 @@ class Item:
     # `mid` is a bot's message (no reaction goes on it): the question a button was tapped under,
     # the echo the bot posted of something said to the app, or another bot's message that called it
     bots_mid: bool = False
+    # the provider's conversation took it before a restart (ask): what it answered then was
+    # never seen here, so a later answer that covers it did not raise a plan's problems
+    replayed: bool = False
 
 
 @dataclass
@@ -1255,7 +1291,7 @@ class Bot:
                     shown: list[bool] = []
                     pulled: list[Item] = []
                     showing = SHOWN.set((*SHOWN.get(), (chat_id, shown)))
-                    covered = None
+                    covered, reached = None, []
                     try:
                         covered = await self.ask(client, chat_id, items, rows, pulled)
                         # bot.answer_scope all: an answer that showed nothing (the AI's
@@ -1268,6 +1304,12 @@ class Bot:
                         raise
                     except Exception as e:  # noqa: BLE001  the next turn of the chat still runs
                         log.warning("a turn failed: %s", safe(e))
+                        if shown:  # its answer reached the chat before it failed: it took
+                            # what it was started with and what it was handed and did not put
+                            # back in the queue
+                            with self.qlock:
+                                back = {i.row for i in self.queues.get(chat_id, [])}
+                            reached = [i for i in [*items, *pulled] if i.row not in back]
                         if not shown:  # nothing was read: no 👀, and they go with the next turn
                             self.hold(chat_id, [*items, *pulled])
                         # nobody asked: "try again in a minute" would answer no one
@@ -1289,6 +1331,8 @@ class Bot:
                     if covered is AGAIN:
                         continue  # its messages are queued again, for the turn that answers them
                     self.answered(items, covered, ears)
+                    took = reached if covered is None else covered
+                    self.plan_answered([*items, *pulled], [i for i in took if not i.replayed])
                     if (
                         chat_id not in self.held
                     ):  # its held lines went out: a new failure starts over
@@ -1372,6 +1416,37 @@ class Bot:
             if spoken is None or (spoken.state == "done" and i.row not in done):
                 continue
             self._finish(spoken, "done" if i.row in done and ears else "failed", ears)
+
+    def plan_answered(self, items: list[Item], took: list[Item]) -> None:
+        """A turn ended: when it was the plan check's (raise_plan) and an answer that reached the
+        chat took it (`took`: covered it, even with nothing to say, or got out before the turn
+        failed), its problems were raised and its row goes from PLAN_RAISED. A turn that failed,
+        or one that left it in the queue, leaves the row, so a later raise_plan raises the same
+        problems again; a busy provider's turn stays queued."""
+        if not any(i.review for i in items):
+            return
+        db = self.state.db
+        raised = db.get_kv(PLAN_RAISED) or {}
+        row = raised.get("row")
+        if row is None or row not in {i.row for i in items}:
+            return
+        if row not in {i.row for i in took}:  # not raised: its retry waits from now
+            db.set_kv(PLAN_RAISED, {**raised, "at": time.time()})
+            return
+        # what it said reached the chat: the plan it read, else the one it was raised for (a plan
+        # the check had not judged leaves the last raised key, so it is raised once judged)
+        done = {k: v for k, v in raised.items() if k in ("key", "on", "found", "drawn")}
+        pending = raised.get("pending") or {}
+        key, found = pending.get("key") if pending.get("judged") else None, pending.get("found")
+        if raised.get("read"):
+            key, found = raised["read"], raised.get("read_found") or found
+            if (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == raised["read"]:
+                done.pop("drawn", None)  # the plan drawn before the turn read it: raised now
+        if key is not None:
+            done["key"] = key
+        if found is not None:
+            done["found"] = found
+        db.set_kv(PLAN_RAISED, done)
 
     def _finish(self, spoken: Spoken, state: str, ears: list[str]) -> None:
         said = speakable(ears, self.t)
@@ -1467,6 +1542,25 @@ class Bot:
             for r in rows
             if r["id"] > seen and r["id"] not in done and not (seen and r["who"] == AI)
         ]
+        # messages the conversation took before a restart (a plan-check turn among them): its
+        # problems were raised only when its answer reached the chat. The AI's answer is logged
+        # only once Telegram took it, and `seen` is the newest row that turn read when it
+        # started, so an answer after both is its own (an earlier turn's came before `seen`). A
+        # restart before the send leaves the row for raise_plan to raise again, one after it
+        # never raises it twice, and a question that came meanwhile never answers it
+        taken = [i for i in items if conv.get("id") and (i.row <= seen or i.row in done)]
+        if taken:
+            sent = [
+                i
+                for i in taken
+                if any(
+                    r["role"] == "assistant" and r["who"] == AI and r["id"] > max(seen, i.row)
+                    for r in rows
+                )
+            ]
+            self.plan_answered(taken, sent)
+            for i in taken:
+                i.replayed = True
         if conv.get("id") and not any(r["role"] == "user" for r in fresh):
             return None  # an earlier turn already took these messages
         # pulled: the caller's list of what the turn is handed while it runs (drive holds those too)
@@ -1493,10 +1587,39 @@ class Bot:
             unmarked = NO_MENTION if data.settings.bot.answer_scope == "all" else NOT_TO_YOU
             last_item = items[-1]
             viewer = last_item.who if private else None
+            plan_turn = (db.get_kv(PLAN_RAISED) or {}).get("row") in {i.row for i in items}
+            if plan_turn:  # the plan before the facts: it counts only if it did not move meanwhile
+                _, before = await asyncio.to_thread(
+                    verifier.plan_brief, data, db, self.state.today()
+                )
             facts = await asyncio.to_thread(
                 context.facts, data, db, self.state.today(), viewer, not private
             )
             facts += self.chat_reminders(chat_id)
+            if plan_turn:
+                # the plan-check turn reads the plan as it is now. When the check judged it, that
+                # plan is the one raised (read) once the answer reaches the chat (plan_answered),
+                # and so is a plan drawn before it; a failed turn keeps the drawn mark, so the
+                # drawn plan gets its own tries. One the check has not judged is raised once it is
+                # (what was raised stays "pending")
+                _, read = await asyncio.to_thread(verifier.plan_brief, data, db, self.state.today())
+                said = None
+                if read == before and (db.get_kv(verifier.PLAN_KEY) or {}).get("key") == read:
+                    found = await asyncio.to_thread(  # what it has to say of it, as raise_plan
+                        verifier.plan_findings, data, db, self.state.today()
+                    )
+                    said = plan_said(
+                        verifier_act(found), sure_problems(await self.problems() or [])
+                    )
+                # read and written with no wait between: a drawn mark set meanwhile stays
+                raised = {
+                    k: v
+                    for k, v in (db.get_kv(PLAN_RAISED) or {}).items()
+                    if k not in ("read", "read_found")
+                }
+                if said is not None:
+                    raised["read"], raised["read_found"] = read, said
+                db.set_kv(PLAN_RAISED, raised)
             turn = {
                 "conversation": conv.get("id"),
                 "rules": self.rules(),
@@ -1958,6 +2081,7 @@ class Bot:
         the chat's messages by itself when it is back. A message that arrives meanwhile waits too."""
         seconds = max(float(seconds), BUSY_MIN_S)
         self.resting[chat_id] = self.clock() + seconds
+        self.spawn(self.wake(client, chat_id, seconds))  # first: a notice Telegram refuses too
         if chat_id not in self.told_busy:
             self.told_busy.add(chat_id)
             minutes = max(1, round(seconds / 60))
@@ -1966,10 +2090,12 @@ class Bot:
                 if minutes < 90
                 else self.t("busy_hours", n=round(minutes / 60))
             )
-            await self.send(
-                client, chat_id, self.t("bot_busy", wait=wait), _reply_to(items), record=False
-            )
-        self.spawn(self.wake(client, chat_id, seconds))
+            try:
+                await self.send(
+                    client, chat_id, self.t("bot_busy", wait=wait), _reply_to(items), record=False
+                )
+            except TelegramError as e:  # only the notice: the messages still go when it is back
+                log.warning("could not say the provider is busy: %s", safe(e))
 
     async def wake(self, client, chat_id: int, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -5132,32 +5258,76 @@ class Bot:
         the household) do the sure problems go there as a list, one line each, once: otherwise the
         app never writes it, the model does. at_once: a plan the app just drew,
         raised now rather than the next morning. Only what goes wrong in the kitchen or for health
-        raises it (verifier.ACT among the check's findings), and never the same problems twice."""
+        raises it (verifier.ACT among the check's findings), and never the same problems twice. A
+        turn whose answer never reached the chat (it failed, or was lost) did not raise them: they
+        are raised again (PLAN_RETRY_S), never while that turn is still queued or running. A plan
+        drawn while that turn is pending is raised once it ends, unless that turn read it."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
         chat = cfg.checkup_chat if cfg.checkup_chat is not None else self.chat_id
         no_ai = data.settings.llm.provider == "none"
         if chat is None or (at_once and no_ai):
             return
-        if not at_once and not cfg.checkup_at:
-            return
         now = dt.datetime.now(self._zone())
         on = now.date().isoformat()
         kept, raised = db.get_kv(verifier.PLAN_KEY) or {}, db.get_kv(PLAN_RAISED) or {}
+        # a turn raised and not answered: queued or running (QUEUED keeps it until the turn ends,
+        # and across a restart, where resume runs it), or failed before its answer reached the chat, so it is raised again:
+        # PLAN_RETRY_S after the last try that day, any time on a later day
+        row = raised.get("row")
+        waiting = row is not None and row in {
+            x["row"] for x in (db.get_kv(QUEUED) or {}).get(str(chat)) or []
+        }
+        if waiting:  # its turn is still to answer
+            if at_once and raised.get("drawn") != on:
+                # a plan drawn meanwhile: raised that day by the first tick after that turn ends,
+                # unless the turn read it (its key is then the one raised)
+                db.set_kv(PLAN_RAISED, {**raised, "drawn": on})
+            return
+        # a drawn plan is owed that day; with no morning checkup to raise it, until a turn does
+        drawn = raised.get("drawn") == on or bool(raised.get("drawn") and not cfg.checkup_at)
+        at_once = at_once or drawn
+
+        def settled() -> None:  # the plan drawn meanwhile needs no turn of its own
+            if raised.get("drawn"):
+                db.set_kv(PLAN_RAISED, {k: v for k, v in raised.items() if k != "drawn"})
+
+        failed = row is not None
+        tries = raised.get("tries", 1) if raised.get("on") == on else 0
+        again = failed and (
+            tries == 0
+            or (
+                tries <= len(PLAN_RETRY_S)
+                and now.timestamp() >= raised.get("at", 0) + PLAN_RETRY_S[tries - 1]
+            )
+        )
+        if not (at_once or again or cfg.checkup_at):
+            return  # no morning checkup: only a plan just drawn raises, and its failed turn again
         late = False
-        if not at_once:
+        if cfg.checkup_at and (drawn or not at_once):  # a drawn plan's check may end late too
             h, m = (int(x) for x in cfg.checkup_at.split(":"))
             when = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            if now < when or not db.was_sent("checkup", now.date(), cfg.checkup_at):
-                return  # after the checkup
-            if raised.get("on") == on:
-                return
+            # a retry of today's failed turn goes at its time, never waiting for the checkup; the
+            # first raise of a day still waits for it
+            if not (again and tries or at_once):
+                if now < when or not db.was_sent("checkup", now.date(), cfg.checkup_at):
+                    return  # after the checkup
+                if raised.get("on") == on and not again:
+                    return
             late = now >= when + dt.timedelta(hours=PLAN_RAISE_H)
         today = self.state.today()
         _, key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
-        if raised.get("key") == key:
+        pending = raised.get("pending") or {}
+        if raised.get("key") == key:  # this plan's problems reached the chat
+            if failed:  # a failed turn about another plan is owed nothing now
+                db.set_kv(
+                    PLAN_RAISED, {k: v for k, v in raised.items() if k in ("key", "on", "found")}
+                )
+            else:
+                settled()
             return
-        found = await self.problems() or []
-        sure = [p for p in found if p.kind not in (*verifier.SKIP, "avoided", "unconfirmed")]
+        if failed and not again and pending.get("key") == key:
+            return  # its failed turn's retry is not due yet
+        sure = sure_problems(await self.problems() or [])
         # a private checkup chat: the turn is that person's, so it sees only what they may see
         who = self.person_of(chat) if chat > 0 else None
         if no_ai or (chat > 0 and who is None):  # no turn can come: a private chat of no one
@@ -5172,22 +5342,50 @@ class Bot:
         # With an AI the app never writes the list: the model says it, short. A check that did not
         # end in the window gives the turn the sure problems alone.
         checked = kept.get("key") == key
-        if not checked and not late:
-            return  # the check has not judged this plan yet
+        # the check has not judged this plan yet: a plan just drawn waits for it that day, and a
+        # retry whose plan moved since for PLAN_CHECK_WAIT_S
+        moved = failed and pending.get("key") != key
+        waits = drawn or (moved and now.timestamp() < raised.get("at", 0) + PLAN_CHECK_WAIT_S)
+        if not checked and (not late or waits):
+            return
         found = await asyncio.to_thread(verifier.plan_findings, data, db, today) if checked else []
-        found = sorted(f for f in found if f.split(":", 1)[0] in verifier.ACT)
+        found = verifier_act(found)
         if not (sure or found):
+            if not checked:  # nothing sure, and the check has not judged the plan: never raised
+                if not (failed or drawn):  # today's raise is over; once judged, it goes tomorrow
+                    keep = {k: v for k, v in raised.items() if k in ("key", "found")}
+                    db.set_kv(PLAN_RAISED, {**keep, "on": on})
+                return  # a failed turn's retry and a drawn plan wait for the check
             if late:
                 db.set_kv(PLAN_RAISED, {"key": key, "on": on})  # nothing to say today
+            elif failed:  # what its failed turn had to say is gone: no turn is owed. The plan
+                # raised is this one, with nothing to say: the failed one, if it comes back (an
+                # undo), and what it never said are raised then
+                db.set_kv(PLAN_RAISED, {"key": key, "on": on})
+            else:
+                settled()
             return
-        said = hashlib.sha256(
-            "\n".join([*found, *sorted(p.key for p in sure)]).encode()
-        ).hexdigest()
-        if raised.get("found") == said:
-            return  # the same findings as the last turn: it would say the same again
-        db.set_kv(PLAN_RAISED, {"key": key, "on": on, "found": said})
+        said = plan_said(found, sure)
+        if raised.get("found") == said:  # what reached the chat last: it would say the same again
+            if failed:  # nor is a failed turn about another plan owed anything now
+                db.set_kv(
+                    PLAN_RAISED, {k: v for k, v in raised.items() if k in ("key", "on", "found")}
+                )
+            else:
+                settled()
+            return
         user = {"first_name": self.t("plan_check_who")}
-        self.take(chat, user, who, None, self.tt("plan_check_turn"), True, review=True)
+        row = self.take(chat, user, who, None, self.tt("plan_check_turn"), True, review=True)
+        # the tries count per day whatever the key (a ticked step moves it too); a plan the app
+        # just drew starts again. What reached the chat stays as it was until this turn answers
+        keep = {k: v for k, v in raised.items() if k in ("key", "found")}
+        mark = {
+            "on": on,
+            "row": row,
+            "at": now.timestamp(),
+            "pending": {"key": key, "found": said, "judged": checked},
+        }
+        db.set_kv(PLAN_RAISED, {**keep, **mark, "tries": 1 if at_once else tries + 1})
         self.spawn(self.drive(client, chat))
 
     async def cmd_reminders(self, who, arg, user, chat=None):

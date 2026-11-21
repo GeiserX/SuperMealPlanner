@@ -243,6 +243,39 @@ def test_a_busy_turn_is_answered_when_nobody_writes_again(data_dir, tmp_path):
     assert ChatBot.texts(b)[-1] == "ya está"
 
 
+def test_a_busy_notice_telegram_refuses_still_wakes_the_chat_when_the_provider_is_back(
+    data_dir, tmp_path
+):
+    data = plugin_data(data_dir)
+    db = DB(tmp_path / "b.db")
+    b = ChatBot(data, db)
+    run(b.handle(None, msg("hola", chat=7, user=7)))
+    reply(data_dir, busy=600)
+    sent = b.call
+
+    refused = []
+
+    async def call(client, method, _tries=0, **params):
+        if params.get("text") == b.t("bot_busy", wait=b.t("busy_minutes", n=10)):
+            refused.append(method)
+            raise TelegramError(method, "Bad Request: chat not found", 400)
+        return await sent(client, method, _tries, **params)
+
+    b.call = call
+    woken = []
+
+    def wake(client, chat_id, seconds):
+        woken.append((chat_id, seconds))
+        return asyncio.sleep(0)
+
+    b.wake = wake
+    run(b.handle(None, msg("primera", chat=7, user=7)))
+    assert woken == [(7, 600.0)]  # its messages still go when the provider is back
+    assert [x["row"] for x in db.get_kv("bot.queued")["7"]]
+    # the notice was refused and that stays there: the turn did not fail, so no error reply
+    assert refused == ["sendMessage"] and b.t("bot_error") not in ChatBot.texts(b)
+
+
 def test_a_busy_spell_of_hours_says_hours(data_dir, tmp_path):
     data = plugin_data(data_dir)
     b = ChatBot(data, DB(tmp_path / "b.db"))
