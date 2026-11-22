@@ -357,9 +357,14 @@ def test_a_change_made_before_the_answer_failed_is_in_the_next_turns_history(
     tick(b)
     assert len(turns(data_dir)) == 2
     # in what the next turn reads: its new messages (the provider kept the conversation) or
-    # its history
+    # its history. It says what the app changed, never the answer's own words (they may hold a
+    # person's weigh-in or notes)
     seen = new_text(turns(data_dir)[1]) + history_text(turns(data_dir)[1])
-    assert "never reached the chat" in seen and "Arreglado." in seen
+    assert "never reached the chat" in seen and "Arreglado." not in seen
+    (unsent,) = [
+        r["text"] for r in _db.chat_rows(-100, 50) if bot_module.UNSENT_CHANGE in r["text"]
+    ]
+    assert unsent != bot_module.UNSENT_CHANGE and "Arreglado." not in unsent
 
 
 def test_a_change_whose_answer_went_out_before_the_turn_broke_is_not_called_unsent(

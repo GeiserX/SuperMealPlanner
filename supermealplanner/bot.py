@@ -1917,7 +1917,9 @@ class Bot:
                     for r in db.chat_rows(chat_id, 50)
                 )
                 if change is not None and now and made and not gone:
-                    db.add_chat(chat_id, "assistant", None, f"{UNSENT_CHANGE}\n{joined}")
+                    # the app's own lines of what it did, never the answer's words: those may
+                    # hold what a person shared (a weigh-in), and the next turn needs only this
+                    db.add_chat(chat_id, "assistant", None, "\n".join([UNSENT_CHANGE, *tail]))
                 raise
             if offer:
                 await self.keep_offer(
