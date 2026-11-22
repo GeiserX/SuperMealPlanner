@@ -619,8 +619,11 @@ def certain_setup(data_dir, tmp_path):
     b.state.reload()
     db = b.state.db
     assert [p for p in doctor.problems(b.data, db, MONDAY) if p.kind == "off_day"]
-    now = dt.datetime.now(ZONE)
-    b.data.settings.bot.checkup_at = f"{now:%H:%M}"
+    # the bot's clock is fixed: the checkup's day and the raise's day are the same, whenever the
+    # test runs (midnight never falls between them)
+    now = dt.datetime(MONDAY.year, MONDAY.month, MONDAY.day, 8, 5, tzinfo=ZONE)
+    b.now = lambda: now
+    b.data.settings.bot.checkup_at = "08:00"
     db.mark_sent("checkup", now.date(), b.data.settings.bot.checkup_at)
     taken = []
     b.take = lambda chat, user, who, msg, text, asked, **k: taken.append((chat, text))
@@ -663,8 +666,8 @@ def test_a_plan_check_that_never_ends_in_the_window_gives_the_turn_and_never_a_l
         run(verifier.check_plan(b.data, db, MONDAY))
         run(b.raise_plan(None))
         assert taken == [] and sends(b, -100) == []  # the check may still end in the window
-        over = dt.timedelta(hours=bot_module.PLAN_RAISE_H, minutes=1)
-        monkeypatch.setattr(b, "now", lambda: dt.datetime.now(ZONE) + over)  # the window is over
+        start, over = b.now(), dt.timedelta(hours=bot_module.PLAN_RAISE_H, minutes=1)
+        monkeypatch.setattr(b, "now", lambda: start + over)  # the window is over
         run(b.raise_plan(None))
         run(b.raise_plan(None))
     finally:
