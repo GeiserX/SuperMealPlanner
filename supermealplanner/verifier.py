@@ -506,6 +506,13 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
     """The brief of the plan check and its key. The key leaves out the brief's clock line, so the
     same plan with the same data and the same problems gives the same key all day. It holds what
     the check asks, so a plan already judged is judged again when the checks change."""
+    text, key, _ = plan_state(data, db, today)
+    return text, key
+
+
+def plan_state(data: Data, db: DB, today: dt.date) -> tuple[str, str, list]:
+    """plan_brief, with the consistency check's problems it was built from: the problems and the
+    key of one reading of the plan."""
     found = doctor.problems(data, db, today)
     # a recipe nobody can have is about the library, not this plan, and names someone's food: the
     # findings of this check reach private chats, so it stays out of the brief. A step nobody
@@ -532,7 +539,7 @@ def plan_brief(data: Data, db: DB, today: dt.date) -> tuple[str, str]:
     }
     text = brief(data, today, PLAN_ANSWER, problems, after, None)
     body = text.split("\n", 1)[1]
-    return text, hashlib.sha256((PLAN_SYSTEM + body).encode()).hexdigest()
+    return text, hashlib.sha256((PLAN_SYSTEM + body).encode()).hexdigest(), found
 
 
 def sessions_now(data: Data, plans: Plans, monday: dt.date) -> list[str]:

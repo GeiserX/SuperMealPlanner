@@ -211,18 +211,21 @@ DEBOUNCE_S = 2.5
 VOICE_WAIT_S = 30
 VOICE_PER_S = 3
 # The plan raise (raise_plan), one record:
-# "said": {"<chat id>": {"key", "found"}}: what the last plan-check answer that reached that chat
-#   showed it, written only then: a digest of each problem its facts held (plan_ids) and the plan
-#   whose check verdict they held (None: the check had not judged it)
-# "open": {"until", "id"}: a raise is owed (the morning checkup, a plan the app drew). Until
+# "said": {"<chat id>": {"key", "found"}}: what that chat heard, written only when a plan-check
+#   answer reached it: a digest of each problem (plan_id) that answer raised or showed as heard
+#   before, and the plan whose check verdict its facts held (None: the check had not judged it, so
+#   the findings heard before stay heard)
+# "open": {"until", "id", "at"}: a raise is owed (the morning checkup, a plan the app drew). Until
 #   `until` it waits for the check to judge the plan as it is, then it goes with the sure problems
-#   alone; None: only the check's verdict raises it (a turn already said the sure problems). "id"
-#   grows with each raise owed, so a turn settles only what was owed when it gathered its facts
+#   alone; None: a turn already said the sure problems, and only what the check finds is owed.
+#   "id" grows with each raise owed, so a turn settles only what was owed when it gathered its
+#   facts. "at": when it was last owed: the failures before it never delay it, and with a morning
+#   checkup one owed since an earlier day waits for today's
 # "on": the day the morning checkup last opened a raise
-# "turn": the plan-check turn queued or running {"row", "chat"}, with what its facts showed once
-#   built ({"key", "found"}, as in "said") and the "open" id they answer
-# "fails": when each plan-check turn since the last one that reached the chat ended without
-#   reaching it (the last PLAN_TRIES)
+# "turn": the plan-check turn queued or running {"row", "chat"}, with, once its facts are built,
+#   what the chat has heard once its answer lands ({"key", "found"}, as in "said"), the problems
+#   it raises ("new": none when nothing is new) and the "open" id they answer
+# "fails": when each recent plan-check try ended without reaching the chat (the last PLAN_TRIES)
 PLAN_RAISED = "verifier.plan_raised"
 PLAN_RAISE_H = 2  # hours after bot.checkup_at a raise waits for the plan check to judge the plan
 # a plan-check turn whose answer never reached the chat goes again this long after the last one
@@ -255,16 +258,28 @@ def verifier_act(found: list[str]) -> list[str]:
 
 
 def plan_id(problem) -> str:
-    """A problem a plan turn raises, as the plan raise keeps it: a sure problem by its key, a check
-    finding by its line, without their words."""
-    text = problem if isinstance(problem, str) else problem.key
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+    """A problem a plan turn raises, as the plan raise keeps it: a sure problem by its key ("s…"),
+    a check finding by its line ("f…"), without their words."""
+    if isinstance(problem, str):
+        return "f" + hashlib.sha256(problem.encode()).hexdigest()[:16]
+    return "s" + hashlib.sha256(problem.key.encode()).hexdigest()[:16]
 
 
 def plan_ids(sure: list, found: list[str]) -> list[str]:
     """What a plan turn raises (sure_problems, verifier_act), so the same problem is never raised
     twice in one chat."""
     return sorted({plan_id(x) for x in [*sure, *found]})
+
+
+def plan_heard(said: list[str], shown: list[str], new: list[str], judged: bool) -> list[str]:
+    """What a chat has heard once a plan turn's answer reached it: what the turn raised (`new`)
+    and what its facts showed (`shown`) that the chat had heard before (`said`). A problem it
+    showed as background but never raised (a sure problem an edit brought while only the check's
+    findings were owed) is not heard. When the check had not judged the plan (`judged` False) the
+    facts could show no finding, so the findings heard before stay heard."""
+    before, raised = set(said), set(new)
+    kept = set() if judged else {i for i in before if i.startswith("f")}
+    return sorted({i for i in shown if i in before or i in raised} | kept)
 
 
 PLAN_EVERY_S = 600  # how often the plan as it stands is checked again (judged only when it changed)
@@ -902,6 +917,7 @@ class Bot:
                     for x in kept
                 ]
                 self.queues[int(key)] = [*items, *self.queues.get(int(key), [])]
+        self.plan_adopt(queued)
         for key in queued:
             self.spawn(self.drive(client, int(key)))
         for msg in inbox:
@@ -1350,7 +1366,9 @@ class Bot:
                     if covered is AGAIN:
                         continue  # its messages are queued again, for the turn that answers them
                     self.answered(items, covered, ears)
-                    took = reached if covered is None else covered
+                    # only an answer that reached the chat said anything: a silent one (the AI's
+                    # [no reply]) took its messages, but the plan's problems were never raised
+                    took = (reached if covered is None else covered) if shown else []
                     self.plan_answered([*items, *pulled], [i for i in took if not i.replayed])
                     if (
                         chat_id not in self.held
@@ -1451,17 +1469,73 @@ class Bot:
         self.plan_ended(turn["row"] in {i.row for i in took})
 
     def plan_record(self) -> dict:
-        """PLAN_RAISED as this version keeps it. One written by 0.49.2 keeps only its day and the
-        turn it had queued: what it said reached the chat cannot be read back, so a problem it
-        said may be said once more."""
-        raw = self.state.db.get_kv(PLAN_RAISED)
+        """PLAN_RAISED as this version keeps it. One written by 0.49.2 that still owed a raise (a
+        turn queued, failed or pending, a plan drawn) becomes a raise owed now, with its turn when
+        that is still queued, in the chat it was queued in. It is written at once, so its deadline
+        never moves. What it said reached the chat cannot be read back, so a problem it said may
+        be said once more."""
+        db = self.state.db
+        raw = db.get_kv(PLAN_RAISED)
         if not isinstance(raw, dict):
             return {}
         rec = {k: raw[k] for k in ("said", "open", "on", "turn", "fails") if k in raw}
-        chat = self.checkup_chat()
-        if "turn" not in rec and isinstance(raw.get("row"), int) and chat is not None:
-            rec["turn"] = {"row": raw["row"], "chat": chat}
+        if not any(k in raw for k in ("row", "pending", "drawn", "owed")):
+            return rec
+        now = self.now().timestamp()
+        rec["open"] = {"until": now + PLAN_CHECK_WAIT_S, "id": 1, "at": now}
+        for chat, kept in (db.get_kv(QUEUED) or {}).items():
+            if raw.get("row") in {x["row"] for x in kept}:
+                rec["turn"] = {"row": raw["row"], "chat": int(chat)}
+        db.set_kv(PLAN_RAISED, rec)
         return rec
+
+    def plan_adopt(self, queued: dict) -> None:
+        """At start (resume): a plan-check row still queued that the record does not know (the
+        process stopped between queueing it and writing it down) is the plan turn, so its answer
+        counts and no second turn is raised."""
+        rec = self.plan_record()
+        if "turn" in rec:
+            return
+        db, marks = self.state.db, {self.t("plan_check_turn"), self.t("plan_check_turn_direct")}
+        for chat, kept in queued.items():
+            rows = db.chat_by_ids(int(chat), [x["row"] for x in kept if x.get("review")])
+            for r in rows:
+                if r["text"] in marks:
+                    db.set_kv(PLAN_RAISED, {**rec, "turn": {"row": r["id"], "chat": int(chat)}})
+                    return
+
+    def plan_new(self, rec: dict, chat: int, sure: list, found: list[str]) -> list:
+        """What a plan raise in `chat` has to raise of these problems: what that chat has not
+        heard. Once a turn said the sure problems of a plan the check had not judged (an open
+        `until` of None), only what the check finds is owed: a sure problem an edit brings
+        meanwhile waits for the next raise, like any edit."""
+        said = set(((rec.get("said") or {}).get(str(chat)) or {}).get("found") or [])
+        owed = rec.get("open")
+        verdict = owed is not None and owed.get("until") is None
+        return [p for p in [*([] if verdict else sure), *found] if plan_id(p) not in said]
+
+    def plan_held(self, rec: dict, now: dt.datetime) -> bool:
+        """The raise owed (rec's "open") waits: PLAN_RETRY_S after the last try that failed since
+        it was owed, not at all once PLAN_TRIES tries failed today, and with a morning checkup, one
+        owed since an earlier day waits for today's checkup (nothing left from the day before goes
+        at night)."""
+        at, fails = rec["open"].get("at", 0), rec.get("fails") or []
+        since = [f for f in fails if f >= at]
+        wait = PLAN_RETRY_S[min(len(since), len(PLAN_RETRY_S)) - 1] if since else 0
+        if since and now.timestamp() < since[-1] + wait:
+            return True
+        zone = self._zone()
+        if (
+            sum(dt.datetime.fromtimestamp(f, zone).date() == now.date() for f in fails)
+            >= PLAN_TRIES
+        ):
+            return True
+        cfg = self.data.settings.bot
+        return bool(
+            dt.datetime.fromtimestamp(at, zone).date() < now.date()
+            and cfg.checkup_at
+            and not self.state.db.was_sent("checkup", now.date(), cfg.checkup_at)
+        )
 
     def plan_shown(self, rows: set[int], shown: dict) -> None:
         """The plan-check turn's facts are built: what they showed ({"key", "found"}), kept with
@@ -1473,44 +1547,47 @@ class Bot:
             self.state.db.set_kv(PLAN_RAISED, rec)
 
     def plan_ended(self, reached: bool) -> None:
-        """The plan-check turn ended. Its answer reached the chat: what its facts showed is what
-        that chat heard ("said"), and the raise owed when it was queued is settled; when the check
-        had not judged the plan its facts showed, what the check finds is still owed. Otherwise a
-        failed try: the next waits PLAN_RETRY_S from now. A try that held the check's verdict
-        never goes without it: if the plan moves before its retry, the retry waits for the check
-        of the plan as it is, PLAN_CHECK_WAIT_S from now at most."""
+        """The plan-check turn ended. Its answer reached the chat (`reached`: something it sent
+        arrived): what it raised and showed is what that chat heard ("said"). Reached or not, a
+        turn with nothing new to say settles the raise owed when it gathered its facts, as a tick
+        with nothing new does; when the check had not judged its plan, what the check finds is
+        still owed. Any other end is a failed try: the next waits PLAN_RETRY_S from now. A try that
+        held the check's verdict never goes without it: if the plan moves before its retry, the
+        retry waits for the check of the plan as it is, PLAN_CHECK_WAIT_S from now at most, then
+        goes with the sure problems alone."""
         rec = self.plan_record()
         turn = rec.pop("turn", None)
         if turn is None:
             return
+        now = self.now().timestamp()
         opened = rec.get("open")
-        if reached:
-            rec.pop("fails", None)
-            if "found" in turn:  # always, but for a turn 0.49.2 queued and its provider took
-                said = {"key": turn.get("key"), "found": turn["found"]}
-                rec["said"] = {**rec.get("said", {}), str(turn["chat"]): said}
-                # a raise owed since it gathered its facts (a plan drawn meanwhile) stays owed
-                if opened is not None and opened.get("id") == turn.get("open"):
-                    if turn.get("key") is None:
-                        rec["open"] = {**opened, "until": None}
-                    else:
-                        del rec["open"]
-        else:
-            now = self.now().timestamp()
+        built = "found" in turn  # its facts were built: not a turn 0.49.2 left, replayed
+        if reached and built:
+            said = {"key": turn.get("key"), "found": turn["found"]}
+            rec["said"] = {**rec.get("said", {}), str(turn["chat"]): said}
+        if built and (reached or not turn.get("new")):
+            # a raise owed since it gathered its facts (a plan drawn meanwhile) stays owed
+            if opened is not None and opened.get("id") == turn.get("open"):
+                if turn.get("key") is None:
+                    rec["open"] = {**opened, "until": None}
+                else:
+                    del rec["open"]  # its failures stay: they count against the day's tries
+        elif not reached:
             rec["fails"] = [*rec.get("fails", []), now][-PLAN_TRIES:]
-            judged = turn.get("key") is not None
-            if judged and opened is not None and opened.get("until") is not None:
-                rec["open"] = {**opened, "until": max(opened["until"], now + PLAN_CHECK_WAIT_S)}
+            if turn.get("key") is not None and opened is not None:
+                until = max(opened.get("until") or 0, now + PLAN_CHECK_WAIT_S)
+                rec["open"] = {**opened, "until": until}
         self.state.db.set_kv(PLAN_RAISED, rec)
 
     def open_raise(self, until: float) -> None:
         """A raise is owed (the morning checkup, a plan the app drew): it waits for the check of
         the plan as it is until `until`, or the later deadline of a raise already owed. Its new id
-        tells a plan-check turn that gathered its facts before it that it is not settled."""
+        tells a plan-check turn that gathered its facts before it that it is not settled; from
+        now ("at"), failures before it never delay it (plan_held)."""
         rec = self.plan_record()
         before = rec.get("open") or {}
         until = max(until, before.get("until") or 0)
-        rec["open"] = {"until": until, "id": before.get("id", 0) + 1}
+        rec["open"] = {"until": until, "id": before.get("id", 0) + 1, "at": self.now().timestamp()}
         self.state.db.set_kv(PLAN_RAISED, rec)
 
     def _finish(self, spoken: Spoken, state: str, ears: list[str]) -> None:
@@ -1656,17 +1733,25 @@ class Bot:
             # verdict that ends meanwhile is not in them
             shown = db.get_kv(verifier.PLAN_KEY) or {}
             rows_in = {i.row for i in items}
-            plan_turn = (self.plan_record().get("turn") or {}).get("row") in rows_in
-            gathered = None
-            if plan_turn:
+            raised = self.plan_record()
+            plan_row = (raised.get("turn") or {}).get("row")
+            gathered = heard = note = None
+            if plan_row in rows_in:
                 # the plan-check turn: its facts show the problems gathered here, once, and what
                 # its answer says reached the chat (plan_answered) is exactly them, never read
                 # again later. In a private chat it sees what that person may see, and so does
                 # what is kept of it. It answers the raise owed now, read before any wait
-                owed = (self.plan_record().get("open") or {}).get("id")
+                owed = (raised.get("open") or {}).get("id")
                 today = self.state.today()
-                problems = await asyncio.to_thread(doctor.problems, data, db, today)
-                _, plan_key = await asyncio.to_thread(verifier.plan_brief, data, db, today)
+                # the problems and the key of one reading of the plan, read again while it moves
+                plan_key = None
+                for _ in range(3):
+                    read = plan_key
+                    _, plan_key, problems = await asyncio.to_thread(
+                        verifier.plan_state, data, db, today
+                    )
+                    if plan_key == read:
+                        break
                 if shown.get("key") != plan_key:
                     plan_key = None  # the check has not judged the plan: none of its verdict
                 findings = (
@@ -1675,12 +1760,26 @@ class Bot:
                     else []
                 )
                 gathered = (problems, findings)
+                # what is new to this chat, told to the turn here, from the same facts: the row
+                # in the chat's history says only that it is the plan check
+                sure, act = sure_problems(problems), verifier_act(findings)
+                new = self.plan_new(raised, chat_id, sure, act)
+                said = ((raised.get("said") or {}).get(str(chat_id)) or {}).get("found") or []
+                ids = [plan_id(p) for p in new]
+                found = plan_heard(said, plan_ids(sure, act), ids, plan_key is not None)
+                heard = {"key": plan_key, "found": found, "new": ids, "open": owed}
+                if len(new) < len(sure) + len(act):  # the chat heard the rest: background now
+                    lines = [x if isinstance(x, str) else self.problem_line(x) for x in new]
+                    note = (
+                        self.t("plan_check_new", items="\n".join("• " + x for x in lines))
+                        if new
+                        else self.t("plan_check_heard")
+                    )
             facts = await asyncio.to_thread(
                 context.facts, data, db, self.state.today(), viewer, not private, shown, gathered
             )
-            if gathered is not None:
-                ids = plan_ids(sure_problems(problems), verifier_act(findings))
-                self.plan_shown(rows_in, {"key": plan_key, "found": ids, "open": owed})
+            if heard is not None:
+                self.plan_shown(rows_in, heard)
             facts += self.chat_reminders(chat_id)
             turn = {
                 "conversation": conv.get("id"),
@@ -1696,6 +1795,9 @@ class Bot:
                 # a turn the bot asked itself about the week: reviewed even with no change
                 "review": any(i.auto or i.review for i in items),
             }
+            for m in turn["new"] if note else []:  # never stored: only this turn reads it
+                if plan_row in m["ids"]:
+                    m["content"] += "\n\n" + note
             if llm.asks(data):
                 turn["ask"] = self._asker(client, turn_state)
             # a turn the bot asked itself: nobody waits, and fixing the week takes longer
@@ -5346,22 +5448,22 @@ class Bot:
         problems go there as a list, one line each, once: otherwise the model words them.
 
         A raise is owed once each morning after the checkup (bot.checkup_at), and when the app drew
-        a plan (at_once, after its announcement). While one is owed and no plan-check turn is
-        queued or running, each tick takes the plan's problems: the ones the consistency check is
-        sure of and, once the check has judged this plan, its timeline, health and nonsense
-        findings. What the chat already heard is never raised again (the turn is told which ones
-        are new); with nothing new the raise is settled once the check has judged the plan. A plan
-        the check has not judged waits for it until the raise's deadline (PLAN_RAISE_H after the
-        checkup, PLAN_CHECK_WAIT_S after a plan drawn or a failed turn that held the check's
-        verdict), then goes with the sure problems alone. A turn whose answer never reached the
-        chat said nothing: the next goes PLAN_RETRY_S after it ended, at most PLAN_TRIES failed
-        ones a day, whatever plan the app draws meanwhile; with a morning checkup, one left from an
-        earlier day waits for this morning's."""
+        a plan (at_once, after its announcement, with or without an AI). While one is owed and no
+        plan-check turn is queued or running, each tick takes the plan's problems: the ones the
+        consistency check is sure of and, once the check has judged this plan, its timeline,
+        health and nonsense findings. What the chat already heard is never raised again (the turn
+        is told which ones are new when its facts are built); with nothing new the raise is
+        settled once the check has judged the plan. A plan the check has not judged waits for it
+        until the raise's deadline (PLAN_RAISE_H after the checkup, PLAN_CHECK_WAIT_S after a plan
+        drawn or a failed turn that held the check's verdict), then goes with the sure problems
+        alone, and only what the check finds is owed after that (plan_new). A turn whose answer
+        never reached the chat said nothing, nor did a list Telegram refused: the next try waits
+        (plan_held)."""
         db, data, cfg = self.state.db, self.data, self.data.settings.bot
         no_ai = data.settings.llm.provider == "none"
         now = self.now()
         stamp = now.timestamp()
-        if at_once and not no_ai:
+        if at_once:  # owed whatever words it: with no AI, the list
             self.open_raise(stamp + PLAN_CHECK_WAIT_S)
         chat = self.checkup_chat()
         if chat is None:
@@ -5382,23 +5484,8 @@ class Bot:
                 self.open_raise((when + dt.timedelta(hours=PLAN_RAISE_H)).timestamp())
                 db.set_kv(PLAN_RAISED, {**self.plan_record(), "on": now.date().isoformat()})
         rec = self.plan_record()
-        if "open" not in rec:
+        if "open" not in rec or self.plan_held(rec, now):
             return
-        fails = rec.get("fails") or []
-        if fails:  # the next try waits from when the last ended, whatever the day
-            if stamp < fails[-1] + PLAN_RETRY_S[min(len(fails), len(PLAN_RETRY_S)) - 1]:
-                return
-            zone = self._zone()
-            day = [dt.datetime.fromtimestamp(f, zone).date() for f in fails]
-            if day.count(now.date()) >= PLAN_TRIES:
-                return  # enough failed turns today
-            # a try left from an earlier day waits for this morning's checkup, never at night
-            if (
-                day[-1] < now.date()
-                and cfg.checkup_at
-                and not db.was_sent("checkup", now.date(), cfg.checkup_at)
-            ):
-                return
         today = self.state.today()
         # a private checkup chat: the turn is that person's, so it sees only what they may see
         who = self.person_of(chat) if chat > 0 else None
@@ -5416,11 +5503,11 @@ class Bot:
         if now_key != key:
             return  # it moved while its problems were gathered: decided on the next tick
         sure = sure_problems(listed)
-        rec = self.plan_record()  # as it is after the waits
-        if "open" not in rec or "turn" in rec:
+        # as it is after the waits: another raise may have queued a turn, or ended one that failed
+        rec = self.plan_record()
+        if "open" not in rec or "turn" in rec or self.plan_held(rec, now):
             return
-        said = set(((rec.get("said") or {}).get(str(chat)) or {}).get("found") or [])
-        new = [p for p in [*sure, *found] if plan_id(p) not in said]
+        new = self.plan_new(rec, chat, sure, found)
         if not new:
             if judged or not talk:  # the chat heard all of it
                 del rec["open"]
@@ -5428,23 +5515,27 @@ class Bot:
             return
         if talk and not judged and (rec["open"]["until"] is None or stamp < rec["open"]["until"]):
             return  # the check may still judge it
-        if not talk:  # nobody else can word it: one line each, never one paragraph, said or not
-            del rec["open"]
-            heard = {"key": key if judged else None, "found": plan_ids(sure, [])}
-            rec["said"] = {**rec.get("said", {}), str(chat): heard}
-            db.set_kv(PLAN_RAISED, rec)
+        if not talk:  # nobody else can word it: one line each, never one paragraph
             items = "\n".join("• " + self.problem_line(p) for p in new)
             try:
                 await self.send(client, chat, self.t("doctor_morning", items=items))
-            except TelegramError as e:
+            except TelegramError as e:  # nothing heard: tried again as a failed turn is
                 log.warning("could not post the plan's problems: %s", safe(e))
+                rec = self.plan_record()
+                rec["fails"] = [*rec.get("fails", []), self.now().timestamp()][-PLAN_TRIES:]
+                db.set_kv(PLAN_RAISED, rec)
+                return
+            rec = self.plan_record()  # heard only once Telegram took it
+            said = ((rec.get("said") or {}).get(str(chat)) or {}).get("found") or []
+            ids = plan_heard(said, plan_ids(sure, []), [plan_id(p) for p in new], False)
+            rec["said"] = {**rec.get("said", {}), str(chat): {"key": None, "found": ids}}
+            del rec["open"]
+            db.set_kv(PLAN_RAISED, rec)
             return
-        text = self.tt("plan_check_turn")
-        if len(new) < len(sure) + len(found):  # the chat heard the rest: background now
-            lines = [x if isinstance(x, str) else self.problem_line(x) for x in new]
-            text += "\n\n" + self.t("plan_check_new", items="\n".join("• " + x for x in lines))
         user = {"first_name": self.t("plan_check_who")}
-        row = self.take(chat, user, who, None, text, True, review=True)
+        # the row says only that it is the plan check: what is new to the chat is told to the turn
+        # once its facts are built (ask), never kept in the chat's history
+        row = self.take(chat, user, who, None, self.tt("plan_check_turn"), True, review=True)
         db.set_kv(PLAN_RAISED, {**rec, "turn": {"row": row, "chat": chat}})
         self.spawn(self.drive(client, chat))
 

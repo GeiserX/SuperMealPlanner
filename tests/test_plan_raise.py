@@ -462,8 +462,9 @@ def test_a_retry_that_should_wait_half_an_hour_waits_it_across_midnight(
 def test_a_finding_the_turns_facts_never_showed_is_raised_after_it(
     data_dir, tmp_path, monkeypatch, clock
 ):
-    """#142 case 8: a queued turn showed another plan's verdict while it read its own, its
-    consistency check could not run, and the finding it was queued for counted as said."""
+    """#142 case 8: a queued turn showed another plan's verdict while it read its own, and the
+    finding it was queued for counted as said. (A turn whose own gathering fails:
+    test_a_plan_turn_whose_consistency_check_fails_is_raised_again.)"""
     b, db = setup(data_dir, tmp_path, monkeypatch)
     path = plan_file(data_dir)
     before = path.read_text()
@@ -474,14 +475,7 @@ def test_a_finding_the_turns_facts_never_showed_is_raised_after_it(
     edit(b)
     judge(b, db, {})  # another plan judged: the verdict kept is of it
     undo(b, path, before)  # back to the plan the turn was queued for
-    real = b.problems
-
-    async def could_not_run(offered=()):
-        return None
-
-    b.problems = could_not_run
     drive(b)  # its facts show no verdict of this plan
-    b.problems = real
     assert len(turns(data_dir)) == 1 and OVEN not in turns(data_dir)[0]["context"]
     judge(b, db, {"nonsense": [OVEN]})
     tick(b)
@@ -654,20 +648,23 @@ def test_a_plan_drawn_after_the_days_tries_waits_for_the_next_day(
     assert SALAD_COOK in turns(data_dir)[-1]["context"]
 
 
-def test_the_same_plan_drawn_again_never_brings_a_failed_turns_retry_forward(
+def test_a_plan_drawn_after_a_failed_try_is_owed_anew_and_goes_at_once(
     data_dir, tmp_path, monkeypatch, clock
 ):
+    """A plan the app draws is a raise owed anew, told right after its announcement: a try that
+    failed before it never delays it (the day's PLAN_TRIES still count both)."""
     b, db = setup(data_dir, tmp_path, monkeypatch, down=True)
     nothing_sure(b)
     judge(b, db, {"nonsense": [OVEN]})
     tick(b)
     assert len(turns(data_dir)) == 1  # failed
     down(data_dir, False)
+    clock.tick(60)
     draw(b)  # the plan drawn again, the same as before
-    assert len(turns(data_dir)) == 1  # its retry still waits
+    assert len(turns(data_dir)) == 2 and answers(b) == 1
     clock.tick(600)
     tick(b)
-    assert len(turns(data_dir)) == 2 and answers(b) == 1
+    assert len(turns(data_dir)) == 2
 
 
 def test_a_plan_turn_that_answered_is_never_raised_again(data_dir, tmp_path, monkeypatch, clock):
@@ -1208,18 +1205,40 @@ def test_a_plan_turn_judged_after_a_running_turns_facts_waits_for_a_turn_of_its_
 
 
 def test_a_persons_turn_settles_no_raise(data_dir, tmp_path, monkeypatch, clock):
+    """A person's turn runs alone while the plan turn is queued behind it: its answer leaves the
+    raise owed, and the plan turn that follows settles it."""
     b, db = setup(data_dir, tmp_path, monkeypatch, checkup=False)
     judge(b, db, {})
-    b.drive = parked
-    draw(b)  # queued for the plan drawn
-    del b.drive
-    # a person writes first: their turn runs before the plan turn, which waits for its own
-    b.take(-100, {"id": 7, "first_name": "Luis"}, "luis", None, "qué cenamos", True)
-    drive(b)
-    plan_turns = [t for t in turns(data_dir) if t["review"]]
-    assert len(plan_turns) == 1 and answers(b) == 1
+    plugins = data_dir / "plugins"
+    (plugins / "ai.py").write_text(PLUGIN + JOINS)
+    real, ended = b.plan_answered, []
+
+    def plan_answered(items, took):
+        real(items, took)
+        ended.append(("open" in b.plan_record(), any(i.review for i in items)))
+
+    b.plan_answered = plan_answered
+
+    async def go():
+        b.take(-100, {"id": 7, "first_name": "Luis"}, "luis", None, "qué cenamos", True)
+        person = asyncio.ensure_future(b.drive(None, -100))
+        try:
+            await reach(plugins / "waiting", person)  # Luis's turn runs alone
+            await b.raise_plan(None, at_once=True)  # the plan turn queues behind it
+        finally:
+            (plugins / "go").write_text("")
+        await person
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    assert json.loads((plugins / "took.json").read_text()) == []  # Luis's turn never took it
+    assert ended == [
+        (True, False),
+        (False, True),
+    ]  # owed after Luis's answer, settled after its own
+    assert len(turns(data_dir)) == 2 and turns(data_dir)[1]["review"] and answers(b) == 1
     tick(b)
-    assert len([t for t in turns(data_dir) if t["review"]]) == 1
+    assert len(turns(data_dir)) == 2
 
 
 # the plan turn's provider answers once plugins/go exists
@@ -1999,3 +2018,497 @@ def test_two_raises_at_the_same_time_queue_one_plan_turn(data_dir, tmp_path, mon
 
     run(both())
     assert len(db.get_kv("bot.queued")["-100"]) == 1
+
+
+# ---------------------------------------------------------------- the second review of #143
+
+
+def plan_note(b, turn: dict) -> str:
+    """What the plan turn was told is new (plan_check_new), or "" when it was told nothing."""
+    head = b.t("plan_check_new", items="").split("\n")[0]
+    text = new_text(turn)
+    return text.split(head, 1)[1] if head in text else ""
+
+
+def plan_rows(b, db, chat=-100) -> list[str]:
+    """The plan check's rows in the chat's history, as the next turns read them."""
+    marks = {b.t("plan_check_turn"), b.t("plan_check_turn_direct")}
+    return [
+        r["text"] for r in db.chat_rows(chat, 200) if r["role"] == "user" and r["text"] in marks
+    ]
+
+
+def test_the_new_problems_note_comes_from_the_facts_the_turn_shows(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """A turn queued to say X waited while the plan moved to one with Y instead: it was told only X
+    was new, and Y counted as heard though nobody named it. The note is built when the facts are,
+    and the chat's history keeps only the plan check's own line, never a finding."""
+    b, db = setup(data_dir, tmp_path, monkeypatch)  # the window is over
+    path = plan_file(data_dir)
+    before = path.read_text()
+    judge(b, db, {"nonsense": [OVEN]})
+    tick(b)  # the sessions off their days and OVEN reach the chat
+    assert answers(b) == 1
+    edit(b)  # the next day the plan has a cook nobody does (X)
+    judge(b, db, {"nonsense": [OVEN]})
+    next_morning(b, clock, db)
+    b.drive = parked
+    tick(b)  # queued to say X
+    del b.drive
+    undo(b, path, before)  # before it runs, X is gone and the check finds Y
+    judge(b, db, {"nonsense": [OVEN, TUESDAY_OVEN]})
+    drive(b)
+    note = plan_note(b, turns(data_dir)[1])
+    assert TUESDAY_OVEN in note and note.count("•") == 1 and answers(b) == 2
+    assert len(plan_rows(b, db)) == 2  # the rows say nothing of what was found
+
+
+def test_a_turn_before_the_check_judged_its_plan_keeps_the_findings_the_chat_heard(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """A turn whose plan the check had not judged showed no finding: the findings the chat heard
+    before still count as heard, so the check finding them again raises nothing."""
+    b, db = setup(data_dir, tmp_path, monkeypatch)  # the window is over
+    judge(b, db, {"nonsense": [OVEN]})
+    tick(b)  # OVEN reaches the chat
+    edit(b)  # overnight the plan moves, and the check has not judged it
+    next_morning(b, clock, db)
+    tick(b)  # the cook nobody does goes, with the sure problems alone
+    assert len(turns(data_dir)) == 2 and OVEN not in turns(data_dir)[1]["context"]
+    judge(b, db, {"nonsense": [OVEN]})  # judged: OVEN, which the chat heard the day before
+    tick(b)
+    assert len(turns(data_dir)) == 2 and answers(b) == 2
+
+
+@pytest.mark.parametrize("left", ["row", "drawn", "pending"])
+def test_what_0_49_2_still_owed_is_raised_after_the_upgrade(
+    data_dir, tmp_path, monkeypatch, clock, left
+):
+    """0.49.2 left a raise owed (a failed turn waiting for its retry, a plan drawn, a turn pending):
+    with no morning checkup nothing else would ever raise it."""
+    b, db = setup(data_dir, tmp_path, monkeypatch, checkup=False)
+    judge(b, db, {})
+    old = {"key": "k", "found": "f", "on": MONDAY.isoformat(), "at": 0, "tries": 1}
+    old |= {
+        "row": {"row": 12345},  # its row is in no queue: the turn failed
+        "drawn": {"drawn": MONDAY.isoformat(), "owed": True},
+        "pending": {"pending": {"key": "k", "found": "f", "judged": True}},
+    }[left]
+    db.set_kv("verifier.plan_raised", old)
+    tick(b)
+    assert len(turns(data_dir)) == 1 and answers(b) == 1
+
+
+def test_a_turn_0_49_2_queued_in_the_group_counts_for_the_group(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """The checkup moved to a person's own chat after 0.49.2 queued its turn in the group: that
+    turn's answer is the group's, never that person's."""
+    b, db = setup(data_dir, tmp_path, monkeypatch)
+    cfg = b.data.settings.bot
+    b.drive = parked
+    tick(b)  # queued in the group
+    row = db.get_kv("bot.queued")["-100"][0]["row"]
+    db.set_kv("verifier.plan_raised", {"on": MONDAY.isoformat(), "row": row, "at": 0, "tries": 1})
+    ana = cfg.people["ana"]
+    cfg.checkup_chat = ana
+    del b.drive
+    drive(b)  # it answers in the group
+    assert answers(b, -100) == 1
+    next_morning(b, clock, db)
+    tick(b)  # ana never heard it
+    assert answers(b, ana) == 1
+
+
+def test_a_list_telegram_refused_is_sent_again_after_its_wait(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    from supermealplanner.bot import TelegramError
+
+    b, _db = setup(data_dir, tmp_path, monkeypatch)
+    b.data.settings.bot.checkup_chat = 99  # a private chat of no one: the list, never a turn
+    real, refused = b.call, []
+
+    async def call(client, method, _tries=0, **params):
+        if method == "sendMessage" and params.get("chat_id") == 99 and not refused:
+            refused.append(method)
+            raise TelegramError(method, "Bad Gateway", 502)
+        return await real(client, method, _tries, **params)
+
+    b.call = call
+    tick(b)
+    assert refused and sends(b, 99) == []
+    tick(b)
+    assert sends(b, 99) == []  # it waits, as a failed turn does
+    clock.tick(600)
+    tick(b)
+    tick(b)
+    assert len(sends(b, 99)) == 1
+
+
+def test_a_verdict_that_comes_at_night_waits_for_the_mornings_checkup(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """Monday's turn went with the sure problems alone; what the check finds at night goes after
+    Tuesday's checkup, never at night."""
+    b, db = setup(data_dir, tmp_path, monkeypatch)  # the window is over
+    tick(b)
+    assert len(turns(data_dir)) == 1 and answers(b) == 1
+    tuesday = MONDAY + dt.timedelta(days=1)
+    clock.set(tuesday, 0, 5)
+    judge(b, db, {"nonsense": [OVEN]})
+    tick(b)
+    clock.set(tuesday, 2, 0)
+    tick(b)
+    assert len(turns(data_dir)) == 1
+    clock.set(tuesday, 8, 5)
+    db.mark_sent("checkup", tuesday, "08:00")
+    tick(b)
+    assert len(turns(data_dir)) == 2 and OVEN in turns(data_dir)[1]["context"]
+
+
+def test_a_turn_queued_before_midnight_that_failed_after_it_waits_for_the_checkup(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    b, db = setup(data_dir, tmp_path, monkeypatch, down=True)
+    judge(b, db, {})
+    clock.set(MONDAY, 23, 55)
+    b.drive = parked
+    draw(b)  # queued before midnight
+    del b.drive
+    tuesday = MONDAY + dt.timedelta(days=1)
+    clock.set(tuesday, 0, 5)
+    drive(b)  # it fails after midnight
+    down(data_dir, False)
+    clock.set(tuesday, 0, 15)
+    tick(b)
+    assert len(turns(data_dir)) == 1
+    clock.set(tuesday, 8, 5)
+    db.mark_sent("checkup", tuesday, "08:00")
+    tick(b)
+    assert len(turns(data_dir)) == 2 and answers(b) == 1
+
+
+def test_an_edit_while_the_check_is_awaited_raises_nothing_when_it_finds_nothing(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """The morning turn went with the sure problems alone, so only what the check finds is still
+    owed: an edit from the chat meanwhile waits for the next morning like any edit."""
+    b, db = setup(data_dir, tmp_path, monkeypatch)  # the window is over
+    tick(b)
+    assert len(turns(data_dir)) == 1
+    clock.set(MONDAY, 14)
+    edit(b)  # an edit from the chat: a cook nobody does
+    judge(b, db, {})  # the check finds nothing
+    tick(b)
+    assert len(turns(data_dir)) == 1
+    next_morning(b, clock, db)
+    tick(b)
+    assert len(turns(data_dir)) == 2 and SALAD_COOK in turns(data_dir)[1]["context"]
+
+
+def test_a_plan_turn_whose_answer_was_silence_is_raised_again(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    b, _db = setup(data_dir, tmp_path, monkeypatch)
+    reply = data_dir / "plugins" / "reply.txt"
+    reply.write_text("[no reply]")
+    tick(b)
+    assert len(turns(data_dir)) == 1 and sends(b, -100) == []  # nothing reached the chat
+    reply.unlink()
+    tick(b)
+    assert len(turns(data_dir)) == 1  # its retry waits
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 2 and answers(b) == 1
+
+
+def test_a_queued_turn_left_with_nothing_new_is_told_so_and_counts_no_failure(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    b, db = setup(data_dir, tmp_path, monkeypatch, checkup=False)
+    path = plan_file(data_dir)
+    before = path.read_text()
+    judge(b, db, {})
+    draw(b)  # the sure problems reach the chat
+    edit(b)
+    judge(b, db, {})
+    b.drive = parked
+    draw(b)  # queued for the cook nobody does
+    del b.drive
+    undo(b, path, before)  # before it runs, the plan is back to what the chat heard
+    judge(b, db, {})
+    (data_dir / "plugins" / "reply.txt").write_text("[no reply]")
+    drive(b)
+    assert len(turns(data_dir)) == 2 and answers(b) == 1
+    assert b.t("plan_check_heard") in new_text(turns(data_dir)[1])
+    assert not (db.get_kv("verifier.plan_raised") or {}).get("fails")  # not a failed try
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 2
+
+
+def test_a_plan_drawn_at_night_after_a_settled_raise_goes_at_once(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """Monday's failed try was settled when the plan was fixed: a plan drawn after midnight goes
+    with its announcement, never held for the checkup by that failure."""
+    b, db = setup(data_dir, tmp_path, monkeypatch, down=True)
+    tick(b)  # Monday's raise fails
+    real = b.problems
+    nothing_sure(b)  # then the plan is fixed, and the check agrees: nothing is owed
+    judge(b, db, {})
+    down(data_dir, False)
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 1
+    b.problems = real
+    clock.set(MONDAY + dt.timedelta(days=1), 1, 0)
+    edit(b)
+    judge(b, db, {})
+    draw(b)
+    assert len(turns(data_dir)) == 2 and answers(b) == 1
+
+
+def test_a_new_raise_waits_ten_minutes_after_its_own_first_failure(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    b, db = setup(data_dir, tmp_path, monkeypatch, down=True, checkup=False)
+    judge(b, db, {})
+    draw(b)  # fails
+    real = b.problems
+    nothing_sure(b)
+    clock.tick(600)
+    tick(b)  # nothing is owed now: settled
+    b.problems = real
+    clock.tick(600)
+    edit(b)
+    judge(b, db, {})
+    draw(b)  # another plan: its turn fails too
+    assert len(turns(data_dir)) == 2
+    down(data_dir, False)
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 3 and answers(b) == 1
+
+
+def test_a_day_never_gets_more_failed_plan_turns_than_its_tries(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """A turn that reached the chat between failures does not start the day's count again."""
+    b, db = setup(data_dir, tmp_path, monkeypatch, down=True, checkup=False)
+    judge(b, db, {})
+    draw(b)
+    for wait in (600, 1800):
+        clock.tick(wait)
+        tick(b)
+    assert len(turns(data_dir)) == 3 and answers(b) == 0
+    down(data_dir, False)
+    clock.tick(3600)
+    tick(b)
+    assert answers(b) == 1
+    down(data_dir)
+    edit(b)
+    judge(b, db, {})
+    draw(b)  # the day's 4th failed try
+    assert len(turns(data_dir)) == 5
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 5
+
+
+def test_a_failed_turn_for_a_late_finding_still_has_a_deadline(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """With no morning checkup and the check down, a failed turn for what the check found once
+    still lets a new sure problem go after its wait."""
+    b, db = setup(data_dir, tmp_path, monkeypatch, checkup=False)
+    draw(b)  # the check has not judged the plan: it waits for it
+    clock.tick(bot_module.PLAN_CHECK_WAIT_S)
+    tick(b)  # the sure problems alone
+    assert len(turns(data_dir)) == 1 and answers(b) == 1
+    judge(b, db, {"nonsense": [OVEN]})
+    down(data_dir)
+    tick(b)  # the turn for what the check found fails
+    assert len(turns(data_dir)) == 2
+    edit(b)  # the plan moves, and the check stays down
+    down(data_dir, False)
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 2  # it waits for the check of the plan as it is
+    clock.tick(bot_module.PLAN_CHECK_WAIT_S)
+    tick(b)
+    assert len(turns(data_dir)) == 3 and SALAD_COOK in turns(data_dir)[2]["context"]
+
+
+def test_a_plan_drawn_with_no_ai_gets_its_list_with_no_morning_checkup(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    b, _db = setup(data_dir, tmp_path, monkeypatch, checkup=False)
+    b.data.settings.llm.provider = "none"
+    draw(b)
+    (report,) = [x["text"] for x in sends(b, -100)]
+    assert report.startswith("⚠️ The plan has something to fix:")
+    draw(b)
+    assert len(sends(b, -100)) == 1
+
+
+def test_two_raises_never_skip_the_wait_after_a_turn_that_failed_between_them(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """Two raises overlap: the first queues a turn that fails before the second reads the record
+    again. The second waits as any retry does."""
+    b, _db = setup(data_dir, tmp_path, monkeypatch, down=True)
+    tick(b)  # fails
+    clock.tick(600)
+    real_problems, real_drive, ended, calls = b.problems, b.drive, [], []
+
+    async def drive_(client, chat):
+        await real_drive(client, chat)
+        ended.append(chat)
+
+    async def problems(offered=()):
+        calls.append(offered)
+        if len(calls) == 2:  # the second raise reads the record once the first one's turn ended
+            while not ended:
+                await asyncio.sleep(0.01)
+        return await real_problems(offered)
+
+    b.drive, b.problems = drive_, problems
+
+    async def both():
+        await asyncio.gather(b.raise_plan(None), b.raise_plan(None))
+        await asyncio.gather(*b.tasks)
+
+    run(both())
+    assert ended and len(turns(data_dir)) == 2  # the first try and one retry, never a third
+
+
+def test_a_plan_row_queued_just_before_a_stop_is_the_plan_turn_after_the_restart(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """The process stopped between queueing the plan check's row and writing it in the record: the
+    restart takes that row for the plan turn, so the chat never gets a second one."""
+    b, db = setup(data_dir, tmp_path, monkeypatch)
+    judge(b, db, {})
+    real = b.state.db.set_kv
+    stopped = []
+
+    def set_kv(key, value):
+        if key == "verifier.plan_raised" and isinstance(value, dict) and "turn" in value:
+            stopped.append(value)
+            raise SystemExit  # the stop, right after take()
+        return real(key, value)
+
+    b.drive = parked
+    monkeypatch.setattr(db, "set_kv", set_kv)
+    with pytest.raises(SystemExit):
+        tick(b)
+    monkeypatch.setattr(db, "set_kv", real)
+    assert stopped and len(db.get_kv("bot.queued")["-100"]) == 1
+    b2 = restarted(b, False, db)  # the new process runs the queued row as the plan turn
+    assert len(turns(data_dir)) == 1 and answers(b2) == 1
+    tick(b2)
+    clock.tick(3600)
+    tick(b2)
+    assert len(turns(data_dir)) == 1 and answers(b2) == 1
+
+
+def test_a_plan_turn_whose_queue_the_chat_emptied_is_raised_again(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    b, db = setup(data_dir, tmp_path, monkeypatch)
+    b.drive = parked
+    tick(b)
+    assert db.get_kv("bot.queued")
+    run(b.cmd_new(None, "", {}, {"id": -100}))  # /nuevo empties the chat's queue
+    del b.drive
+    assert not db.get_kv("bot.queued")
+    tick(b)  # its turn will never answer: a failed try
+    assert turns(data_dir) == []
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 1 and answers(b) == 1
+
+
+def test_a_plan_turn_whose_consistency_check_fails_is_raised_again(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """The turn's own gathering of the plan's problems fails (not the raise's): nothing reached the
+    chat, so the raise stays owed and goes again."""
+    b, _db = setup(data_dir, tmp_path, monkeypatch)
+    b.drive = parked
+    tick(b)
+    del b.drive
+    real = doctor.problems
+
+    def broken(*a, **k):
+        raise RuntimeError("broken")
+
+    monkeypatch.setattr(doctor, "problems", broken)
+    drive(b)
+    monkeypatch.setattr(doctor, "problems", real)
+    assert turns(data_dir) == [] and answers(b) == 0
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 1 and answers(b) == 1
+
+
+def test_a_plan_that_moves_while_the_turn_gathers_its_problems_is_gathered_again(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """The plan moved after the turn read its problems and before it read its key: the turn reads
+    both again, so its facts show the problems of the plan its key names."""
+    b, _db = setup(data_dir, tmp_path, monkeypatch)
+    b.drive = parked
+    tick(b)
+    del b.drive
+    real, moved = doctor.problems, []
+
+    def problems(*a, **k):
+        out = real(*a, **k)
+        if not moved:
+            moved.append(edit(b))  # a cook nobody does, right after the problems were read
+        return out
+
+    monkeypatch.setattr(doctor, "problems", problems)
+    drive(b)
+    assert moved and SALAD_COOK in turns(data_dir)[0]["context"]
+
+
+def test_a_turn_for_a_late_finding_never_counts_an_edits_problem_as_heard(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """Only what the check finds was owed after the morning's sure problems: the turn for it shows
+    an edit's sure problem only as background, so that problem goes the next morning."""
+    b, db = setup(data_dir, tmp_path, monkeypatch)  # the window is over
+    tick(b)  # the sure problems alone
+    clock.set(MONDAY, 14)
+    edit(b)  # an edit from the chat: a cook nobody does
+    judge(b, db, {"nonsense": [OVEN]})
+    tick(b)  # what the check found goes, and only that is new
+    assert len(turns(data_dir)) == 2
+    note = plan_note(b, turns(data_dir)[1])
+    assert OVEN in note and note.count("•") == 1
+    next_morning(b, clock, db)
+    tick(b)
+    assert len(turns(data_dir)) == 3 and answers(b) == 3
+    assert SALAD_COOK in turns(data_dir)[2]["context"]
+
+
+def test_what_0_49_2_owed_waits_for_the_check_at_most_its_wait(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """The raise 0.49.2 still owed waits for the check of a plan it has not judged, then goes with
+    the sure problems alone: its deadline is set once, never again at each tick."""
+    b, db = setup(data_dir, tmp_path, monkeypatch, checkup=False)
+    db.set_kv("verifier.plan_raised", {"on": MONDAY.isoformat(), "drawn": MONDAY.isoformat()})
+    tick(b)
+    assert turns(data_dir) == []  # it waits for the check
+    clock.tick(bot_module.PLAN_CHECK_WAIT_S - 60)
+    tick(b)
+    assert turns(data_dir) == []
+    clock.tick(60)
+    tick(b)
+    assert len(turns(data_dir)) == 1 and answers(b) == 1
