@@ -508,11 +508,13 @@ def facts(
     viewer: str | None = None,
     group: bool = False,
     verdict: dict | None = None,
+    problems: tuple[list, list[str]] | None = None,
 ) -> str:
     """The household's data as of now. viewer: in a private chat, the person asking; only their own
     pills, notes and logs are included. group: in the household group, sensitive logs (binges,
     cravings, notes) stay out unless bot.share_logs_in_group is set. verdict: the plan check's
-    verdict to show, read before (verifier.plan_findings); by default the one kept now."""
+    verdict to show, read before (verifier.plan_findings); by default the one kept now. problems:
+    what problems_now shows, gathered before (the plan check's turn keeps what they were)."""
     t = Translator(data.locale)
     hh = data.household
     out = [f"Today is {t.date(today)} ({today.isoformat()})."]
@@ -607,7 +609,7 @@ def facts(
     monday = today - dt.timedelta(days=today.weekday())
     first = today - dt.timedelta(days=tasks.ASK_DAYS)  # as far back as the morning asks
     out += tasks.tasks_now(data, db, first, monday + dt.timedelta(days=13))
-    out += problems_now(data, db, today, viewer, verdict)
+    out += problems_now(data, db, today, viewer, verdict, problems)
     out.append(settings_now(data, viewer))
     return "\n".join(x for x in out if x is not None)
 
@@ -773,18 +775,26 @@ def pantry_now(data: Data, db: DB, today: dt.date) -> list[str]:
 
 
 def problems_now(
-    data: Data, db: DB, today: dt.date, viewer: str | None = None, verdict: dict | None = None
+    data: Data,
+    db: DB,
+    today: dt.date,
+    viewer: str | None = None,
+    verdict: dict | None = None,
+    problems: tuple[list, list[str]] | None = None,
 ) -> list[str]:
     """What the consistency check (doctor.py) and the last check of the plan as it stands
     (verifier.check_plan) found, with what to change. Food bought and on no dish has its own
     section above, so it is not repeated here. Stale reminders stay out: they may be another
-    chat's (a private one), and the app cancels them itself, saying so in their own chat."""
+    chat's (a private one), and the app cancels them itself, saying so in their own chat.
+    problems: the consistency check's problems and the plan check's findings, gathered before."""
     from .verifier import plan_findings
 
+    if problems is None:
+        problems = doctor.problems(data, db, today), plan_findings(data, db, today, viewer, verdict)
     # a recipe one person cannot have names the food: in a private chat it may be someone else's
     skip = ("unused", "stale_reminder") + (("avoided",) if viewer is not None else ())
-    found = [p.text for p in doctor.problems(data, db, today) if p.kind not in skip]
-    found += plan_findings(data, db, today, viewer, verdict)
+    found = [p.text for p in problems[0] if p.kind not in skip]
+    found += problems[1]
     if not found:
         return []
     return [

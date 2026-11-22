@@ -120,43 +120,40 @@ def plan_turns(b, monkeypatch):
     return taken
 
 
-def answered(b):
-    """The plan turn's answer reached the chat, as the drive reports it."""
-    from types import SimpleNamespace
-
-    row = (b.state.db.get_kv("verifier.plan_raised") or {}).get("row")
-    item = SimpleNamespace(row=row, review=True)
-    b.plan_answered([item], [item])
-
-
 def test_a_new_plan_is_raised_once_and_never_for_the_same_findings(data_dir, tmp_path, monkeypatch):
     """A plan the app draws the same day as another one's turn still gets its own turn when it
     finds something else: a soak it needs tonight cannot wait for tomorrow's check."""
+    from .test_conversations import PLUGIN
+    from .test_plan_raise import TURNS, turns
     from .test_verifier import D, dinner
 
     b, db = vsetup(data_dir, tmp_path)
-    taken = plan_turns(b, monkeypatch)
-    _calls, real = judged({"timeline": ["Nothing cooks the chickpeas for Wednesday."]})
-    monkeypatch.setattr(verifier.llm, "complete", real)
-    run(verifier.check_plan(b.data, db, MONDAY))
-    run(b.raise_plan(None, at_once=True))
-    assert taken == [b.t("plan_check_turn")]
-    answered(b)
-    run(b.raise_plan(None, at_once=True))  # the same plan: raised once
-    assert len(taken) == 1
+    (data_dir / "plugins" / "ai.py").write_text(PLUGIN + TURNS)
+
+    def drawn(verdict):  # the app draws the plan as it is, judged with this verdict
+        _calls, fake = judged(verdict)
+        monkeypatch.setattr(verifier.llm, "complete", fake)
+        run(verifier.check_plan(b.data, db, MONDAY))
+
+        async def go():
+            await b.raise_plan(None, at_once=True)
+            await asyncio.gather(*b.tasks)
+
+        run(go())
+
+    chickpeas = {"timeline": ["Nothing cooks the chickpeas for Wednesday."]}
+    drawn(chickpeas)
+    assert len(turns(data_dir)) == 1  # its turn answered
+    drawn(chickpeas)  # the same plan: raised once
+    assert len(turns(data_dir)) == 1
     # a new plan the same day, with findings of its own: raised now, not tomorrow
     dinner(b.data, D(3), "merluza-cena-1")
-    _calls, other = judged({"timeline": ["Nothing thaws the hake for Thursday."]})
-    monkeypatch.setattr(verifier.llm, "complete", other)
-    run(verifier.check_plan(b.data, db, MONDAY))
-    run(b.raise_plan(None, at_once=True))
-    assert len(taken) == 2
-    answered(b)
-    # another day, another plan, the same findings: nothing new to say
-    raised = db.get_kv("verifier.plan_raised")
-    db.set_kv("verifier.plan_raised", {**raised, "on": "2000-01-01", "key": "old"})
-    run(b.raise_plan(None, at_once=True))
-    assert len(taken) == 2
+    drawn({"timeline": ["Nothing thaws the hake for Thursday."]})
+    assert len(turns(data_dir)) == 2
+    # another plan, the same problems: nothing new to say
+    dinner(b.data, D(4), "merluza-cena-1")
+    drawn({"timeline": ["Nothing thaws the hake for Thursday."]})
+    assert len(turns(data_dir)) == 2
 
 
 def test_the_plan_turn_never_comes_for_wording_alone(data_dir, tmp_path, monkeypatch):
