@@ -1327,18 +1327,23 @@ class Bot:
                     pulled: list[Item] = []
                     showing = SHOWN.set((*SHOWN.get(), (chat_id, shown)))
                     covered, reached = None, []
+                    # whether the answer itself reached the chat, read before mark(): the 👀 of
+                    # a silent answer shows too, and must not count as the plan's problems said
+                    spoke = False
                     try:
                         covered = await self.ask(client, chat_id, items, rows, pulled)
+                        spoke = bool(shown)
                         # bot.answer_scope all: an answer that showed nothing (the AI's
                         # [no reply], an empty answer, a change that says nothing): its
                         # people's messages are marked read, never left with nothing
-                        silent = covered is not AGAIN and covered is not None and not shown
+                        silent = covered is not AGAIN and covered is not None and not spoke
                         if silent and self.answers_all(chat_id):
                             await self.mark(client, chat_id, covered, SEEN)
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:  # noqa: BLE001  the next turn of the chat still runs
                         log.warning("a turn failed: %s", safe(e))
+                        spoke = bool(shown)
                         if shown:  # its answer reached the chat before it failed: it took
                             # what it was started with and what it was handed and did not put
                             # back in the queue
@@ -1368,7 +1373,7 @@ class Bot:
                     self.answered(items, covered, ears)
                     # only an answer that reached the chat said anything: a silent one (the AI's
                     # [no reply]) took its messages, but the plan's problems were never raised
-                    took = (reached if covered is None else covered) if shown else []
+                    took = (reached if covered is None else covered) if spoke else []
                     self.plan_answered([*items, *pulled], [i for i in took if not i.replayed])
                     if (
                         chat_id not in self.held
@@ -3362,7 +3367,10 @@ class Bot:
         """Show something the plugin would do outside the chat and wait for the right yes: the
         asker's, or an admin's. A step that changes nothing runs at once, in the background."""
         t, cfg = self.t, self.data.settings.bot
-        if asker is None or user_id is None:
+        if user_id is None:  # the bot's own turn (the plan check): nobody asked it, nobody to tell
+            log.info("a proposal of the bot's own turn was dropped")
+            return
+        if asker is None:
             await self.send(client, chat_id, t("proposal_members_only"), reply_to)
             return
         pending = {
@@ -5503,6 +5511,8 @@ class Bot:
         if now_key != key:
             return  # it moved while its problems were gathered: decided on the next tick
         sure = sure_problems(listed)
+        if self.now().date() != now.date():
+            return  # the day changed while gathering: the next tick gathers the new day's inputs
         # as it is after the waits: another raise may have queued a turn, or ended one that failed
         rec = self.plan_record()
         if "open" not in rec or "turn" in rec or self.plan_held(rec, now):

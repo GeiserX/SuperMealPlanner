@@ -39,7 +39,9 @@ def converse(turn, settings):
         raise RuntimeError("down")
     reply = HERE / "reply.txt"
     text = reply.read_text() if reply.exists() else "The batch session moves to Wednesday."
-    return {"text": text, "conversation": "c1"}
+    offers = HERE / "proposals.json"
+    proposals = json.loads(offers.read_text()) if offers.exists() else []
+    return {"text": text, "conversation": "c1", "proposals": proposals}
 """
 
 
@@ -2208,10 +2210,13 @@ def test_an_edit_while_the_check_is_awaited_raises_nothing_when_it_finds_nothing
     assert len(turns(data_dir)) == 2 and SALAD_COOK in turns(data_dir)[1]["context"]
 
 
+@pytest.mark.parametrize("scope", ["asked", "all"])
 def test_a_plan_turn_whose_answer_was_silence_is_raised_again(
-    data_dir, tmp_path, monkeypatch, clock
+    data_dir, tmp_path, monkeypatch, clock, scope
 ):
+    """With answer_scope all a silent answer puts a 👀 on its lines: that is no answer either."""
     b, _db = setup(data_dir, tmp_path, monkeypatch)
+    b.data.settings.bot.answer_scope = scope
     reply = data_dir / "plugins" / "reply.txt"
     reply.write_text("[no reply]")
     tick(b)
@@ -2219,6 +2224,25 @@ def test_a_plan_turn_whose_answer_was_silence_is_raised_again(
     reply.unlink()
     tick(b)
     assert len(turns(data_dir)) == 1  # its retry waits
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 2 and answers(b) == 1
+
+
+def test_a_plan_turn_whose_silent_answer_proposed_a_step_is_raised_again(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """Nobody asked the plan check for a step: it is dropped, never a "members only" notice that
+    would count as the plan's problems said."""
+    b, _db = setup(data_dir, tmp_path, monkeypatch)
+    reply = data_dir / "plugins" / "reply.txt"
+    reply.write_text("[no reply]")
+    offers = data_dir / "plugins" / "proposals.json"
+    offers.write_text(json.dumps([{"id": "j1:1", "summary": "Open a PR.", "confirm_by": "none"}]))
+    tick(b)
+    assert len(turns(data_dir)) == 1 and sends(b, -100) == []  # nothing reached the chat
+    reply.unlink()
+    offers.unlink()
     clock.tick(600)
     tick(b)
     assert len(turns(data_dir)) == 2 and answers(b) == 1
@@ -2371,8 +2395,11 @@ def test_two_raises_never_skip_the_wait_after_a_turn_that_failed_between_them(
     async def problems(offered=()):
         calls.append(offered)
         if len(calls) == 2:  # the second raise reads the record once the first one's turn ended
-            while not ended:
+            for _ in range(500):  # bounded: a raise that spawned no drive fails here, not hangs
+                if ended:
+                    break
                 await asyncio.sleep(0.01)
+            assert ended, "the first raise's drive never finished"
         return await real_problems(offered)
 
     b.drive, b.problems = drive_, problems
