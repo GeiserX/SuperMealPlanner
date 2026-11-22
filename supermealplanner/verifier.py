@@ -645,8 +645,10 @@ def plan_findings(
     verdict as read earlier (PLAN_KEY), so a caller knows which one the facts show. key: the plan's
     key as read earlier (plan_brief), so the verdict is matched to that plan."""
     kept = (db.get_kv(PLAN_KEY) or {}) if kept is None else kept
+    if not kept.get("found"):  # nothing found: no brief to build (every turn asks)
+        return []
     key = plan_brief(data, db, today)[1] if key is None else key
-    if not kept.get("found") or kept.get("key") != key:
+    if kept.get("key") != key:
         return []
     return [
         f"{c}: {p}"

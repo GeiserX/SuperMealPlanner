@@ -990,3 +990,19 @@ def test_answers_sent_while_a_review_runs_get_one_review_of_the_latest_state(
     assert "Primera." in latest and "Segunda." in latest
     follow = [t for t in lines(data_dir, "turns.jsonl") if b.t("verify_who") in t["new"][-1]]
     assert len(follow) == 1  # one follow-up for both
+
+
+def test_plan_findings_builds_no_brief_when_the_check_found_nothing(
+    data_dir, tmp_path, monkeypatch
+):
+    """Every ordinary turn asks for the plan's findings: with none kept, the plan brief (recipes and
+    all) is never built for nothing."""
+    b, db = vsetup(data_dir, tmp_path)
+
+    def built(*a, **k):
+        raise AssertionError("the plan brief was built")
+
+    monkeypatch.setattr(verifier, "plan_brief", built)
+    for kept in (None, {"key": "k", "found": {}}):
+        db.set_kv(verifier.PLAN_KEY, kept)
+        assert verifier.plan_findings(b.data, db, MONDAY) == []
