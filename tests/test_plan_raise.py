@@ -2248,6 +2248,51 @@ def test_a_plan_turn_whose_silent_answer_proposed_a_step_is_raised_again(
     assert len(turns(data_dir)) == 2 and answers(b) == 1
 
 
+def test_a_plan_turn_whose_answer_was_only_a_reaction_is_raised_again(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """answer_scope all: the plan check's own turn has no message a reaction can go on, so its
+    reaction-only answer reached nobody."""
+    b, _db = setup(data_dir, tmp_path, monkeypatch)
+    b.data.settings.bot.answer_scope = "all"
+    reply = data_dir / "plugins" / "reply.txt"
+    reply.write_text("```telegram\nreact: 👍\n```")
+    tick(b)
+    assert len(turns(data_dir)) == 1 and sends(b, -100) == []
+    reply.unlink()
+    clock.tick(600)
+    tick(b)
+    assert len(turns(data_dir)) == 2 and answers(b) == 1
+
+
+def test_a_raise_whose_day_changed_while_it_gathered_waits_for_the_new_days_checkup(
+    data_dir, tmp_path, monkeypatch, clock
+):
+    """Monday's raise gathers its problems across midnight: it is held as Tuesday's leftover, never
+    queued at night on Monday's date."""
+    b, db = setup(data_dir, tmp_path, monkeypatch)
+    tuesday = MONDAY + dt.timedelta(days=1)
+    clock.set(MONDAY, 23, 59)
+    real, calls = b.problems, []
+
+    async def problems(offered=()):
+        calls.append(offered)
+        if len(calls) == 1:
+            clock.set(tuesday, 0, 1)  # midnight passes while it reads
+        return await real(offered)
+
+    b.problems = problems
+    tick(b)
+    assert calls and turns(data_dir) == []
+    clock.set(tuesday, 0, 2)
+    tick(b)
+    assert turns(data_dir) == []  # still Monday's: it waits for Tuesday's checkup
+    clock.set(tuesday, 8, 5)
+    db.mark_sent("checkup", tuesday, "08:00")
+    tick(b)
+    assert len(turns(data_dir)) == 1
+
+
 def test_a_queued_turn_left_with_nothing_new_is_told_so_and_counts_no_failure(
     data_dir, tmp_path, monkeypatch, clock
 ):

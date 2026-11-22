@@ -1343,7 +1343,8 @@ class Bot:
                         raise
                     except Exception as e:  # noqa: BLE001  the next turn of the chat still runs
                         log.warning("a turn failed: %s", safe(e))
-                        spoke = bool(shown)
+                        if covered is None:  # ask() itself failed: what it sent before it did
+                            spoke = bool(shown)
                         if shown:  # its answer reached the chat before it failed: it took
                             # what it was started with and what it was handed and did not put
                             # back in the queue
@@ -2298,10 +2299,11 @@ class Bot:
         refuses (the chat's allowed reactions, a deleted message) gets NOTED once instead, then is
         left as it is: never words in place of a reaction. One lost to Telegram being down (no
         answer, 429, 5xx) is held for the chat's next turn instead (hold)."""
-        _show(chat_id)  # tried: the turn is not silent, whatever Telegram answers
+        mine = [i for i in covered if self.reactable(i)]
+        if mine:  # tried: the turn is not silent, whatever Telegram answers; with nothing to react
+            _show(chat_id)  # to (the plan check's own turn alone) nothing reached the chat
         await self.eyes_landed(chat_id)
         lost: list[Item] = []
-        mine = [i for i in covered if self.reactable(i)]
         reacts = self.reacts.get(chat_id, {})
         for mid in dict.fromkeys(i.mid for i in mine):
             if emoji == SEEN and reacts.get(mid) == SEEN:
