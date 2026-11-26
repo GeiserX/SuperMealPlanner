@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from supermealplanner import changes, render
-from supermealplanner.bot import PENDING_TTL, Bot, TelegramError, to_html
+from supermealplanner.bot import PENDING_TTL, Bot, Item, TelegramError, to_html
 from supermealplanner.db import DB
 from supermealplanner.i18n import Translator
 from supermealplanner.model import load
@@ -291,7 +291,7 @@ def test_the_wake_is_set_before_the_busy_notice_goes(data_dir, tmp_path):
 
     async def go():
         with pytest.raises(RuntimeError):
-            await b.rest(None, 7, [], 600)
+            await b.rest(None, 7, [Item(1, 5, 7, "luis", 0.0)], 600)
         await asyncio.gather(*b.tasks)
 
     run(go())

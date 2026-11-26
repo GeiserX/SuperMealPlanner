@@ -91,3 +91,104 @@ def test_without_direct_changes_the_line_stays(data_dir, tmp_path):
     handle_all(b, "@chefbot cook Thursday's lunch on Wednesday")
     said = "\n".join(p["text"] for p in sends(b, -100))
     assert "left something to fix" in said
+
+
+def take_quiet(b, chat=-100):
+    b.take(
+        chat, {"first_name": "check"}, None, None, "[Quiet fix] x", True, followup=True, silent=True
+    )
+
+
+def test_a_quiet_fix_never_shares_a_turn_with_a_person(data_dir, tmp_path):
+    """A person writes while a quiet fix waits: each goes in a turn of its own, in the order they
+    came, and neither reads the other's message, so the fix is never answered as theirs, out loud
+    and the person's message is never taken by the fix."""
+    b, _db = setup(data_dir, tmp_path)
+    direct(b)
+    cfg(data_dir, text="Hecho, ya está.")
+
+    async def go():
+        take_quiet(b)
+        b.take(-100, {"id": 7, "first_name": "L"}, "luis", {"message_id": 5}, "@chefbot hola", True)
+        await b.drive(None, -100)
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    turns = [t["new"] for t in lines(data_dir, "turns.jsonl")]
+    # MUT: drop the split in drive → one turn takes both, and the fix's words go to the group
+    # MUT: drop the cut in _rows_for → the fix's turn reads «hola», and the person gets no answer
+    assert len(turns) == 2, turns
+    assert "[Quiet fix]" in turns[0][-1] and not any("hola" in x for x in turns[0]), turns
+    assert any("hola" in x for x in turns[1]) and not any("[Quiet fix]" in x for x in turns[1]), (
+        turns
+    )
+    assert [p["text"] for p in sends(b, -100)] == ["Hecho, ya está."]  # the person's answer only
+
+
+def test_a_quiet_fix_sends_only_the_line_that_asks_and_never_types(data_dir, tmp_path):
+    b, _db = setup(data_dir, tmp_path)
+    direct(b)
+    cfg(data_dir, text="He movido la cena al jueves.\n¿Cuánto arroz queda en casa?")
+    own_turn(b, lambda: take_quiet(b))
+    # MUT: send the whole text when it holds a "?" → the fix is narrated in the group
+    assert [p["text"] for p in sends(b, -100)] == ["¿Cuánto arroz queda en casa?"]
+    assert "He movido la cena al jueves." in heard(b)
+    # MUT: drop `not quiet` from the typing condition → the group sees the bot typing
+    assert not [m for m, _ in b.calls if m == "sendChatAction"], b.calls
+
+
+def test_a_busy_provider_is_never_told_for_a_quiet_fix(data_dir, tmp_path):
+    from supermealplanner.bot import Item
+
+    b, _db = setup(data_dir, tmp_path)
+    quiet = Item(1, None, None, None, 0.0, followup=True, silent=True)
+    person = Item(2, 5, 7, "luis", 0.0)
+
+    async def go(items):
+        await b.rest(None, -100, items, 60)
+        for t in b.tasks:
+            t.cancel()
+
+    run(go([quiet]))
+    # MUT: drop `not _nobody_asked(items)` in rest → «no capacity» posted when nobody wrote
+    assert sends(b, -100) == []
+    run(go([person]))  # the control: a person's message is told of the wait
+    assert len(sends(b, -100)) == 1
+
+
+def test_quiet_fixes_stop_after_fix_tries_until_a_person_writes(data_dir, tmp_path):
+    from supermealplanner.bot import FIX_TRIES
+
+    b, _db = setup(data_dir, tmp_path)
+    direct(b)
+    cfg(data_dir, text="[no reply]")
+    for _ in range(FIX_TRIES + 2):
+        own_turn(b, lambda: b.fix_quietly(None, -100, ["x"]))
+    # MUT: drop the runs check in quiet_budget → every write and every review starts one more
+    assert len(lines(data_dir, "turns.jsonl")) == FIX_TRIES
+    assert b.t("fix_gave_up", n=FIX_TRIES) in heard(b)
+    run(b.handle(None, msg("@chefbot hola", message_id=9)))  # a person writes: fixes may run again
+    before = len(lines(data_dir, "turns.jsonl"))
+    own_turn(b, lambda: b.fix_quietly(None, -100, ["x"]))
+    assert len(lines(data_dir, "turns.jsonl")) == before + 1
+
+
+def test_a_quiet_fix_in_a_private_chat_acts_for_its_person(data_dir, tmp_path):
+    """A change made in a private chat leaves a problem: the fix there acts as that person, so the
+    menu change it writes is made (the group's is the bot's own; a private chat has no bot of its own)."""
+    b, _db = setup(data_dir, tmp_path)
+    direct(b)
+    thu = plan_for(b.data, D(3)).day(D(3))
+    wed = plan_for(b.data, D(2)).day(D(2))
+    set_ = {"date": str(D(2)), "meal": "dinner", "recipe": thu.lunch}
+    cfg(data_dir, text="[no reply]\n" + change({"plan": [{"set": set_}]}))
+
+    async def go():
+        b.fix_quietly(None, 7, ["x"])
+        await b.drive(None, 7)
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    # MUT: take the private fix with who None → «only the household's members» refuses its change
+    assert plan_for(b.data, D(2)).day(D(2)).dinner == thu.lunch != wed.dinner
+    assert sends(b, 7) == []
