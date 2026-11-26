@@ -176,3 +176,41 @@ def test_the_rules_give_the_bot_the_menu_and_prefer_it_over_a_reminder(data_dir,
     assert "build a whole\n  week" in rules and "undo your own last change" in rules
     assert "change the menu (set, use, regenerate) instead of setting a reminder" in rules
     assert "  - use: {date: 2026-01-14, meal: lunch" in rules
+
+
+def test_a_plan_check_whose_change_is_held_ends_as_reached_but_unsaid(data_dir, tmp_path):
+    """The plan check's turn hands what held its change to a quiet fix and says nothing: its turn
+    ends as one that reached the chat (no failed try, so no second plan-check turn the same day),
+    with nothing recorded as heard, so the morning's check still raises what no fix could mend."""
+    b, _db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
+    direct(b)
+    friday = dt.date(2026, 10, 16)
+    bad = block({"set": {"date": str(friday), "meal": "dinner", "recipe": "ensalada-garbanzos"}})
+    cfg(data_dir, text="Ensalada de garbanzos el viernes.\n" + bad)
+    ended = []
+    real = b.plan_ended
+    b.plan_ended = lambda reached, said=True: (ended.append((reached, said)), real(reached, said))
+    who = {"first_name": b.t("plan_check_who")}
+
+    def start():
+        row = b.take(-100, who, None, None, b.tt("plan_check_turn"), True, review=True)
+        b.state.db.set_kv(botmod.PLAN_RAISED, {"turn": {"row": row, "chat": -100}})
+
+    own_turn(b, start)
+    assert sends(b, -100) == []
+    # MUT: drop `self.handed.add` in the held branch → (False, False): a failed try, raised again
+    assert ended == [(True, False)], ended
+
+
+def test_a_plan_turn_ended_unsaid_settles_the_raise_and_records_nothing_heard(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    turn = {"row": 1, "chat": -100, "found": ["p1"], "new": ["p1"], "key": "k", "open": 1}
+    db.set_kv(botmod.PLAN_RAISED, {"turn": turn, "open": {"until": None, "id": 1, "at": 0}})
+    b.plan_ended(True, said=False)
+    rec = db.get_kv(botmod.PLAN_RAISED)
+    assert not rec.get("fails") and "open" not in rec and "turn" not in rec, rec
+    # MUT: record "said" whatever `said` is → the morning never raises what no fix could mend
+    assert not rec.get("said"), rec
+    db.set_kv(botmod.PLAN_RAISED, {"turn": turn, "open": {"until": None, "id": 1, "at": 0}})
+    b.plan_ended(True)  # the control: an answer that reached the chat records what it said
+    assert db.get_kv(botmod.PLAN_RAISED)["said"]["-100"]["found"] == ["p1"]

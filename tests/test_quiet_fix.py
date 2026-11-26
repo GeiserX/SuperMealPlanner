@@ -192,3 +192,149 @@ def test_a_quiet_fix_in_a_private_chat_acts_for_its_person(data_dir, tmp_path):
     # MUT: take the private fix with who None → «only the household's members» refuses its change
     assert plan_for(b.data, D(2)).day(D(2)).dinner == thu.lunch != wed.dinner
     assert sends(b, 7) == []
+
+
+LUIS = {"id": 7, "first_name": "L"}
+
+
+def test_turns_run_in_the_order_the_messages_came(data_dir, tmp_path):
+    """A person's message put back at the head of the queue (an answer left it out, the provider
+    was busy) ahead of an older quiet fix: the fix still runs before it, alone, so the person's
+    turn never reads the fix's words, answers them aloud, and leaves the fix with nothing to do."""
+    b, _db = setup(data_dir, tmp_path)
+    direct(b)
+    cfg(data_dir, text="Hecho, ya está.")
+
+    async def go():
+        b.take(-100, LUIS, "luis", {"message_id": 5}, "@chefbot hola", True)
+        take_quiet(b)
+        b.take(-100, LUIS, "luis", {"message_id": 6}, "@chefbot y otra", True)
+        q = b.queues[-100]
+        b.queues[-100] = [q[0], q[2], q[1]]  # how ask() puts back what an answer left out
+        await b.drive(None, -100)
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    turns = ["\n".join(t["new"]) for t in lines(data_dir, "turns.jsonl")]
+    # MUT: drop the sort in drive → the second person's turn reads the fix, and the fix runs no turn
+    assert len(turns) == 3, turns
+    assert "hola" in turns[0] and "[Quiet fix]" not in turns[0], turns
+    assert "[Quiet fix]" in turns[1] and "luis" not in turns[1], turns
+    assert "y otra" in turns[2] and "[Quiet fix]" not in turns[2], turns
+    assert [p["text"] for p in sends(b, -100)] == ["Hecho, ya está."] * 2
+
+
+def test_a_held_line_goes_before_a_quiet_fix_that_would_read_it(data_dir, tmp_path):
+    """A person's line a failed turn held (bot.answer_scope all) is older than the quiet fix that
+    comes next: it gets its own turn first, so the fix never reads it as taken and leaves it
+    unanswered."""
+    b, _db = setup(data_dir, tmp_path)
+    direct(b)
+    cfg(data_dir, text="Hecho, ya está.")
+
+    async def go():
+        b.take(-100, LUIS, "luis", {"message_id": 5}, "@chefbot hola", True)
+        b.held[-100] = b.queues.pop(-100)  # its turn failed before anything showed
+        take_quiet(b)
+        await b.drive(None, -100)
+        await asyncio.gather(*b.tasks)
+
+    run(go())
+    turns = ["\n".join(t["new"]) for t in lines(data_dir, "turns.jsonl")]
+    # MUT: drop the held-first step in drive → the fix reads «hola», and Luis is never answered
+    assert len(turns) == 2, turns
+    assert "hola" in turns[0] and "[Quiet fix]" not in turns[0], turns
+    assert "[Quiet fix]" in turns[1] and "hola" not in turns[1], turns
+    assert [p["text"] for p in sends(b, -100)] == ["Hecho, ya está."]
+
+
+def test_a_quiet_fix_line_with_a_link_to_the_app_is_not_a_question(data_dir, tmp_path):
+    b, _db = setup(data_dir, tmp_path)
+    direct(b)
+    told = "He movido la cena: [semana](https://meals.example/week?d=2026-10-14)"
+    asks = '¿Queda arroz en <a href="https://meals.example/list?d=2026-10-14">casa</a>?'
+    cfg(data_dir, text=f"{told}\n{asks}")
+    own_turn(b, lambda: take_quiet(b))
+    said = [p["text"] for p in sends(b, -100)]
+    # MUT: count any "?" as a question → the line that tells of the fix goes to the chat
+    assert len(said) == 1 and "semana" not in said[0] and "arroz" in said[0], said
+
+
+# ------------------------------------------------- a failed or busy quiet fix (conversations' AI)
+
+
+def conv_bot(data_dir, tmp_path):
+    from supermealplanner.db import DB
+
+    from .test_conversations import ChatBot, plugin_data
+
+    return direct(ChatBot(plugin_data(data_dir), DB(tmp_path / "c.db")))
+
+
+def news(data_dir):
+    from .test_conversations import turns
+
+    return ["\n".join(m["content"] for m in t["new"]) for t in turns(data_dir)]
+
+
+def test_a_failed_quiet_fix_is_never_read_by_a_persons_turn(data_dir, tmp_path):
+    from .test_conversations import ChatBot, reply
+
+    b = conv_bot(data_dir, tmp_path)
+    reply(data_dir, fail=True)
+    run(own_turn_in(b, 7, lambda: b.fix_quietly(None, 7, ["the rice may not last"])))
+    reply(data_dir, text="hola Luis")
+    run(b.handle(None, msg("hola", chat=7, user=7)))
+    # MUT: drop `quiet` from _rows_for → Luis's turn reads the fix's words and may answer them
+    assert "Quiet fix" not in news(data_dir)[-1] and "hola" in news(data_dir)[-1], news(data_dir)
+    assert ChatBot.texts(b, 7) == ["hola Luis"]  # no error told for the fix
+
+
+def test_a_failed_quiet_fix_goes_again(data_dir, tmp_path, monkeypatch):
+    from supermealplanner import bot as botmod
+
+    from .test_conversations import ChatBot, reply
+
+    monkeypatch.setattr(botmod, "HELD_RETRY_S", (0, 0, 0))
+    b = conv_bot(data_dir, tmp_path)
+    reply(data_dir, fail=True)
+
+    async def go():
+        b.fix_quietly(None, 7, ["the rice may not last"])
+        await b.drive(None, 7)
+        reply(data_dir, text="Arreglado.")  # the provider is back for the retry
+        while [t for t in b.tasks if not t.done()]:
+            await asyncio.gather(*b.tasks)
+
+    run(go())
+    fixes = [x for x in news(data_dir) if "the rice may not last" in x]
+    # MUT: drop the retry_quiet spawn → one failed try, and the problem stays unfixed
+    assert len(fixes) == 2, news(data_dir)
+    assert ChatBot.texts(b, 7) == []
+
+
+def test_a_busy_quiet_fix_tells_no_one_but_a_person_who_writes_hears_of_the_wait(
+    data_dir, tmp_path
+):
+    from .test_conversations import ChatBot, reply
+
+    b = conv_bot(data_dir, tmp_path)
+    now = [1000.0]
+    b.clock = lambda: now[0]
+    reply(data_dir, busy=600)
+    run(own_turn_in(b, 7, lambda: b.fix_quietly(None, 7, ["x"])))
+    # MUT: tell the wait for every turn → the chat reads «busy» for a fix it never heard of
+    assert ChatBot.texts(b, 7) == []
+    run(b.handle(None, msg("hola", chat=7, user=7)))
+    # MUT: drop the notice at drive's resting check → Luis waits ten minutes without a word
+    assert ChatBot.texts(b, 7) == [b.t("bot_busy", wait=b.t("busy_minutes", n=10))]
+
+
+def own_turn_in(b, chat, start):
+    """The turn `start` queues, and only it: the retry or the wake it leaves is cancelled."""
+
+    async def go():
+        start()
+        await b.drive(None, chat)
+
+    return go()

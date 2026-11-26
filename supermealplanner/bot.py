@@ -198,6 +198,10 @@ RUNNING = "bot.running"  # proposals the plugin is carrying out now, across ever
 # chat, each message taken for an answer until a turn that took it ends. resume() replays both.
 INBOX = "bot.inbox"  # {"offset": next update id, "messages": [Telegram message, ...]}
 QUEUED = "bot.queued"  # {"<chat id>": [{"row", "mid", "uid", "who", "grant"}, ...]}
+# the chat rows of the last quiet fixes of a chat (bot.quiet_rows.<chat id>): no person's turn
+# reads them, queued or not
+QUIET_ROWS = "bot.quiet_rows.{}"
+QUIET_ROWS_KEEP = 200
 # ask() returns this when its answer was not sent because it missed messages handed to it: the
 # chat's next turn, right away, answers them all
 AGAIN: list = []
@@ -498,6 +502,8 @@ class Bot:
         self.told_busy: set[int] = set()  # chats told of the wait, until an answer goes out
         # quiet turns queued in a chat since a person last wrote there (FIX_TRIES bounds them all)
         self.quiet_runs: dict[int, int] = {}
+        # chats whose running turn handed what held its change to a quiet fix (pre_check)
+        self.handed: set[int] = set()
         self.client: httpx.AsyncClient | None = None  # the running loop's, for the app's turns
         self.spoken: dict[str, Spoken] = {}  # what was said to the app, by turn id
         self.spoken_rows: dict[int, str] = {}  # chat log row -> the spoken turn it is
@@ -1303,6 +1309,10 @@ class Bot:
             item.heard = heard and not asked
             item.silent = silent
             item.tries = tries
+            if silent:
+                key = QUIET_ROWS.format(chat_id)
+                kept = [*(self.state.db.get_kv(key) or []), row][-QUIET_ROWS_KEEP:]
+                self.state.db.set_kv(key, kept)
             if not (auto or review or followup):  # a person wrote: quiet fixes may run again
                 self.quiet_runs.pop(chat_id, None)
             # an anonymous admin writes as Telegram's placeholder bot, with the group as sender_chat:
@@ -1325,14 +1335,24 @@ class Bot:
         try:
             while True:
                 if self.resting.get(chat_id, 0) > self.clock():
-                    return  # the provider is busy: wake() runs the chat's turn when it is back
+                    # the provider is busy: wake() runs the chat's turn when it is back. A person
+                    # who wrote meanwhile hears of the wait once (a bot's own turn told no one)
+                    with self.qlock:
+                        asked = [i for i in self.queues.get(chat_id, []) if not _nobody_asked([i])]
+                    if asked:
+                        left = self.resting[chat_id] - self.clock()
+                        await self.busy_notice(client, chat_id, asked, left)
+                    return
                 await self.settle(chat_id)
                 async with self.ai:
                     with self.qlock:
-                        items = self.queues.pop(chat_id, [])
+                        # in the order the messages came: a turn reads the chat up to its newest
+                        # row and the conversation then counts every row before it as taken, so
+                        # a turn that ran ahead of an older message would leave it unanswered
+                        items = sorted(self.queues.pop(chat_id, []), key=lambda i: i.row)
                         # a quiet fix never shares a turn: beside anyone's message, it would be
-                        # answered as theirs, out loud. A turn takes the leading run of one kind,
-                        # in the queue's order; the rest stays queued for the next turn
+                        # answered as theirs, out loud. A turn takes the leading run of one kind;
+                        # the rest stays queued for the next turn
                         cut = next(
                             (n for n, i in enumerate(items) if i.silent != items[0].silent),
                             len(items),
@@ -1340,6 +1360,12 @@ class Bot:
                         if cut < len(items):
                             self.queues[chat_id] = [*items[cut:], *self.queues.get(chat_id, [])]
                             items = items[:cut]
+                        # a failed turn's people's lines (bot.answer_scope all) older than a quiet
+                        # fix go first, in a turn of their own: the fix would read them as taken
+                        held = self.held.get(chat_id, [])
+                        if items and items[0].silent and any(h.row < items[0].row for h in held):
+                            self.queues[chat_id] = [*items, *self.queues.get(chat_id, [])]
+                            items = self.held.pop(chat_id)
                         later = [i.row for i in self.queues.get(chat_id, []) if i.silent]
                     if not items:
                         return
@@ -1354,7 +1380,7 @@ class Bot:
                     rows = self.state.db.chat_rows(
                         chat_id, self.data.settings.bot.history, self.data.settings.bot.history_days
                     )
-                    rows = _rows_for(rows, items, later)
+                    rows = _rows_for(rows, items, later, self.quiet_rows(chat_id))
                     # what the bot says in the chat during the turn is what a spoken turn hears
                     ears: list[str] = []
                     listening = HEARING.set((*HEARING.get(), (chat_id, ears)))
@@ -1409,8 +1435,14 @@ class Bot:
                     self.answered(items, covered, ears)
                     # only an answer that reached the chat said anything: a silent one (the AI's
                     # [no reply]) took its messages, but the plan's problems were never raised
-                    took = (reached if covered is None else covered) if spoke else []
-                    self.plan_answered([*items, *pulled], [i for i in took if not i.replayed])
+                    # a turn that handed what held its change to a quiet fix said nothing, yet
+                    # its problems are being dealt with: the raise is settled, never tried again,
+                    # and what it found stays unsaid for the morning's plan check
+                    handed = chat_id in self.handed
+                    self.handed.discard(chat_id)
+                    took = (reached if covered is None else covered) if spoke or handed else []
+                    took = [i for i in took if not i.replayed]
+                    self.plan_answered([*items, *pulled], took, said=spoke)
                     if (
                         chat_id not in self.held
                     ):  # its held lines went out: a new failure starts over
@@ -1495,7 +1527,7 @@ class Bot:
                 continue
             self._finish(spoken, "done" if i.row in done and ears else "failed", ears)
 
-    def plan_answered(self, items: list[Item], took: list[Item]) -> None:
+    def plan_answered(self, items: list[Item], took: list[Item], said: bool = True) -> None:
         """A turn ended: when it was the plan check's (raise_plan) and an answer that reached the
         chat took it (`took`: covered it, even with nothing to say, or got out before the turn
         failed), what its facts showed is what that chat heard, and the raise owed when it was
@@ -1507,7 +1539,7 @@ class Bot:
         with self.qlock:
             if turn["row"] in {i.row for i in self.queues.get(turn["chat"], [])}:
                 return  # it goes again, as it is
-        self.plan_ended(turn["row"] in {i.row for i in took})
+        self.plan_ended(turn["row"] in {i.row for i in took}, said)
 
     def plan_record(self) -> dict:
         """PLAN_RAISED as this version keeps it. One written by 0.49.2 that still owed a raise (a
@@ -1587,7 +1619,7 @@ class Bot:
             rec["turn"] = {**turn, **shown}
             self.state.db.set_kv(PLAN_RAISED, rec)
 
-    def plan_ended(self, reached: bool) -> None:
+    def plan_ended(self, reached: bool, said: bool = True) -> None:
         """The plan-check turn ended. Its answer reached the chat (`reached`: something it sent
         arrived): what it raised and showed is what that chat heard ("said"). Reached or not, a
         turn with nothing new to say settles the raise owed when it gathered its facts, as a tick
@@ -1595,7 +1627,8 @@ class Bot:
         still owed. Any other end is a failed try: the next waits PLAN_RETRY_S from now. A try that
         held the check's verdict never goes without it: if the plan moves before its retry, the
         retry waits for the check of the plan as it is, PLAN_CHECK_WAIT_S from now at most, then
-        goes with the sure problems alone."""
+        goes with the sure problems alone. said False: it ended without a word, its problems
+        handed to a quiet fix: settled, but nothing is recorded as heard."""
         rec = self.plan_record()
         turn = rec.pop("turn", None)
         if turn is None:
@@ -1603,9 +1636,9 @@ class Bot:
         now = self.now().timestamp()
         opened = rec.get("open")
         built = "found" in turn  # its facts were built: not a turn 0.49.2 left, replayed
-        if reached and built:
-            said = {"key": turn.get("key"), "found": turn["found"]}
-            rec["said"] = {**rec.get("said", {}), str(turn["chat"]): said}
+        if reached and built and said:
+            heard = {"key": turn.get("key"), "found": turn["found"]}
+            rec["said"] = {**rec.get("said", {}), str(turn["chat"]): heard}
         if built and (reached or not turn.get("new")):
             # a raise owed since it gathered its facts (a plan drawn meanwhile) stays owed
             if opened is not None and opened.get("id") == turn.get("open"):
@@ -1856,6 +1889,8 @@ class Bot:
                     await self.rest(client, chat_id, items, later)
                     return None
                 failed = True  # nothing was read: its messages go with the next turn (hold)
+                if all(i.silent for i in items):  # a quiet fix: nobody would ask for it again
+                    self.spawn(self.retry_quiet(client, chat_id, items))
                 # "try again in a minute" would answer no one, and a line a retry took was told
                 # when it first failed (retry_held)
                 if _nobody_asked([i for i in items if i.row not in self.retried]):
@@ -2009,6 +2044,7 @@ class Bot:
                 # never told: the AI hears it, and a quiet fix tries again, told what held this
                 # one, until one goes through or FIX_TRIES are held in a row
                 self.quiet(chat_id, self.t("fix_held"))
+                self.handed.add(chat_id)
                 tries = 1 + max((i.tries for i in covered if i.silent), default=-1)
                 self.fix_quietly(client, chat_id, held, tries)
         if change is not None and now:
@@ -2047,8 +2083,8 @@ class Bot:
             )
         if silent:  # what the app made goes to the AI only; the chat reads only the AI's question
             # only a line that asks goes out: the rest would tell of the fix
-            asks = [x for x in text.splitlines() if "?" in x]
-            told = [x for x in text.splitlines() if x.strip() and "?" not in x]
+            asks = [x for x in text.splitlines() if _asks(x)]
+            told = [x for x in text.splitlines() if x.strip() and not _asks(x)]
             tail = [*(["\n".join(told)] if told else []), *tail]
             text = "\n".join(asks)
             if tail:
@@ -2331,19 +2367,54 @@ class Bot:
         what held the bot's own menu change (pre_check), made at once and never told: the chat
         hears of it only when the AI needs a fact that no one but the household knows. A follow-up:
         not reviewed, and its own writes start no other. tries: the quiet fixes before it in a row,
-        each held; after FIX_TRIES the bot stops trying, still without a word."""
+        each held or failed; after FIX_TRIES the bot stops trying, still without a word."""
+        problems = "\n".join(f"- {p}" for p in found)
+        self.queue_quiet(client, chat_id, self.t("fix_turn", problems=problems), tries)
+
+    def queue_quiet(self, client, chat_id: int, text: str, tries: int) -> None:
+        """Queue a quiet fix that says `text` to the AI, within the chat's quiet_budget."""
         if not self.quiet_budget(chat_id, tries):
             return
-        problems = "\n".join(f"- {p}" for p in found)
         user = {"first_name": self.t("verify_who")}
         # a private chat's fix acts for its person, whose yes a change there needs (as a follow-up
         # does); the group's is the bot's own
         who = self.person_of(chat_id) if chat_id > 0 else None
         if who is not None:
             user["id"] = chat_id
-        text = self.t("fix_turn", problems=problems)
         self.take(chat_id, user, who, None, text, True, followup=True, silent=True, tries=tries)
         self.spawn(self.drive(client, chat_id))
+
+    def quiet_rows(self, chat_id: int) -> set[int]:
+        return set(self.state.db.get_kv(QUIET_ROWS.format(chat_id)) or [])
+
+    async def retry_quiet(self, client, chat_id: int, items: list[Item]) -> None:
+        """A quiet fix whose turn failed (the provider broke, timed out) goes again after a wait,
+        as a new one with the same words, counted as one more try (FIX_TRIES): nobody else would
+        ever ask for it, and the chat was never told of what it fixes."""
+        tries = 1 + max(i.tries for i in items)
+        await asyncio.sleep(HELD_RETRY_S[min(tries, len(HELD_RETRY_S)) - 1])
+        rows = self.state.db.chat_by_ids(chat_id, [i.row for i in items])
+        text = "\n\n".join(r["text"] for r in rows)
+        if text:
+            self.queue_quiet(client, chat_id, text, tries)
+
+    async def busy_notice(self, client, chat_id: int, items: list[Item], seconds: float) -> None:
+        """Say once that the provider is busy, with the wait, under the newest of `items`."""
+        if chat_id in self.told_busy:
+            return
+        self.told_busy.add(chat_id)
+        minutes = max(1, round(seconds / 60))
+        wait = (
+            self.t("busy_minutes", n=minutes)
+            if minutes < 90
+            else self.t("busy_hours", n=round(minutes / 60))
+        )
+        try:
+            await self.send(
+                client, chat_id, self.t("bot_busy", wait=wait), _reply_to(items), record=False
+            )
+        except TelegramError as e:  # only the notice: the messages still go when it is back
+            log.warning("could not say the provider is busy: %s", safe(e))
 
     def quiet_budget(self, chat_id: int, tries: int = 0) -> bool:
         """Whether one more quiet turn may run in the chat: FIX_TRIES since a person last wrote
@@ -2364,20 +2435,8 @@ class Bot:
         seconds = max(float(seconds), BUSY_MIN_S)
         self.resting[chat_id] = self.clock() + seconds
         self.spawn(self.wake(client, chat_id, seconds))  # first: a notice Telegram refuses too
-        if chat_id not in self.told_busy and not _nobody_asked(items):
-            self.told_busy.add(chat_id)
-            minutes = max(1, round(seconds / 60))
-            wait = (
-                self.t("busy_minutes", n=minutes)
-                if minutes < 90
-                else self.t("busy_hours", n=round(minutes / 60))
-            )
-            try:
-                await self.send(
-                    client, chat_id, self.t("bot_busy", wait=wait), _reply_to(items), record=False
-                )
-            except TelegramError as e:  # only the notice: the messages still go when it is back
-                log.warning("could not say the provider is busy: %s", safe(e))
+        if not all(i.silent for i in items):  # a quiet fix is never told, not even its wait
+            await self.busy_notice(client, chat_id, items, seconds)
 
     async def wake(self, client, chat_id: int, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -5943,16 +6002,23 @@ def _same_words(text: str) -> str:
     return " ".join(re.sub(r"[^\w]+", " ", plain).split())
 
 
-def _rows_for(rows: list[dict], items: list[Item], later: list[int]) -> list[dict]:
+def _asks(line: str) -> bool:
+    """A line of a quiet fix that asks the household something: a "?" outside its links (a link
+    to the app's pages carries "?d=<date>")."""
+    return "?" in re.sub(r"\]\([^)]*\)|<a\s[^>]*>|https?://\S+", " ", line)
+
+
+def _rows_for(rows: list[dict], items: list[Item], later: list[int], quiet: set[int]) -> list[dict]:
     """The chat rows a turn reads, so a quiet turn and a person's turn never read each other's
     messages (a row a turn reads counts as taken, and the turn after it would answer nothing). A
     quiet turn reads up to its own last row; a person's turn stops before the next quiet fix
-    still queued (`later`, its rows)."""
+    still queued (`later`, its rows) and never reads a quiet fix's words (`quiet`, the rows of
+    every quiet fix: one that failed or was dropped is not queued, and would be answered aloud)."""
     top = max((i.row for i in items), default=0)
     if items and all(i.silent for i in items):
         return [r for r in rows if r["id"] <= top]
     stop = min((n for n in later if n > top), default=None)
-    return rows if stop is None else [r for r in rows if r["id"] < stop]
+    return [r for r in rows if (stop is None or r["id"] < stop) and r["id"] not in quiet]
 
 
 def _nobody_asked(items: list[Item]) -> bool:
