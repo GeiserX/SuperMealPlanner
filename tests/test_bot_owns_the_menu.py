@@ -99,8 +99,11 @@ def test_the_bots_own_turn_never_undoes_the_households_change(data_dir, tmp_path
 
 def test_a_menu_change_of_its_own_that_adds_a_problem_is_not_made(data_dir, tmp_path):
     """Friday's dinner moved to a salad of dried chickpeas that nothing soaks or cooks: the check on
-    a copy finds it, the menu stays as it was, and one follow-up turn (checked the same way) tries
-    again; it repeats the same change, which is held again, and no third turn comes."""
+    a copy finds it and the menu stays as it was. Nothing of it reaches the chat: a quiet fix tries
+    again, told what held the change, and so on until one goes through; this AI repeats the same
+    change every time, so after FIX_TRIES quiet fixes held in a row the bot stops, still silent."""
+    from supermealplanner.bot import FIX_TRIES
+
     b, _db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
     direct(b)
     friday = dt.date(2026, 10, 16)
@@ -109,16 +112,17 @@ def test_a_menu_change_of_its_own_that_adds_a_problem_is_not_made(data_dir, tmp_
     plan_check(b)
     assert not doctor.serves(b.data, "ensalada-garbanzos", friday)
     texts = [p["text"] for p in sends(b, -100)]
-    # the turn says a fix follows; its follow-up, held too, asks the household
-    assert [x for x in texts if b.t("auto_check_held") in x] == [b.t("auto_check_held")]
-    assert [x for x in texts if b.t("auto_check_held_last") in x] == [b.t("auto_check_held_last")]
-    assert not any("Ensalada de garbanzos el viernes" in x for x in texts)  # never told as made
+    # MUT: put back the line that tells the chat the change was held → the household reads it
+    assert texts == [], texts
     turns = lines(data_dir, "turns.jsonl")
-    assert len(turns) == 2
-    said = "\n".join(turns[1]["new"])
-    assert "was NOT made" in said and "nothing cooks it" in said
-    assert "reminders of that answer were not set" in said
-    assert not b.pending(-100)  # never left waiting for the tick to accept it
+    # MUT: FIX_TRIES checked as `tries > FIX_TRIES` → one more quiet fix than allowed
+    assert len(turns) == 1 + FIX_TRIES, len(turns)
+    for turn in turns[1:]:  # each quiet fix is told what held the last change
+        said = "\n".join(turn["new"])
+        assert "was NOT made" in said and "nothing cooks it" in said, said
+        assert "reminders of that answer were not set" in said, said
+    gave_up = [r["text"] for r in _db.chat_rows(-100, 200) if r["role"] == "assistant"]
+    assert any(b.t("fix_gave_up", n=FIX_TRIES) in x for x in gave_up), gave_up
 
 
 def held_with_a_reminder(data_dir, tmp_path, recipe):

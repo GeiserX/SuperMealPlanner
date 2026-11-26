@@ -245,6 +245,9 @@ UNSENT_CHANGE = "(bot) This answer never reached the chat, but its change was ma
 # what an automatic turn's change block may hold: the menu of the days ahead, the pantry and what
 # was done of a step. Never a recipe's text, a new ingredient, a setting or a note nobody asked for
 AUTO_KEYS = frozenset({"plan", "pantry", "tasks"})
+# quiet fixes in a row whose menu change the check held (fix_quietly): then the bot stops trying
+# and the morning's plan check takes it, never a question in the chat
+FIX_TRIES = 5
 
 
 def sure_problems(found: list) -> list:
@@ -407,6 +410,12 @@ class Item:
     # the provider's conversation took it before a restart (ask): what it answered then was
     # never seen here, so a later answer that covers it did not raise a plan's problems
     replayed: bool = False
+    # the bot's own turn that fixes what a change left wrong (fix_quietly): a follow-up the chat
+    # never hears of. Its change is made at once and what the app says of it goes to the AI only;
+    # the chat sees words only when the AI needs a fact no one but the household knows
+    silent: bool = False
+    # how many quiet fixes came before this one in a row, each held by the check (FIX_TRIES)
+    tries: int = 0
 
 
 @dataclass
@@ -911,8 +920,11 @@ class Bot:
                         x.get("file"),
                         bool(x.get("auto")),
                         bool(x.get("review")),
+                        bool(x.get("followup")),
                         heard=bool(x.get("heard")),
                         bots_mid=bool(x.get("bots_mid")),
+                        silent=bool(x.get("silent")),
+                        tries=int(x.get("tries") or 0),
                     )
                     for x in kept
                 ]
@@ -965,8 +977,11 @@ class Bot:
                     "file": add.file,
                     "auto": add.auto,
                     "review": add.review,
+                    "followup": add.followup,
                     "heard": add.heard,
                     "bots_mid": add.bots_mid,
+                    "silent": add.silent,
+                    "tries": add.tries,
                 }
             )
         else:  # what a failed turn held stays too: a restart answers it (resume)
@@ -1251,6 +1266,8 @@ class Bot:
         corrects: bool = False,
         heard: bool = False,
         tapped: bool = False,
+        silent: bool = False,
+        tries: int = 0,
     ) -> int:
         """Log a message and, when it calls the bot, queue it for the chat's next turn (or the
         running one). No await in here: a turn that starts reads the log and the queue together.
@@ -1282,6 +1299,8 @@ class Bot:
             )
             item.corrects = corrects
             item.heard = heard and not asked
+            item.silent = silent
+            item.tries = tries
             # an anonymous admin writes as Telegram's placeholder bot, with the group as sender_chat:
             # a person all the same
             from_bot = bool(user.get("is_bot")) and not (msg or {}).get("sender_chat")
@@ -1887,6 +1906,12 @@ class Bot:
         listed = reply.reminders or listed
         acted = acts["react"] or acts["sticker"] or acts["photos"] or acts["documents"]
         followup = all(i.followup for i in covered)
+        # the fix the chat never hears of (fix_quietly): no gesture, nothing that waits for a tap
+        silent = all(i.silent for i in covered)
+        if silent and (acted or reply.proposals):
+            log.info("a quiet fix's gestures and proposals left out")
+            acts = {**acts, "react": None, "sticker": None, "photos": [], "documents": []}
+            acted, reply.proposals = None, []
 
         def keep() -> None:  # the turn is the conversation's: its messages do not go again
             if reply.conversation:
@@ -1933,6 +1958,9 @@ class Bot:
         now = (not own or direct) and (
             isinstance(change, str) or (isinstance(change, dict) and change.get("asked") is True)
         )
+        if silent and change is not None and not now:  # a tap would tell the chat: not made
+            log.info("a quiet fix's change that waits for a tap left out")
+            change = None
         if isinstance(change, dict) and not now and change.get("tasks"):
             # what the household said happened is a fact, never a decision waiting for a tap: it
             # is recorded now, and only the rest of the change waits
@@ -1961,11 +1989,11 @@ class Bot:
                 change = {**change, "asked": True} if change else None
                 listed, offering = [r for r in listed if "cancel" in r], []
                 text = ""
-                if followup:  # the fix was held too: the household decides, never silence
-                    tail.append(self.t("auto_check_held_last"))
-                else:  # fixed once, in a turn of its own that is checked the same way
-                    tail.append(self.t("auto_check_held"))
-                    self.follow_up(client, chat_id, {}, held)
+                # never told: the AI hears it, and a quiet fix tries again, told what held this
+                # one, until one goes through or FIX_TRIES are held in a row
+                self.quiet(chat_id, self.t("fix_held"))
+                tries = 1 + max((i.tries for i in covered if i.silent), default=-1)
+                self.fix_quietly(client, chat_id, held, tries)
         if change is not None and now:
             made = await self.propose(
                 client,
@@ -1997,7 +2025,18 @@ class Bot:
                 tail,
                 fixes=followup,
                 auto=automatic and not self.direct,
+                automatic=automatic,
             )
+        if silent:  # what the app made goes to the AI only; the chat reads only the AI's question
+            if text and "?" not in text:  # words that ask nothing would tell of the fix
+                tail = [text, *tail]
+                text = ""
+            if tail:
+                self.quiet(chat_id, "\n".join(tail))
+            tail = []
+            if items:
+                log.info("a quiet fix's reminders that wait for a tap left out")
+                items = []
         joined = "\n\n".join(x for x in [render.brief(text) if text else "", *tail] if x)
         if joined:
             offer = None
@@ -2251,13 +2290,33 @@ class Bot:
 
     def follow_up(self, client, chat_id: int, answer: dict, found: list[str]) -> None:
         """The bot's own turn that fixes what the review found in an answer it sent, for the person
-        whose request it answered: their private chat's view, their yes."""
+        whose request it answered: their private chat's view, their yes. With bot.ask_first off it
+        is silent (Item.silent): the chat reads only a question of fact, never the corrections."""
         problems = "\n".join(f"- {p}" for p in found)
         user = {"first_name": self.t("verify_who")}
         if answer.get("uid") is not None:
             user["id"] = answer["uid"]
         text = self.tt("verify_turn", problems=problems)
-        self.take(chat_id, user, answer.get("asker"), None, text, True, followup=True)
+        # bot.ask_first off: made at once and never told, as a quiet fix is (fix_quietly)
+        self.take(
+            chat_id, user, answer.get("asker"), None, text, True, followup=True, silent=self.direct
+        )
+        self.spawn(self.drive(client, chat_id))
+
+    def fix_quietly(self, client, chat_id: int, found: list[str], tries: int = 0) -> None:
+        """The bot's own turn that fixes what a change just left wrong in the plan (checkup), or
+        what held the bot's own menu change (pre_check), made at once and never told: the chat
+        hears of it only when the AI needs a fact that no one but the household knows. A follow-up:
+        not reviewed, and its own writes start no other. tries: the quiet fixes before it in a row,
+        each held; after FIX_TRIES the bot stops trying, still without a word."""
+        if tries >= FIX_TRIES:
+            log.info("a quiet fix was held %d times in a row: left for the plan check", tries)
+            self.quiet(chat_id, self.t("fix_gave_up", n=tries))
+            return
+        problems = "\n".join(f"- {p}" for p in found)
+        user = {"first_name": self.t("verify_who")}
+        text = self.t("fix_turn", problems=problems)
+        self.take(chat_id, user, None, None, text, True, followup=True, silent=True, tries=tries)
         self.spawn(self.drive(client, chat_id))
 
     async def rest(self, client, chat_id: int, items: list[Item], seconds: float) -> None:
@@ -2681,7 +2740,7 @@ class Bot:
                 await self.unwait(
                     client, chat_id, self.wait_for(chat_id, None, self.outdates(proposal))
                 )
-                await self.checkup(client, chat_id, before, reply_to, tail, offered)
+                await self.checkup(client, chat_id, before, reply_to, tail, offered, not quiet)
             return bool(item.get("applied"))
         if own:
             people = self.data.settings.bot.people
@@ -4482,6 +4541,7 @@ class Bot:
         tail: list[str] | None = None,
         fixes: bool = False,
         auto: bool = False,
+        automatic: bool = False,
     ) -> list[dict]:
         """Cancel the ones the answer cancels (only this chat's) and set the ones the person asked
         for ("set") at once, saying both in one message, or in `tail` (the answer's message).
@@ -4535,7 +4595,7 @@ class Bot:
                 done[-1] += " " + t("remind_joined", time=met[1])
         if done:  # not said in the chat: only the AI's memory hears it
             self.quiet(chat_id, "\n".join(done))
-            await self.checkup(client, chat_id, before, reply_to, tail, offering)
+            await self.checkup(client, chat_id, before, reply_to, tail, offering, not automatic)
         return [r for r in items if not ((uid or self.direct) and r.get("set"))]
 
     def move_same_steps(self, chat_id: int, items: list[dict], uid, member: bool) -> list[str]:
@@ -5364,11 +5424,16 @@ class Bot:
         reply_to=None,
         tail: list[str] | None = None,
         offered: list[dict] | tuple = (),
+        fixes: bool = True,
     ) -> list[doctor.Problem]:
         """Run the consistency check after a write (before: the problems it found just before it)
         or in the morning (before None). A linked reminder the menu no longer backs is cancelled
-        here, with one line the AI hears and the chat does not. After a write, in chat_id: one line naming the problems
-        the write left that were not there before. The morning says no list here: raise_plan says
+        here, with one line the AI hears and the chat does not. After a write, in chat_id: the
+        problems the write left that were not there before are fixed by a turn the chat never hears
+        of (fix_quietly), never told as a list. fixes False: the write was a turn the bot asked
+        itself (that fix turn too), so no other starts: automatic turns never chain, and what is
+        left goes to the AI's memory and to the morning's plan check. Only with nothing to fix them
+        (no AI) or when a fix waits for a tap (bot.ask_first) does the chat get the one line. The morning says no list here: raise_plan says
         the plan's problems once, as a turn where the chef proposes the fixes or, when no turn can
         come, as one list. Food bought and on no dish is left to the AI: it can stay true for days once it
         is frozen. tail: where chat_id's lines go instead of a message of their own (the answer's
@@ -5388,8 +5453,15 @@ class Bot:
         rest = [p for p in found if p.kind not in ("stale_reminder", "unused", "unconfirmed")]
         new = [p for p in rest if p.key not in before] if before is not None else []
         if chat_id is not None and new:
-            items = "; ".join(self.problem_line(p) for p in new)
-            said.setdefault(chat_id, []).append(t("doctor_new", items=items))
+            lines = [self.problem_line(p) for p in new]
+            if self.data.settings.llm.provider != "none" and self.direct:
+                if fixes:
+                    self.fix_quietly(client, chat_id, lines)
+                else:  # never another turn: the AI hears it, and the morning's check sees it
+                    log.info("an automatic turn left %d problem(s) unfixed", len(new))
+                    self.quiet(chat_id, t("doctor_left", items="; ".join(lines)))
+            else:
+                said.setdefault(chat_id, []).append(t("doctor_new", items="; ".join(lines)))
         if tail is not None and chat_id in said:
             tail.extend(said.pop(chat_id))
         for chat, lines in said.items():
