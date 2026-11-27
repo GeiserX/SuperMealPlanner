@@ -1435,14 +1435,15 @@ class Bot:
                     self.answered(items, covered, ears)
                     # only an answer that reached the chat said anything: a silent one (the AI's
                     # [no reply]) took its messages, but the plan's problems were never raised
-                    # a turn that handed what held its change to a quiet fix said nothing, yet
-                    # its problems are being dealt with: the raise is settled, never tried again,
-                    # and what it found stays unsaid for the morning's plan check
+                    # a turn that handed what held its change to a quiet fix: its problems are
+                    # being dealt with, so the raise is settled, never tried again, and what it
+                    # found stays unsaid for the morning's plan check, even when another part of
+                    # the turn (a pantry line) reached the chat
                     handed = chat_id in self.handed
                     self.handed.discard(chat_id)
                     took = (reached if covered is None else covered) if spoke or handed else []
                     took = [i for i in took if not i.replayed]
-                    self.plan_answered([*items, *pulled], took, said=spoke)
+                    self.plan_answered([*items, *pulled], took, said=spoke and not handed)
                     if (
                         chat_id not in self.held
                     ):  # its held lines went out: a new failure starts over
@@ -1960,10 +1961,10 @@ class Bot:
         followup = all(i.followup for i in covered)
         # the fix the chat never hears of (fix_quietly): no gesture, nothing that waits for a tap
         silent = all(i.silent for i in covered)
-        if silent and (acted or reply.proposals):
-            log.info("a quiet fix's gestures and proposals left out")
+        if silent and (acted or reply.proposals or offered):
+            log.info("a quiet fix's gestures, choices and proposals left out")
             acts = {**acts, "react": None, "sticker": None, "photos": [], "documents": []}
-            acted, reply.proposals = None, []
+            acted, reply.proposals, offered = None, [], None
 
         def keep() -> None:  # the turn is the conversation's: its messages do not go again
             if reply.conversation:
@@ -2837,12 +2838,12 @@ class Bot:
             if item.get("applied") or not (quiet and self.direct):
                 await say(line)
             if item.get("applied"):
-                # a change still waiting for a yes on what this one just set is outdated now; a
-                # quiet fix leaves its message alone (a tap reads the data as it is by then)
+                # a change still waiting for a yes on what this one just set is outdated now,
+                # and no tap may make it later over this one; a quiet fix leaves its message
+                # alone (an edit there would tell the chat of the fix)
+                gone = self.wait_for(chat_id, None, self.outdates(proposal))
                 if not silent:
-                    await self.unwait(
-                        client, chat_id, self.wait_for(chat_id, None, self.outdates(proposal))
-                    )
+                    await self.unwait(client, chat_id, gone)
                 await self.checkup(client, chat_id, before, reply_to, tail, offered, not quiet)
             return bool(item.get("applied"))
         if own:

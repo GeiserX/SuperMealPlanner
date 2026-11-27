@@ -214,3 +214,28 @@ def test_a_plan_turn_ended_unsaid_settles_the_raise_and_records_nothing_heard(da
     db.set_kv(botmod.PLAN_RAISED, {"turn": turn, "open": {"until": None, "id": 1, "at": 0}})
     b.plan_ended(True)  # the control: an answer that reached the chat records what it said
     assert db.get_kv(botmod.PLAN_RAISED)["said"]["-100"]["found"] == ["p1"]
+
+
+def test_a_held_plan_check_with_a_pantry_line_still_leaves_its_problems_unsaid(data_dir, tmp_path):
+    """The held change came with a pantry correction, whose line reaches the chat: the turn spoke,
+    but the plan's problems went to a quiet fix, so none of them is recorded as heard."""
+    b, db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
+    direct(b)
+    raw = {
+        "plan": [{"set": {"date": "2026-10-16", "meal": "dinner", "recipe": "ensalada-garbanzos"}}],
+        "pantry": {"lechuga": 300},
+    }
+    cfg(data_dir, text="Hecho.\n```change\n" + yaml.safe_dump(raw) + "```")
+    ended = []
+    real = b.plan_ended
+    b.plan_ended = lambda reached, said=True: (ended.append((reached, said)), real(reached, said))
+    who = {"first_name": b.t("plan_check_who")}
+
+    def start():
+        row = b.take(-100, who, None, None, b.tt("plan_check_turn"), True, review=True)
+        db.set_kv(botmod.PLAN_RAISED, {"turn": {"row": row, "chat": -100}})
+
+    own_turn(b, start)
+    assert sends(b, -100), "the control: the pantry line reached the chat"
+    # MUT: `said=spoke` for a handed turn → the problems no fix mended count as heard
+    assert ended == [(True, False)], ended

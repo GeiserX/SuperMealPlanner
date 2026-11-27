@@ -338,3 +338,38 @@ def own_turn_in(b, chat, start):
         await b.drive(None, chat)
 
     return go()
+
+
+def test_a_quiet_fix_asks_with_words_only_never_with_choice_buttons(data_dir, tmp_path):
+    b, _db = setup(data_dir, tmp_path)
+    direct(b)
+    cfg(data_dir, text="¿Queda arroz en casa?\n```options\n- Sí\n- No\n```")
+    own_turn(b, lambda: take_quiet(b))
+    (said,) = sends(b, -100)
+    assert said["text"] == "¿Queda arroz en casa?"
+    # MUT: keep `offered` in a quiet turn → the question goes with Sí/No buttons under it
+    assert "reply_markup" not in said, said
+
+
+def test_a_quiet_fix_drops_a_waiting_change_it_outdates_without_editing_its_message(
+    data_dir, tmp_path
+):
+    """A change still waits for a yes (made while bot.ask_first was on) on the meal a quiet fix
+    just set: it waits no more, so no later tap or accept makes it over the fix, and its message
+    is left as it is, so the chat reads nothing of the fix."""
+    from .test_act_without_asking import waiting_item
+
+    b, _db = setup(data_dir, tmp_path)
+    direct(b)
+    thu = plan_for(b.data, D(3)).day(D(3))
+    wed = plan_for(b.data, D(2)).day(D(2))
+    old = {"plan": [{"set": {"date": str(D(2)), "meal": "dinner", "recipe": wed.lunch}}]}
+    b.wait_for(-100, waiting_item("k1", old, msg=55), lambda i: False)
+    set_ = {"date": str(D(2)), "meal": "dinner", "recipe": thu.lunch}
+    cfg(data_dir, text="[no reply]\n" + change({"plan": [{"set": set_}]}))
+    own_turn(b, lambda: take_quiet(b))
+    assert plan_for(b.data, D(2)).day(D(2)).dinner == thu.lunch  # the fix's change is made
+    # MUT: skip wait_for in a quiet turn → the old change still waits, to be made over the fix
+    assert not b.pending(-100), b.pending(-100)
+    # MUT: unwait in a quiet turn too → the old message is edited to say it was replaced
+    assert not [m for m, _ in b.calls if m.startswith("editMessage")], b.calls
