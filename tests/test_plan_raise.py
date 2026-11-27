@@ -1215,8 +1215,8 @@ def test_a_persons_turn_settles_no_raise(data_dir, tmp_path, monkeypatch, clock)
     (plugins / "ai.py").write_text(PLUGIN + JOINS)
     real, ended = b.plan_answered, []
 
-    def plan_answered(items, took):
-        real(items, took)
+    def plan_answered(items, took, said=True):
+        real(items, took, said)
         ended.append(("open" in b.plan_record(), any(i.review for i in items)))
 
     b.plan_answered = plan_answered

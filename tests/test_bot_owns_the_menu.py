@@ -99,8 +99,11 @@ def test_the_bots_own_turn_never_undoes_the_households_change(data_dir, tmp_path
 
 def test_a_menu_change_of_its_own_that_adds_a_problem_is_not_made(data_dir, tmp_path):
     """Friday's dinner moved to a salad of dried chickpeas that nothing soaks or cooks: the check on
-    a copy finds it, the menu stays as it was, and one follow-up turn (checked the same way) tries
-    again; it repeats the same change, which is held again, and no third turn comes."""
+    a copy finds it and the menu stays as it was. Nothing of it reaches the chat: a quiet fix tries
+    again, told what held the change, and so on until one goes through; this AI repeats the same
+    change every time, so after FIX_TRIES quiet fixes held in a row the bot stops, still silent."""
+    from supermealplanner.bot import FIX_TRIES
+
     b, _db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
     direct(b)
     friday = dt.date(2026, 10, 16)
@@ -109,16 +112,17 @@ def test_a_menu_change_of_its_own_that_adds_a_problem_is_not_made(data_dir, tmp_
     plan_check(b)
     assert not doctor.serves(b.data, "ensalada-garbanzos", friday)
     texts = [p["text"] for p in sends(b, -100)]
-    # the turn says a fix follows; its follow-up, held too, asks the household
-    assert [x for x in texts if b.t("auto_check_held") in x] == [b.t("auto_check_held")]
-    assert [x for x in texts if b.t("auto_check_held_last") in x] == [b.t("auto_check_held_last")]
-    assert not any("Ensalada de garbanzos el viernes" in x for x in texts)  # never told as made
+    # MUT: put back the line that tells the chat the change was held → the household reads it
+    assert texts == [], texts
     turns = lines(data_dir, "turns.jsonl")
-    assert len(turns) == 2
-    said = "\n".join(turns[1]["new"])
-    assert "was NOT made" in said and "nothing cooks it" in said
-    assert "reminders of that answer were not set" in said
-    assert not b.pending(-100)  # never left waiting for the tick to accept it
+    # MUT: FIX_TRIES checked as `tries > FIX_TRIES` → one more quiet fix than allowed
+    assert len(turns) == 1 + FIX_TRIES, len(turns)
+    for turn in turns[1:]:  # each quiet fix is told what held the last change
+        said = "\n".join(turn["new"])
+        assert "was NOT made" in said and "nothing cooks it" in said, said
+        assert "reminders of that answer were not set" in said, said
+    gave_up = [r["text"] for r in _db.chat_rows(-100, 200) if r["role"] == "assistant"]
+    assert any(b.t("fix_gave_up", n=FIX_TRIES) in x for x in gave_up), gave_up
 
 
 def held_with_a_reminder(data_dir, tmp_path, recipe):
@@ -172,3 +176,66 @@ def test_the_rules_give_the_bot_the_menu_and_prefer_it_over_a_reminder(data_dir,
     assert "build a whole\n  week" in rules and "undo your own last change" in rules
     assert "change the menu (set, use, regenerate) instead of setting a reminder" in rules
     assert "  - use: {date: 2026-01-14, meal: lunch" in rules
+
+
+def test_a_plan_check_whose_change_is_held_ends_as_reached_but_unsaid(data_dir, tmp_path):
+    """The plan check's turn hands what held its change to a quiet fix and says nothing: its turn
+    ends as one that reached the chat (no failed try, so no second plan-check turn the same day),
+    with nothing recorded as heard, so the morning's check still raises what no fix could mend."""
+    b, _db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
+    direct(b)
+    friday = dt.date(2026, 10, 16)
+    bad = block({"set": {"date": str(friday), "meal": "dinner", "recipe": "ensalada-garbanzos"}})
+    cfg(data_dir, text="Ensalada de garbanzos el viernes.\n" + bad)
+    ended = []
+    real = b.plan_ended
+    b.plan_ended = lambda reached, said=True: (ended.append((reached, said)), real(reached, said))
+    who = {"first_name": b.t("plan_check_who")}
+
+    def start():
+        row = b.take(-100, who, None, None, b.tt("plan_check_turn"), True, review=True)
+        b.state.db.set_kv(botmod.PLAN_RAISED, {"turn": {"row": row, "chat": -100}})
+
+    own_turn(b, start)
+    assert sends(b, -100) == []
+    # MUT: drop `self.handed.add` in the held branch → (False, False): a failed try, raised again
+    assert ended == [(True, False)], ended
+
+
+def test_a_plan_turn_ended_unsaid_settles_the_raise_and_records_nothing_heard(data_dir, tmp_path):
+    b, db = vsetup(data_dir, tmp_path)
+    turn = {"row": 1, "chat": -100, "found": ["p1"], "new": ["p1"], "key": "k", "open": 1}
+    db.set_kv(botmod.PLAN_RAISED, {"turn": turn, "open": {"until": None, "id": 1, "at": 0}})
+    b.plan_ended(True, said=False)
+    rec = db.get_kv(botmod.PLAN_RAISED)
+    assert not rec.get("fails") and "open" not in rec and "turn" not in rec, rec
+    # MUT: record "said" whatever `said` is → the morning never raises what no fix could mend
+    assert not rec.get("said"), rec
+    db.set_kv(botmod.PLAN_RAISED, {"turn": turn, "open": {"until": None, "id": 1, "at": 0}})
+    b.plan_ended(True)  # the control: an answer that reached the chat records what it said
+    assert db.get_kv(botmod.PLAN_RAISED)["said"]["-100"]["found"] == ["p1"]
+
+
+def test_a_held_plan_check_with_a_pantry_line_still_leaves_its_problems_unsaid(data_dir, tmp_path):
+    """The held change came with a pantry correction, whose line reaches the chat: the turn spoke,
+    but the plan's problems went to a quiet fix, so none of them is recorded as heard."""
+    b, db = vsetup(data_dir, tmp_path, ahead=[{"step": "Asar el pimiento", "session": True}])
+    direct(b)
+    raw = {
+        "plan": [{"set": {"date": "2026-10-16", "meal": "dinner", "recipe": "ensalada-garbanzos"}}],
+        "pantry": {"lechuga": 300},
+    }
+    cfg(data_dir, text="Hecho.\n```change\n" + yaml.safe_dump(raw) + "```")
+    ended = []
+    real = b.plan_ended
+    b.plan_ended = lambda reached, said=True: (ended.append((reached, said)), real(reached, said))
+    who = {"first_name": b.t("plan_check_who")}
+
+    def start():
+        row = b.take(-100, who, None, None, b.tt("plan_check_turn"), True, review=True)
+        db.set_kv(botmod.PLAN_RAISED, {"turn": {"row": row, "chat": -100}})
+
+    own_turn(b, start)
+    assert sends(b, -100), "the control: the pantry line reached the chat"
+    # MUT: `said=spoke` for a handed turn → the problems no fix mended count as heard
+    assert ended == [(True, False)], ended
